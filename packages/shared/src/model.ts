@@ -35,6 +35,8 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
   pi: new Set<ModelSlug>(),
   // Devin's built-in list is intentionally empty; its CLI supplies the live catalog.
   devin: new Set<ModelSlug>(),
+  // Aether's vendored catalog is the whole list: Aether rejects any other slug.
+  aether: new Set(MODEL_OPTIONS_BY_PROVIDER.aether.map((option) => option.slug)),
 };
 
 export interface SelectableModelOption {

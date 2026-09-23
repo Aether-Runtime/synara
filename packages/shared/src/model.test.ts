@@ -229,6 +229,44 @@ describe("resolveModelSlug", () => {
     );
   });
 
+  it("resolves every Aether catalog slug to itself", () => {
+    // Aether slugs overlap Codex and Claude slugs and include models neither local
+    // catalog lists (gpt-5.6-sol); none may be coerced to another provider's default.
+    for (const model of MODEL_OPTIONS_BY_PROVIDER.aether) {
+      expect(resolveModelSlugForProvider("aether", model.slug)).toBe(model.slug);
+    }
+    expect(resolveModelSlugForProvider("aether", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(resolveModelSlugForProvider("aether", " claude-opus-5-5 ")).toBe("claude-opus-5-5");
+    expect(resolveModelSlugForProvider("aether", undefined)).toBe("claude-opus-5-5");
+  });
+
+  it("migrates retired Aether slugs and falls back for slugs Aether rejects", () => {
+    expect(resolveModelSlugForProvider("aether", "claude-fable-5")).toBe("claude-fable-5-1");
+    expect(resolveModelSlugForProvider("aether", "claude-opus-4-8")).toBe(
+      DEFAULT_MODEL_BY_PROVIDER.aether,
+    );
+  });
+
+  it("builds Aether reasoning options from the vendored catalog", () => {
+    const [descriptor] = getProviderOptionDescriptors({
+      provider: "aether",
+      caps: getModelCapabilities("aether", "gpt-6-luna"),
+    });
+    expect(descriptor).toMatchObject({
+      id: "reasoningEffort",
+      type: "select",
+      currentValue: "xhigh",
+    });
+    expect(descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : []).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(getModelCapabilities("aether", "claude-haiku-4-5").reasoningEffortLevels).toEqual([]);
+  });
+
   it("keeps codex defaults for backward compatibility", () => {
     expect(getDefaultModel()).toBe(DEFAULT_MODEL);
     expect(getModelOptions()).toEqual(MODEL_OPTIONS_BY_PROVIDER.codex);

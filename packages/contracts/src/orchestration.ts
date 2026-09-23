@@ -6,6 +6,7 @@ import {
   ListProjectImportsResult,
 } from "./projectImport";
 import {
+  AetherModelOptions,
   AntigravityModelOptions,
   ClaudeModelOptions,
   CodexModelOptions,
@@ -75,6 +76,7 @@ export const ProviderKind = Schema.Literals([
   "opencode",
   "pi",
   "devin",
+  "aether",
 ]);
 export type ProviderKind = typeof ProviderKind.Type;
 
@@ -182,6 +184,15 @@ export const DevinModelSelection = Schema.Struct({
 });
 export type DevinModelSelection = typeof DevinModelSelection.Type;
 
+// The model slug alone identifies the Aether agent family (`codex` or `claude-code`);
+// see `resolveAetherAgentFamily`.
+export const AetherModelSelection = Schema.Struct({
+  provider: Schema.Literal("aether"),
+  model: TrimmedNonEmptyString,
+  options: Schema.optional(AetherModelOptions),
+});
+export type AetherModelSelection = typeof AetherModelSelection.Type;
+
 export const ModelSelection = Schema.Union([
   CodexModelSelection,
   ClaudeModelSelection,
@@ -192,6 +203,7 @@ export const ModelSelection = Schema.Union([
   DroidModelSelection,
   OpenCodeModelSelection,
   PiModelSelection,
+  AetherModelSelection,
 ]);
 export type ModelSelection = typeof ModelSelection.Type;
 
@@ -239,6 +251,11 @@ export const DevinProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
 });
 
+// Aether runs in the cloud: no executable. The API key stays in the server secret store.
+export const AetherProviderStartOptions = Schema.Struct({
+  apiBaseUrl: Schema.optional(TrimmedNonEmptyString),
+});
+
 export const ProviderStartOptions = Schema.Struct({
   codex: Schema.optional(CodexProviderStartOptions),
   claudeAgent: Schema.optional(ClaudeProviderStartOptions),
@@ -249,6 +266,7 @@ export const ProviderStartOptions = Schema.Struct({
   droid: Schema.optional(DroidProviderStartOptions),
   opencode: Schema.optional(OpenCodeProviderStartOptions),
   pi: Schema.optional(PiProviderStartOptions),
+  aether: Schema.optional(AetherProviderStartOptions),
 });
 export type ProviderStartOptions = typeof ProviderStartOptions.Type;
 

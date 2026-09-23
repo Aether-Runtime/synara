@@ -132,6 +132,15 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
       learnMoreHref: "https://app.devin.ai/usage",
     },
   },
+  {
+    // Cloud provider: signs in with an API key in Settings, not a CLI. Usage/spend is v2.
+    kind: "aether",
+    displayName: PROVIDER_DISPLAY_NAMES.aether,
+    available: true,
+    setupDocsHref: "https://runaether.dev",
+    supportsNativeTurnSteering: false,
+    usage: null,
+  },
 ] as const satisfies readonly ProviderDescriptor[]);
 
 export const PROVIDER_DESCRIPTOR_BY_KIND = Object.fromEntries(

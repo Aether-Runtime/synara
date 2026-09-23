@@ -80,6 +80,19 @@ export const DevinServerProviderSettings = Schema.Struct({
 });
 export type DevinServerProviderSettings = typeof DevinServerProviderSettings.Type;
 
+export const DEFAULT_AETHER_API_BASE_URL = "https://api.runaether.dev";
+
+// Aether runs in the cloud, so it has no executable path. Disabled by default: the
+// adapter is a skeleton until sessions land. The API key is patch-only (`apiKey`) and
+// lives in the server secret store; clients only see `apiKeyConfigured`.
+export const AetherServerProviderSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  apiBaseUrl: StringSetting.pipe(Schema.withDecodingDefault(() => DEFAULT_AETHER_API_BASE_URL)),
+  apiKeyConfigured: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  customModels: CustomModels,
+});
+export type AetherServerProviderSettings = typeof AetherServerProviderSettings.Type;
+
 const DisabledSkillNames = Schema.Array(Schema.String.check(Schema.isMaxLength(256))).pipe(
   Schema.withDecodingDefault(() => []),
 );
@@ -112,6 +125,7 @@ export const ServerSettings = Schema.Struct({
     droid: DroidServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     opencode: OpenCodeServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     pi: PiServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    aether: AetherServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   skills: SkillsServerSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   // When the first-run welcome tour was completed or skipped. Server-backed so a
@@ -189,6 +203,15 @@ export const ServerSettingsPatch = Schema.Struct({
         }),
       ),
       devin: Schema.optionalKey(Schema.Struct(ProviderSettingsBasePatch)),
+      aether: Schema.optionalKey(
+        Schema.Struct({
+          enabled: Schema.optionalKey(Schema.Boolean),
+          apiBaseUrl: Schema.optionalKey(StringSetting),
+          // Write-only: stored in the server secret store, never echoed back.
+          apiKey: Schema.optionalKey(StringSetting),
+          customModels: Schema.optionalKey(CustomModels),
+        }),
+      ),
     }),
   ),
   skills: Schema.optionalKey(
