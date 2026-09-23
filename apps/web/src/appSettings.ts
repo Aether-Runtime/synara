@@ -842,9 +842,14 @@ function touchesProviderDiscoverySettings(patch: Partial<AppSettings>): boolean 
   );
 }
 
-// Aether's health check is its credential check, so a new key or URL needs a re-probe.
-function touchesProviderHealthSettings(patch: Partial<AppSettings>): boolean {
-  return hasOwn(patch, "aetherApiKey") || hasOwn(patch, "aetherApiBaseUrl");
+// Enablement changes which providers are probed, and Aether's health check is its
+// credential check, so a new key or URL needs a re-probe too.
+function refreshesProviderStatuses(patch: Partial<AppSettings>): boolean {
+  return (
+    hasOwn(patch, "disabledProviders") ||
+    hasOwn(patch, "aetherApiKey") ||
+    hasOwn(patch, "aetherApiBaseUrl")
+  );
 }
 
 // Write-only secret patch fields and the view flag that says whether one is stored.
@@ -1606,7 +1611,9 @@ export function useAppSettings() {
       try {
         const nextSettings = await api.server.updateSettings(serverPatch);
         queryClient.setQueryData(serverQueryKeys.settings(), nextSettings);
-        if (hasOwn(patch, "disabledProviders") || touchesProviderHealthSettings(patch)) {
+        // One call, not `a || b`: React Compiler skips this whole hook when a logical
+        // expression sits inside `try` (chatHotPath.compiler.test.ts).
+        if (refreshesProviderStatuses(patch)) {
           await refreshProvidersAfterEnablementChange();
         } else if (touchesProviderDiscoverySettings(patch)) {
           await queryClient

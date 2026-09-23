@@ -14,7 +14,8 @@ export function compileReactModule(filePath: string): CompilerEvent[] {
     filename: filePath,
     configFile: false,
     babelrc: false,
-    parserOpts: { plugins: ["typescript", "jsx"] },
+    // `.ts` modules cannot hold JSX, and parsing them as JSX misreads generic arrows (`<T>(`).
+    parserOpts: { plugins: filePath.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"] },
     plugins: [
       [
         "babel-plugin-react-compiler",
