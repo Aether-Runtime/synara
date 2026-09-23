@@ -12,15 +12,15 @@ import { ProviderTextGenerationLive } from "./Layers/ProviderTextGeneration";
 import { OpenCodeRuntimeLive } from "../provider/opencodeRuntime";
 import { ServerSettingsLive } from "../serverSettings";
 import {
-  makeProviderServerPasswordResolver,
+  makeProviderSecretResolver,
   ProviderCredentials,
   ProviderCredentialsLive,
 } from "../providerCredentials";
 
 const textGenerationProviderLayers = Effect.gen(function* () {
   const credentials = yield* ProviderCredentials;
-  const resolveProviderServerPassword = makeProviderServerPasswordResolver(credentials);
-  return makeOpenCodeTextGenerationServiceLive(resolveProviderServerPassword).pipe(
+  const resolveProviderSecret = makeProviderSecretResolver(credentials);
+  return makeOpenCodeTextGenerationServiceLive(resolveProviderSecret).pipe(
     Layer.provide(OpenCodeRuntimeLive),
   );
 }).pipe(Effect.provide(ProviderCredentialsLive.pipe(Layer.orDie)), Layer.unwrap);

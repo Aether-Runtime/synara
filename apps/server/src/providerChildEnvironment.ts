@@ -4,6 +4,7 @@
 
 export type ProviderChildKind =
   | "acp"
+  | "aether"
   | "antigravity"
   | "claude"
   | "codex"
@@ -32,7 +33,12 @@ const PROVIDER_CREDENTIAL_KEYS = new Set([
   "DEVIN_API_KEY",
   "WINDSURF_API_KEY",
   "DOCKER_AUTH_CONFIG",
+  "AETHER_API_KEY",
 ]);
+
+// Credentials only Synara's own API clients use. No provider process needs them, so
+// even the "all" profiles below never inherit them.
+const SYNARA_API_CREDENTIAL_KEYS = new Set(["AETHER_API_KEY"]);
 
 export function registerProviderCredentialKey(key: string): void {
   const normalized = key.trim().toUpperCase();
@@ -46,6 +52,8 @@ export function isProviderCredentialKey(key: string): boolean {
 }
 
 const PROVIDER_CREDENTIAL_GRANTS: Record<ProviderChildKind, "all" | ReadonlySet<string>> = {
+  // Aether runs in the cloud and spawns no process; it talks to its API from the server.
+  aether: new Set(),
   antigravity: new Set(["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"]),
   claude: new Set([
     "ANTHROPIC_API_KEY",
@@ -103,6 +111,9 @@ export function buildProviderChildEnvironment(input: {
       continue;
     }
     if (INHERITED_NATIVE_CAPABILITY_KEYS.has(key) && !allowedNativeCapabilities.has(key)) {
+      continue;
+    }
+    if (SYNARA_API_CREDENTIAL_KEYS.has(key.toUpperCase())) {
       continue;
     }
     if (

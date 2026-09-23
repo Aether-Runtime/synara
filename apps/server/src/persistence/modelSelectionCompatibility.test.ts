@@ -175,3 +175,31 @@ it("infers Devin from provider-less model slugs containing devin", () => {
     model: "devin-core",
   });
 });
+
+it("round-trips stored Aether selections without re-inferring the provider from the model", () => {
+  // Aether serves Claude and Codex slugs; slug inference would rewrite these to
+  // claudeAgent/codex and silently route the thread to a local runtime.
+  for (const selection of [
+    { provider: "aether", model: "claude-opus-5-5" },
+    { provider: "aether", model: "claude-sonnet-4-6", options: { reasoningEffort: "ultrathink" } },
+    { provider: "aether", model: "gpt-6-astra", options: { reasoningEffort: "ultra" } },
+    { provider: "aether", model: "gpt-5.6-sol" },
+  ]) {
+    assert.deepEqual(normalizePersistedModelSelection(selection), selection);
+  }
+});
+
+it("attributes Aether instance labels to Aether ahead of the model vendor", () => {
+  assert.deepEqual(
+    normalizePersistedModelSelection({
+      instanceId: "Aether Claude Code",
+      model: "claude-opus-5-5",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    }),
+    {
+      provider: "aether",
+      model: "claude-opus-5-5",
+      options: { reasoningEffort: "xhigh" },
+    },
+  );
+});

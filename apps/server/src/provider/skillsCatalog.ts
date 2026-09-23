@@ -481,6 +481,8 @@ const PROVIDER_SKILL_ORIGIN_PREFERENCES = {
   opencode: ["opencode", "claude", "agents"],
   pi: ["pi", "agents"],
   devin: ["devin", "claude", "agents"],
+  // Aether agents run in a cloud VM and have no native skill home on this machine.
+  aether: [],
 } as const satisfies Partial<Record<ProviderKind, readonly SkillsHomeOrigin[]>>;
 
 function homeRootsForOrigin(

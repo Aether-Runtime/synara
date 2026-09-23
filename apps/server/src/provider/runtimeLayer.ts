@@ -3,12 +3,13 @@ import { Effect, Layer } from "effect";
 import { AgentGatewayCredentialsWithSecretsLive } from "../agentGateway/Layers/AgentGatewayCredentials";
 import { ServerConfig } from "../config";
 import {
-  makeProviderServerPasswordResolver,
+  makeProviderSecretResolver,
   ProviderCredentials,
   ProviderCredentialsLive,
 } from "../providerCredentials";
 import { ServerSettingsService } from "../serverSettings";
 import { ProviderValidationError } from "./Errors";
+import { AetherAdapterLive } from "./Layers/AetherAdapter";
 import { makeClaudeAdapterLive } from "./Layers/ClaudeAdapter";
 import { makeCodexAdapterLive } from "./Layers/CodexAdapter";
 import { makeCursorAdapterLive } from "./Layers/CursorAdapter";
@@ -34,7 +35,7 @@ export function makeServerProviderLayer(
   return Effect.gen(function* () {
     const credentials = yield* ProviderCredentials;
     const serverSettings = yield* ServerSettingsService;
-    const resolveProviderServerPassword = makeProviderServerPasswordResolver(credentials);
+    const resolveProviderSecret = makeProviderSecretResolver(credentials);
     const { logProviderEvents, providerEventLogPath } = yield* ServerConfig;
     const nativeEventLogger = logProviderEvents
       ? yield* makeEventNdjsonLogger(providerEventLogPath, {
@@ -62,7 +63,7 @@ export function makeServerProviderLayer(
     ).pipe(Layer.provide(agentGatewayCredentialsLayer));
     const openCodeAdapterLayer = makeOpenCodeAdapterLive({
       ...(nativeEventLogger ? { nativeEventLogger } : {}),
-      resolveServerPassword: resolveProviderServerPassword,
+      resolveServerPassword: resolveProviderSecret,
     }).pipe(Layer.provide(agentGatewayCredentialsLayer));
     const antigravityAdapterLayer = makeAntigravityAdapterLive().pipe(
       Layer.provide(agentGatewayCredentialsLayer),
@@ -96,6 +97,8 @@ export function makeServerProviderLayer(
       Layer.provide(droidAdapterLayer),
       Layer.provide(openCodeAdapterLayer),
       Layer.provide(piAdapterLayer),
+      // Cloud adapter: no gateway credentials, the Aether VM cannot reach the local gateway.
+      Layer.provide(AetherAdapterLive),
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const providerServiceLayer = makeDurableProviderServiceLive({

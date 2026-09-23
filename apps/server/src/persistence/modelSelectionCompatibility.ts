@@ -3,18 +3,15 @@
 // Layer: Persistence compatibility helper
 // Exports: normalizeLegacyModelSelection, normalizePersistedModelSelection
 
-import { MODEL_OPTIONS_BY_PROVIDER } from "@synara/contracts";
+import { MODEL_OPTIONS_BY_PROVIDER, ProviderKind } from "@synara/contracts";
+import { Schema } from "effect";
 
-type ModelProviderKind =
-  | "codex"
-  | "claudeAgent"
-  | "cursor"
-  | "antigravity"
-  | "grok"
-  | "droid"
-  | "opencode"
-  | "pi"
-  | "devin";
+type ModelProviderKind = ProviderKind;
+
+// Every current provider literal passes through unchanged. A hand-kept list here once
+// let a new provider fall through to slug inference (Aether's `claude-…` models read
+// back as claudeAgent), so the check follows the contract instead.
+const isProviderKind = Schema.is(ProviderKind);
 
 const NON_DROID_MODEL_SLUGS = new Set(
   Object.entries(MODEL_OPTIONS_BY_PROVIDER).flatMap(([provider, models]) =>
@@ -48,6 +45,10 @@ function readTrimmedString(record: Record<string, unknown>, key: string): string
 // Imported instance ids may be runtime names rather than Synara provider literals.
 function inferProviderFromLabel(label: string): ModelProviderKind | undefined {
   const lowerLabel = label.toLowerCase();
+  // First: an Aether instance hosts Claude and Codex models under its own provider.
+  if (lowerLabel.includes("aether")) {
+    return "aether";
+  }
   if (/(^|[^a-z0-9])pi([^a-z0-9]|$)/u.test(lowerLabel)) {
     return "pi";
   }
@@ -94,17 +95,7 @@ function inferProviderFromLabel(label: string): ModelProviderKind | undefined {
 }
 
 function inferLegacyModelProvider(provider: unknown, model: string): ModelProviderKind {
-  if (
-    provider === "codex" ||
-    provider === "claudeAgent" ||
-    provider === "cursor" ||
-    provider === "antigravity" ||
-    provider === "grok" ||
-    provider === "droid" ||
-    provider === "opencode" ||
-    provider === "pi" ||
-    provider === "devin"
-  ) {
+  if (isProviderKind(provider)) {
     return provider;
   }
   if (provider === "gemini") {

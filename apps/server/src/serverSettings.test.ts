@@ -204,6 +204,58 @@ describe("ServerSettingsService", () => {
     expect(result.persisted).not.toContain("opencode-secret");
   });
 
+  it("keeps the Aether API key server-only and round-trips the rest of its settings", async () => {
+    const result = await runWithSettings(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const { settingsPath } = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* service.start;
+        const defaults = yield* service.getSettingsView;
+        const view = yield* service.updateSettingsView({
+          providers: {
+            aether: {
+              enabled: true,
+              apiBaseUrl: "https://aether.example.com",
+              apiKey: "  aether-secret-key  ",
+            },
+          },
+        });
+        const persisted = yield* fs.readFileString(settingsPath);
+        // A later patch without the key must not clear it; an empty key clears it.
+        const afterUnrelatedPatch = yield* service.updateSettingsView({
+          providers: { aether: { enabled: false } },
+        });
+        const cleared = yield* service.updateSettingsView({
+          providers: { aether: { apiKey: "" } },
+        });
+        return { defaults, view, persisted, afterUnrelatedPatch, cleared };
+      }),
+    );
+
+    expect(result.defaults.providers.aether).toEqual({
+      enabled: false,
+      apiBaseUrl: "https://api.runaether.dev",
+      apiKeyConfigured: false,
+      customModels: [],
+    });
+    expect(result.view.providers.aether).toEqual({
+      enabled: true,
+      apiBaseUrl: "https://aether.example.com",
+      apiKeyConfigured: true,
+      customModels: [],
+    });
+    for (const exposed of [JSON.stringify(result.view), result.persisted]) {
+      expect(exposed).not.toContain("aether-secret-key");
+      expect(exposed).not.toContain('"apiKey"');
+    }
+    expect(result.afterUnrelatedPatch.providers.aether).toMatchObject({
+      enabled: false,
+      apiKeyConfigured: true,
+    });
+    expect(result.cleared.providers.aether.apiKeyConfigured).toBe(false);
+  });
+
   it.each([
     {
       name: "resolves text generation selection away from disabled providers",

@@ -67,7 +67,7 @@ describe("Aether model tables", () => {
   });
 
   it("points every alias at a catalog slug", () => {
-    const slugs = new Set(MODEL_OPTIONS_BY_PROVIDER.aether.map((model) => model.slug));
+    const slugs = new Set<string>(MODEL_OPTIONS_BY_PROVIDER.aether.map((model) => model.slug));
     for (const target of Object.values(MODEL_SLUG_ALIASES_BY_PROVIDER.aether)) {
       expect(slugs.has(target)).toBe(true);
     }
