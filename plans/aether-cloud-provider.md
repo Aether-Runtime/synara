@@ -11,12 +11,13 @@ conversation. At the end of every turn the VM's changes are mirrored into the ta
 worktree, so Synara's own diff panel, checkpoints, file viewer and revert work without
 modification. The laptop can close mid-task; reopening Synara reattaches to the same cloud task.
 
-This is the design proven in `Aether-Runtime/t3code` (the "AetherDriver"), ported to Synara's
+This is the design proven in our earlier Aether provider (the "AetherDriver", built in August 2026 for
+the app Synara was originally cloned from), ported to Synara's
 provider model and rebuilt against Aether's current API.
 
 ## Current state
 
-### The t3code driver is the starting point, but it no longer works against Aether
+### The AetherDriver is the starting point, but it no longer works against Aether
 
 The driver (~11.6k non-test lines, last changed 2026-08-14) broke against Aether main on four
 server changes made after it was written:
@@ -55,13 +56,13 @@ Synara registers providers the pre-driver way: a closed `ProviderKind` literal
 (`packages/contracts/src/orchestration.ts:68`), one service tag + layer per adapter, and
 `ProviderAdapterRegistry` (`apps/server/src/provider/Layers/ProviderAdapterRegistry.ts`). We follow
 that pattern. Adding Devin (`8b428c474`) touched ~64 non-test files (~1.3k lines of wiring).
-Synara pins Effect `4.0.0-beta.25`; the t3code driver was written on `4.0.0-beta.103`.
+Synara pins Effect `4.0.0-beta.25`; the AetherDriver was written on `4.0.0-beta.103`.
 
 ## Architecture decision: provider, not a "Cloud" environment
 
 Two shapes were assessed:
 
-1. **Aether is a provider** (as in t3code). The user picks "Aether" and an Aether agent/model
+1. **Aether is a provider** (as in the AetherDriver). The user picks "Aether" and an Aether agent/model
    combination; the task's environment is a worktree the driver owns.
 2. **"Cloud" is a third environment** next to Local and Worktree, and the user still picks
    Claude or Codex as the provider.
@@ -122,7 +123,7 @@ auto_fix_*: false}` → `{id}`. Persist the resume cursor `{schemaVersion, taskI
 At turn end: connect the workspace WS, request the cumulative git diff (merge-base → VM working
 tree), reset the local worktree to the task base, apply the full cumulative diff, then emit
 `turn.completed`. Synara's `CheckpointReactor` captures the checkpoint from the real local tree, so
-diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same mechanism as t3code).
+diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same mechanism the AetherDriver relied on).
 
 - `text` files: apply hunks. `binary`: read bytes over the WS `files` channel. `too_large`: fail
   the sync loudly with the file path (no silent skip).
@@ -137,7 +138,7 @@ diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same me
   `copyChangesFrom` for them (the mirror reset would erase the copied changes).
 - Synara already serializes every git mutation per repository through `GitCore.withMutation`
   (commit/push, stage, stash, handoff, PR checkout, worktree prune, gateway). The ownership check
-  goes **inside `withMutation`**, and the mirror sync runs inside it. This replaces t3code's
+  goes **inside `withMutation`**, and the mirror sync runs inside it. This replaces the AetherDriver's
   per-call-site guards (the part that took five review rounds there).
 - Not covered by `withMutation`: file writes from the editor (400 ms autosave), checkpoint-revert
   restore, and the first-turn branch rename, which also pushes. Guard the first two; skip the
@@ -199,12 +200,12 @@ there — acceptable, documented.
 - **AS1 — idempotency key on `POST /tasks`.** A lost 202 still creates a duplicate task and a
   second paid VM. Small, and the CLI benefits too.
 - **AS2 — public model catalog endpoint.** The vendored catalog went stale within six weeks and a
-  rename now rejects saved selections. Two clients (t3code, Synara) vendoring it guarantees drift.
+  rename now rejects saved selections. Two clients (the AetherDriver, Synara) vendoring it guarantees drift.
 - **AS3 — push channel for API-key clients** (decision D3). E.g. an SSE stream of task revision
   ticks, so clients fetch on change instead of polling.
 - **AS4 — public failure kind for "out of inference balance"** (today only the message text
   reaches clients).
-- **AS5 — keep third-party clients from breaking silently.** The t3code driver was broken for 3+
+- **AS5 — keep third-party clients from breaking silently.** The AetherDriver was broken for 3+
   weeks unnoticed. Options: generate the Synara REST client from
   `apps/api/openapi/aether-api.openapi.json` (Synara already has `@effect/openapi-generator` in its
   catalog, unused), and/or a CI job that decodes recorded API responses with the client schemas.
@@ -256,10 +257,10 @@ v2: cloud terminal, port previews, live subagent transcripts, usage/spend, VM si
 Still open:
 
 - **D6 — Billing / sign-in.** Assumed: Synara users bring an Aether account + API key (as
-  t3code).
-- **D7 — The broken t3code driver** (see below): fix, freeze, or retire.
+  the AetherDriver).
+- **D7 — The broken AetherDriver** (see below): fix, freeze, or retire.
 
 ## Outside this project
 
-- The `Aether-Runtime/t3code` driver and the upstream PR `pingdotgg/t3code#5995` are broken
+- The AetherDriver (its private Aether-Runtime repo and upstream PR #5995) is broken
   against current Aether for the same four reasons. Fix, freeze, or retire — separate decision.
