@@ -847,7 +847,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           },
           {
             status: "warning",
-            available: false,
+            available: true,
             authStatus: "unauthenticated",
             message: "Aether is not configured. Add an Aether API key in Settings → Providers.",
           },

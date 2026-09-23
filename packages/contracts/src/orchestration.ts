@@ -18,6 +18,7 @@ import {
   PiModelOptions,
 } from "./model";
 import { ProviderMentionReference, ProviderSkillReference } from "./providerDiscovery";
+import { AetherApiBaseUrl } from "./aetherApi";
 import { AsyncUserInput, AsyncUserInputQuestions, AsyncUserInputResponse } from "./asyncUserInput";
 import { ProjectKind } from "./project";
 import { ClaudeCacheObservation } from "./claudeCache";
@@ -253,7 +254,7 @@ export const DevinProviderStartOptions = Schema.Struct({
 
 // Aether runs in the cloud: no executable. The API key stays in the server secret store.
 export const AetherProviderStartOptions = Schema.Struct({
-  apiBaseUrl: Schema.optional(TrimmedNonEmptyString),
+  apiBaseUrl: Schema.optional(AetherApiBaseUrl),
 });
 
 export const ProviderStartOptions = Schema.Struct({

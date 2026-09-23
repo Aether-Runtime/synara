@@ -1,4 +1,8 @@
-import { DEFAULT_SERVER_SETTINGS, ProviderSessionStartInput } from "@synara/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProviderSessionStartInput,
+  ServerSettings,
+} from "@synara/contracts";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { providerStartOptionsFromServerSettings } from "./serverSettings";
@@ -50,10 +54,8 @@ describe("providerStartOptionsFromServerSettings", () => {
           ...DEFAULT_SERVER_SETTINGS.providers.devin,
           binaryPath: "",
         },
-        aether: {
-          ...DEFAULT_SERVER_SETTINGS.providers.aether,
-          apiBaseUrl: "",
-        },
+        // Aether's base URL cannot be blank: the settings schema rejects it (aetherApi.ts).
+        aether: DEFAULT_SERVER_SETTINGS.providers.aether,
       },
     };
 
@@ -76,7 +78,7 @@ describe("providerStartOptionsFromServerSettings", () => {
     expect(providerOptions.opencode).toEqual({ experimentalWebSockets: false });
     expect(providerOptions.pi).toEqual({});
     expect(providerOptions.devin).toEqual({});
-    expect(providerOptions.aether).toEqual({});
+    expect(providerOptions.aether).toEqual({ apiBaseUrl: "https://api.runaether.dev" });
   });
 
   it("preserves configured launch settings", () => {
@@ -114,6 +116,16 @@ describe("providerStartOptionsFromServerSettings", () => {
       experimentalWebSockets: true,
     });
     expect(providerOptions.devin).toEqual({ binaryPath: "/custom/bin/devin" });
+  });
+
+  it("passes Aether's parsed base URL through unchanged", () => {
+    const providerOptions = providerStartOptionsFromServerSettings(
+      Schema.decodeUnknownSync(ServerSettings)({
+        providers: { aether: { apiBaseUrl: "https://proxy.example.com/aether/" } },
+      }),
+    );
+
+    expect(providerOptions.aether).toEqual({ apiBaseUrl: "https://proxy.example.com/aether/" });
   });
 
   it("returns an entry for every provider, including Aether's default API base URL", () => {

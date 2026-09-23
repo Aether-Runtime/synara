@@ -3,6 +3,7 @@
 // Layer: Settings panel
 
 import {
+  aetherApiBaseUrlIssue,
   PROVIDER_DISPLAY_NAMES,
   type ProviderKind,
   type ServerProviderStatus,
@@ -99,6 +100,9 @@ type ProviderInstallTextField = {
   readonly label: string;
   readonly placeholder: string;
   readonly description: ReactNode;
+  /** Returns why a draft is invalid; an invalid draft is shown inline and never committed. */
+  readonly validate?: (value: string) => string | undefined;
+  readonly debounceMs?: number;
 };
 type ProviderInstallPasswordField = {
   readonly kind: "password";
@@ -107,7 +111,12 @@ type ProviderInstallPasswordField = {
   readonly label: string;
   readonly placeholder: string;
   readonly description: ReactNode;
+  readonly debounceMs?: number;
 };
+
+// Saving an Aether credential or URL re-probes provider health (every enabled CLI), so these
+// fields wait for a real pause instead of committing each keystroke burst.
+const AETHER_FIELD_DEBOUNCE_MS = 1_500;
 type ProviderInstallBooleanField = {
   readonly kind: "boolean";
   readonly settingsKey: ProviderInstallBooleanKey;
@@ -391,6 +400,7 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
         placeholder: "Aether API key",
         description:
           "Stored in the Synara server's secret store and never shown again. Saving it re-checks the connection.",
+        debounceMs: AETHER_FIELD_DEBOUNCE_MS,
       },
       {
         kind: "text",
@@ -398,6 +408,9 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
         label: "Aether API base URL",
         placeholder: "https://api.runaether.dev",
         description: "Change only to reach a different Aether deployment. Must be https.",
+        // Same check the server applies when the settings patch is decoded.
+        validate: aetherApiBaseUrlIssue,
+        debounceMs: AETHER_FIELD_DEBOUNCE_MS,
       },
     ],
   },
@@ -638,6 +651,7 @@ function ProviderInstallFieldControl(props: {
   updateSettings: (patch: Partial<AppSettings>) => void;
 }) {
   const id = `provider-install-${props.field.settingsKey}`;
+  const [validationError, setValidationError] = useState<string | null>(null);
   if (props.field.kind === "boolean") {
     return (
       <label
@@ -666,6 +680,7 @@ function ProviderInstallFieldControl(props: {
   const configured =
     props.field.kind === "password" ? props.settings[props.field.configuredKey] : false;
   const isPassword = props.field.kind === "password";
+  const validate = props.field.kind === "text" ? props.field.validate : undefined;
   return (
     <label htmlFor={id} className="block">
       <span className="block text-ui leading-snug font-medium text-foreground">
@@ -677,9 +692,14 @@ function ProviderInstallFieldControl(props: {
         variant="soft"
         className="mt-1"
         value={isPassword ? "" : props.settings[props.field.settingsKey]}
-        onCommit={(nextValue) =>
-          props.updateSettings({ [props.field.settingsKey]: nextValue } as Partial<AppSettings>)
-        }
+        onCommit={(nextValue) => {
+          const issue = validate?.(nextValue);
+          setValidationError(issue ?? null);
+          if (issue) return;
+          props.updateSettings({ [props.field.settingsKey]: nextValue } as Partial<AppSettings>);
+        }}
+        {...(props.field.debounceMs !== undefined ? { debounceMs: props.field.debounceMs } : {})}
+        aria-invalid={validationError ? true : undefined}
         placeholder={
           isPassword && configured
             ? "Configured — enter a replacement or leave blank"
@@ -689,6 +709,11 @@ function ProviderInstallFieldControl(props: {
         autoComplete={isPassword ? "new-password" : undefined}
         spellCheck={false}
       />
+      {validationError ? (
+        <span className="mt-1 block text-ui leading-snug text-destructive" role="alert">
+          {validationError}
+        </span>
+      ) : null}
       <span className="mt-1 block text-ui leading-snug text-muted-foreground">
         {props.field.description}
       </span>

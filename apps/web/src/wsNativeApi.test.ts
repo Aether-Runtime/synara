@@ -9,6 +9,7 @@ import {
   AutomationRunId,
   CommandId,
   type ContextMenuItem,
+  DEFAULT_SERVER_SETTINGS,
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -387,7 +388,7 @@ describe("wsNativeApi", () => {
           pi: { enabled: true, binaryPath: "pi", agentDir: "", customModels: [] },
           aether: {
             enabled: false,
-            apiBaseUrl: "https://api.runaether.dev",
+            apiBaseUrl: DEFAULT_SERVER_SETTINGS.providers.aether.apiBaseUrl,
             apiKeyConfigured: false,
             customModels: [],
           },

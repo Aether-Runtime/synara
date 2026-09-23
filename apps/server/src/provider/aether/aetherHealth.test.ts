@@ -1,15 +1,12 @@
+import { AetherApiBaseUrl } from "@synara/contracts";
 import type { OutboundHttpRequest, OutboundHttpResponse } from "@synara/shared/outboundHttp";
 import { OutboundHttpError } from "@synara/shared/outboundHttp";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import {
-  makeCheckAetherProviderStatus,
-  resolveAetherApiUrl,
-  type AetherHttpRequest,
-} from "./aetherHealth.ts";
+import { makeCheckAetherProviderStatus, type AetherHttpRequest } from "./aetherHealth.ts";
 
-const API_BASE_URL = "https://api.runaether.dev";
+const API_BASE_URL = AetherApiBaseUrl.makeUnsafe("https://api.runaether.dev");
 
 function fakeHttp(respond: (request: OutboundHttpRequest) => OutboundHttpResponse | Error) {
   const requests: OutboundHttpRequest[] = [];
@@ -34,7 +31,7 @@ function jsonResponse(status: number, body: unknown): OutboundHttpResponse {
 const check = (input: {
   readonly apiKey: string | null;
   readonly http: ReturnType<typeof fakeHttp>;
-  readonly apiBaseUrl?: string;
+  readonly apiBaseUrl?: AetherApiBaseUrl;
 }) =>
   Effect.runPromise(
     makeCheckAetherProviderStatus({
@@ -51,10 +48,11 @@ describe("Aether health check", () => {
     const status = await check({ apiKey: null, http });
 
     expect(http.requests).toEqual([]);
+    // Nothing to install: available but signed out, the same shape as a rejected key.
     expect(status).toMatchObject({
       provider: "aether",
       status: "warning",
-      available: false,
+      available: true,
       authStatus: "unauthenticated",
       message: "Aether is not configured. Add an Aether API key in Settings → Providers.",
     });
@@ -144,13 +142,21 @@ describe("Aether health check", () => {
     });
   });
 
-  it("reports a malformed base URL and a failing secret store", async () => {
+  it("keeps a base path prefix from the configured URL", async () => {
     const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
 
-    expect(await check({ apiKey: "k", http, apiBaseUrl: "not a url" })).toMatchObject({
-      status: "error",
-      message: "The Aether API base URL is not a valid URL.",
+    await check({
+      apiKey: "k",
+      http,
+      apiBaseUrl: AetherApiBaseUrl.makeUnsafe("https://proxy.example.com/aether/"),
     });
+
+    expect(String(http.requests[0]?.url)).toBe("https://proxy.example.com/aether/profile");
+    expect(http.requests[0]?.policy.allowedOrigins).toEqual(["https://proxy.example.com"]);
+  });
+
+  it("reports a failing secret store without calling the API", async () => {
+    const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
     const unreadable = await Effect.runPromise(
       makeCheckAetherProviderStatus({
         apiBaseUrl: API_BASE_URL,
@@ -164,16 +170,5 @@ describe("Aether health check", () => {
       message: "Could not read the saved Aether API key from Synara's secret store.",
     });
     expect(http.requests).toEqual([]);
-  });
-});
-
-describe("resolveAetherApiUrl", () => {
-  it("keeps a base path prefix and tolerates trailing slashes", () => {
-    expect(String(resolveAetherApiUrl("https://api.runaether.dev", "/profile"))).toBe(
-      "https://api.runaether.dev/profile",
-    );
-    expect(String(resolveAetherApiUrl("https://proxy.example.com/aether/", "/profile"))).toBe(
-      "https://proxy.example.com/aether/profile",
-    );
   });
 });

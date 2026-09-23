@@ -4,6 +4,7 @@ import {
   DEFAULT_DROID_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
+  ServerSettingsError,
 } from "@synara/contracts";
 import { Effect, FileSystem, Layer } from "effect";
 import { describe, expect, it } from "vitest";
@@ -255,6 +256,34 @@ describe("ServerSettingsService", () => {
     });
     expect(result.cleared.providers.aether.apiKeyConfigured).toBe(false);
   });
+
+  it.each([
+    ["", "The Aether API base URL is required."],
+    ["http://api.runaether.dev", "The Aether API base URL must use https://."],
+    ["not a url", "The Aether API base URL is not a valid URL."],
+  ])(
+    "rejects the Aether API base URL %j loudly and keeps the stored value",
+    async (apiBaseUrl, issue) => {
+      const result = await runWithSettings(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsService;
+          yield* service.start;
+          yield* service.updateSettings({
+            providers: { aether: { apiBaseUrl: "https://aether.example.com" } },
+          });
+          const failure = yield* Effect.flip(
+            service.updateSettings({ providers: { aether: { apiBaseUrl } } }),
+          );
+          const settings = yield* service.getSettings;
+          return { failure, settings };
+        }),
+      );
+
+      expect(result.failure).toBeInstanceOf(ServerSettingsError);
+      expect(result.failure.message).toContain(issue);
+      expect(result.settings.providers.aether.apiBaseUrl).toBe("https://aether.example.com");
+    },
+  );
 
   it.each([
     {

@@ -147,13 +147,17 @@ const PROVIDERS = [
   AETHER_PROVIDER,
 ] as const satisfies ReadonlyArray<ProviderKind>;
 
-const providerChildKind = (provider: ProviderKind): ProviderChildKind =>
-  provider === CLAUDE_AGENT_PROVIDER ? "claude" : provider;
+// Aether runs in the cloud and never launches a local process, so it has no child kind.
+const providerChildKind = (provider: ProviderKind): ProviderChildKind | null =>
+  provider === AETHER_PROVIDER ? null : provider === CLAUDE_AGENT_PROVIDER ? "claude" : provider;
 
-const providerCommandEnv = (provider: ProviderKind): NodeJS.ProcessEnv =>
-  provider === OPENCODE_PROVIDER
-    ? buildOpenCodeServerProcessEnv({})
-    : buildProviderChildEnvironment({ provider: providerChildKind(provider) });
+const providerCommandEnv = (provider: ProviderKind): NodeJS.ProcessEnv => {
+  if (provider === OPENCODE_PROVIDER) {
+    return buildOpenCodeServerProcessEnv({});
+  }
+  const childKind = providerChildKind(provider);
+  return childKind ? buildProviderChildEnvironment({ provider: childKind }) : {};
+};
 
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
 const MAX_REFRESH_REVISION_RETRIES = 1;

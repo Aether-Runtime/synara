@@ -3,7 +3,12 @@
 // Layer: Server provider health. Aether runs in the cloud, so there is no executable
 // lookup and no version probe.
 
-import { TrimmedNonEmptyString, type ServerProviderStatus } from "@synara/contracts";
+import {
+  resolveAetherApiUrl,
+  TrimmedNonEmptyString,
+  type AetherApiBaseUrl,
+  type ServerProviderStatus,
+} from "@synara/contracts";
 import {
   decodeOutboundJson,
   OutboundHttpError,
@@ -25,14 +30,9 @@ export type AetherHttpRequest = (request: OutboundHttpRequest) => Promise<Outbou
 
 const defaultAetherHttpRequest: AetherHttpRequest = (request) => outboundHttp.request(request);
 
-/** Resolves an API path against the configured base URL, keeping any base path prefix. */
-export function resolveAetherApiUrl(apiBaseUrl: string, path: string): URL {
-  const base = apiBaseUrl.trim();
-  return new URL(path.replace(/^\/+/u, ""), base.endsWith("/") ? base : `${base}/`);
-}
-
 export const makeCheckAetherProviderStatus = (input: {
-  readonly apiBaseUrl: string;
+  /** Already validated by the settings schema; this check never re-interprets it. */
+  readonly apiBaseUrl: AetherApiBaseUrl;
   /** Reads the API key from the server secret store; `null` when none is saved. */
   readonly readApiKey: Effect.Effect<string | null, unknown>;
   readonly request?: AetherHttpRequest;
@@ -53,27 +53,18 @@ export const makeCheckAetherProviderStatus = (input: {
         message: "Could not read the saved Aether API key from Synara's secret store.",
       });
     }
+    // A cloud provider has nothing to install: without a key it is available but signed out,
+    // like a rejected key, so Settings reads "Needs sign-in" rather than "Unavailable".
     if (!apiKey.success) {
       return status({
         status: "warning",
-        available: false,
+        available: true,
         authStatus: "unauthenticated",
         message: "Aether is not configured. Add an Aether API key in Settings → Providers.",
       });
     }
 
-    let url: URL;
-    try {
-      url = resolveAetherApiUrl(input.apiBaseUrl, "/profile");
-    } catch {
-      return status({
-        status: "error",
-        available: false,
-        authStatus: "unknown",
-        message: "The Aether API base URL is not a valid URL.",
-      });
-    }
-
+    const url = resolveAetherApiUrl(input.apiBaseUrl, "/profile");
     const request = input.request ?? defaultAetherHttpRequest;
     const response = yield* Effect.tryPromise(() =>
       request({

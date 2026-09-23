@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { AetherApiBaseUrl, AetherApiBaseUrlInput, DEFAULT_AETHER_API_BASE_URL } from "./aetherApi";
 import { IsoDateTime, TrimmedString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
 import { ModelSelection, ProviderKind, ThreadEnvironmentMode } from "./orchestration";
@@ -80,14 +81,13 @@ export const DevinServerProviderSettings = Schema.Struct({
 });
 export type DevinServerProviderSettings = typeof DevinServerProviderSettings.Type;
 
-export const DEFAULT_AETHER_API_BASE_URL = "https://api.runaether.dev";
-
 // Aether runs in the cloud, so it has no executable path. Disabled by default: the
 // adapter is a skeleton until sessions land. The API key is patch-only (`apiKey`) and
 // lives in the server secret store; clients only see `apiKeyConfigured`.
 export const AetherServerProviderSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
-  apiBaseUrl: StringSetting.pipe(Schema.withDecodingDefault(() => DEFAULT_AETHER_API_BASE_URL)),
+  // Validated once here (see aetherApi.ts); a blank or invalid stored value fails to decode.
+  apiBaseUrl: AetherApiBaseUrl.pipe(Schema.withDecodingDefault(() => DEFAULT_AETHER_API_BASE_URL)),
   apiKeyConfigured: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   customModels: CustomModels,
 });
@@ -206,7 +206,7 @@ export const ServerSettingsPatch = Schema.Struct({
       aether: Schema.optionalKey(
         Schema.Struct({
           enabled: Schema.optionalKey(Schema.Boolean),
-          apiBaseUrl: Schema.optionalKey(StringSetting),
+          apiBaseUrl: Schema.optionalKey(AetherApiBaseUrlInput),
           // Write-only: stored in the server secret store, never echoed back.
           apiKey: Schema.optionalKey(StringSetting),
           customModels: Schema.optionalKey(CustomModels),

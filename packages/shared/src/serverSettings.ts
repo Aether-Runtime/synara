@@ -88,7 +88,8 @@ export function providerStartOptionsFromServerSettings(
     devin: {
       ...(providers.devin.binaryPath ? { binaryPath: providers.devin.binaryPath } : {}),
     },
-    aether: providers.aether.apiBaseUrl ? { apiBaseUrl: providers.aether.apiBaseUrl } : {},
+    // Already a validated URL: settings decoding is the only place it is interpreted.
+    aether: { apiBaseUrl: providers.aether.apiBaseUrl },
   } satisfies Required<ProviderStartOptions>;
   return options;
 }

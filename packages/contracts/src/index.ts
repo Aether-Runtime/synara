@@ -20,6 +20,7 @@ export * from "./providerDiscovery";
 export * from "./providerRuntime";
 export * from "./model";
 export * from "./aetherCatalog";
+export * from "./aetherApi";
 export * from "./agentMentions";
 export * from "./agentGateway";
 export * from "./externalMcp";

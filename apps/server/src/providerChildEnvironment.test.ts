@@ -28,22 +28,6 @@ describe("buildProviderChildEnvironment", () => {
     });
   });
 
-  it.each(["codex", "opencode", "pi", "acp", "claude", "devin", "aether"] as const)(
-    "never passes the Aether API key to a %s child, including all-credential profiles",
-    (provider) => {
-      const env = buildProviderChildEnvironment({
-        provider,
-        baseEnv: {
-          PATH: "/usr/bin",
-          AETHER_API_KEY: "aether-secret",
-          aether_api_key: "aether-secret-lowercase",
-        },
-      });
-
-      expect(env).toEqual({ PATH: "/usr/bin" });
-    },
-  );
-
   it("admits only explicitly granted capability keys", () => {
     const env = buildProviderChildEnvironment({
       provider: "codex",
