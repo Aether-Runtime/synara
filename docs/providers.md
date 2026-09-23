@@ -21,6 +21,11 @@ consistent workspace.
 Provider availability can differ between the current stable release and development builds. Use the
 provider settings in your installed Synara version as the authoritative list for that build.
 
+Development builds also list **Aether**, a cloud provider that is still being built. It is disabled by
+default and cannot run tasks yet. It has no executable: enable it and save an Aether API key under
+**Settings → Providers**, and Synara checks the key against Aether's API. The key stays in the
+server's secret store and is never sent back to the app.
+
 ## What Synara manages
 
 Synara provides the shared operating surface around each provider:

@@ -105,11 +105,16 @@ export const AETHER_CATALOG = {
   readonly reasoningEffort: Record<AetherAgentFamily, AetherCatalogReasoningEffort>;
 };
 
-export const AETHER_AGENT_FAMILIES = ["codex", "claude-code"] as const satisfies readonly AetherAgentFamily[];
+export const AETHER_AGENT_FAMILIES = [
+  "codex",
+  "claude-code",
+] as const satisfies readonly AetherAgentFamily[];
 
 /** Every reasoning effort any Aether model accepts; per-model subsets live in the capabilities. */
 export const AETHER_REASONING_EFFORT_OPTIONS: readonly string[] = [
-  ...new Set(AETHER_AGENT_FAMILIES.flatMap((family) => AETHER_CATALOG.reasoningEffort[family].options)),
+  ...new Set(
+    AETHER_AGENT_FAMILIES.flatMap((family) => AETHER_CATALOG.reasoningEffort[family].options),
+  ),
 ];
 
 /**

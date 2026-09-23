@@ -390,7 +390,7 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
         label: "Aether API key",
         placeholder: "Aether API key",
         description:
-          "Stored in the Synara server's secret store and never shown again. Refresh status to check it.",
+          "Stored in the Synara server's secret store and never shown again. Saving it re-checks the connection.",
       },
       {
         kind: "text",

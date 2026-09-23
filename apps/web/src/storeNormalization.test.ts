@@ -1,12 +1,7 @@
 // FILE: storeNormalization.test.ts
 // Purpose: Pins the incremental activity accumulator to the `normalizeActivities` fold it replaces.
 
-import {
-  MessageId,
-  ProviderKind,
-  TurnId,
-  type PendingClaudeCacheReview,
-} from "@synara/contracts";
+import { MessageId, ProviderKind, TurnId, type PendingClaudeCacheReview } from "@synara/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {

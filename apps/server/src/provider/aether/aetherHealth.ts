@@ -116,7 +116,8 @@ export const makeCheckAetherProviderStatus = (input: {
         status: "error",
         available: true,
         authStatus: "unauthenticated",
-        message: "Aether rejected the API key (HTTP 401). Save a valid key in Settings → Providers.",
+        message:
+          "Aether rejected the API key (HTTP 401). Save a valid key in Settings → Providers.",
       });
     }
     if (httpStatus < 200 || httpStatus >= 300) {

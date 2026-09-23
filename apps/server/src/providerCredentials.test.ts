@@ -17,9 +17,7 @@ describe("resolveProviderSecret", () => {
     };
     const provide = Effect.provide(Layer.succeed(ProviderCredentials, credentials));
 
-    expect(await Effect.runPromise(resolveProviderSecret("opencode").pipe(provide))).toBe(
-      "secret",
-    );
+    expect(await Effect.runPromise(resolveProviderSecret("opencode").pipe(provide))).toBe("secret");
     expect(await Effect.runPromise(resolveProviderSecret("aether").pipe(provide))).toBe(
       "aether-key",
     );

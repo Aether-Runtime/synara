@@ -35,7 +35,10 @@ describe("AetherAdapter skeleton", () => {
   });
 
   it.each([
-    ["startSession", () => adapter.startSession({ threadId, provider: "aether", runtimeMode: "full-access" })],
+    [
+      "startSession",
+      () => adapter.startSession({ threadId, provider: "aether", runtimeMode: "full-access" }),
+    ],
     ["sendTurn", () => adapter.sendTurn({ threadId, input: "hello" })],
     ["interruptTurn", () => adapter.interruptTurn(threadId, TurnId.makeUnsafe("turn-1"))],
     ["respondToRequest", () => adapter.respondToRequest(threadId, requestId, "accept")],

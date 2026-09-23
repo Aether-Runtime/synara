@@ -604,11 +604,10 @@ function aetherModelCapabilities(family: AetherAgentFamily, slug: string): Model
     // without the family default (Claude Sonnet 4.6) marks none and Aether picks.
     reasoningEffortLevels: [...options]
       .toSorted((left, right) => rank(left) - rank(right))
-      .map((value) => ({
-        value,
-        label: AETHER_EFFORT_LABELS[value] ?? value,
-        ...(value === effort.default ? { isDefault: true as const } : {}),
-      })),
+      .map((value): EffortOption => {
+        const label = AETHER_EFFORT_LABELS[value] ?? value;
+        return value === effort.default ? { value, label, isDefault: true } : { value, label };
+      }),
     supportsFastMode: false,
     supportsThinkingToggle: false,
     promptInjectedEffortLevels: [],
