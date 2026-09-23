@@ -128,7 +128,10 @@ async function editAetherBaseUrl(value: string, updateSettings: UpdateSettings) 
 it.each([
   ["", "The Aether API base URL is required."],
   ["not a url", "The Aether API base URL is not a valid URL."],
-  ["http://api.runaether.dev", "The Aether API base URL must use https://."],
+  [
+    "http://api.runaether.dev",
+    "The Aether API base URL must use https:// (http:// only for localhost, 127.0.0.1 or [::1]).",
+  ],
 ])("shows the Aether base URL %j as an inline error and never saves it", async (value, issue) => {
   const updateSettings = vi.fn<UpdateSettings>();
   await editAetherBaseUrl(value, updateSettings);
@@ -147,4 +150,20 @@ it("saves a valid Aether base URL", async () => {
     aetherApiBaseUrl: "https://proxy.example.com/aether",
   });
   expect(page.getByRole("alert").elements()).toHaveLength(0);
+});
+
+it("clears a stale base URL alert when the draft returns to the stored value", async () => {
+  const updateSettings = vi.fn<UpdateSettings>();
+  await editAetherBaseUrl("http://api.runaether.dev", updateSettings);
+  await expect.element(page.getByRole("alert")).toBeInTheDocument();
+
+  // Back to the stored value and away within the debounce: nothing to commit, but the
+  // field is valid again, so blur re-validates and the alert goes away.
+  await page.getByRole("textbox", { name: /Aether API base URL/ }).fill(defaults.aetherApiBaseUrl);
+  await userEvent.tab();
+
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  expect(updateSettings).not.toHaveBeenCalledWith(
+    expect.objectContaining({ aetherApiBaseUrl: expect.anything() }),
+  );
 });

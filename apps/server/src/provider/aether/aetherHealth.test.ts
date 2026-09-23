@@ -155,6 +155,25 @@ describe("Aether health check", () => {
     expect(http.requests[0]?.policy.allowedOrigins).toEqual(["https://proxy.example.com"]);
   });
 
+  it("reaches a local Aether API over loopback http, and only that one over http", async () => {
+    const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
+
+    await check({
+      apiKey: "k",
+      http,
+      apiBaseUrl: AetherApiBaseUrl.makeUnsafe("http://localhost:8787"),
+    });
+    await check({ apiKey: "k", http });
+
+    expect(String(http.requests[0]?.url)).toBe("http://localhost:8787/profile");
+    expect(http.requests[0]?.policy).toMatchObject({
+      allowedOrigins: ["http://localhost:8787"],
+      allowLoopbackHttp: true,
+      requirePublicAddress: true,
+    });
+    expect(http.requests[1]?.policy.allowLoopbackHttp).toBe(false);
+  });
+
   it("reports a failing secret store without calling the API", async () => {
     const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
     const unreadable = await Effect.runPromise(

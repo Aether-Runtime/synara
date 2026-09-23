@@ -12,6 +12,11 @@ import { TrimmedString } from "./baseSchemas";
 
 export const DEFAULT_AETHER_API_BASE_URL = "https://api.runaether.dev";
 
+// `http:` is allowed only for a locally running Aether API during development. These are the
+// exact hostnames outboundHttp accepts for loopback HTTP (outboundHttpPolicy.ts); contracts
+// cannot import shared, so the list is repeated here. Matching is exact: no lookalike hosts.
+const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 /** Why `value` is not a usable Aether API base URL, or `undefined` when it is. */
 export function aetherApiBaseUrlIssue(value: string): string | undefined {
   if (value.trim().length === 0) {
@@ -23,8 +28,9 @@ export function aetherApiBaseUrlIssue(value: string): string | undefined {
   } catch {
     return "The Aether API base URL is not a valid URL.";
   }
-  if (url.protocol !== "https:") {
-    return "The Aether API base URL must use https://.";
+  const loopbackHttp = url.protocol === "http:" && LOOPBACK_HOSTNAMES.has(url.hostname);
+  if (url.protocol !== "https:" && !loopbackHttp) {
+    return "The Aether API base URL must use https:// (http:// only for localhost, 127.0.0.1 or [::1]).";
   }
   if (url.username || url.password) {
     return "The Aether API base URL must not contain credentials.";
@@ -43,7 +49,7 @@ export const AetherApiBaseUrlInput = TrimmedString.check(
   aetherApiBaseUrlCheck,
 );
 
-/** A stored, validated `https:` base URL. Only settings decoding produces one. */
+/** A stored, validated base URL (`https:`, or `http:` on loopback). Only settings decoding produces one. */
 export const AetherApiBaseUrl = AetherApiBaseUrlInput.pipe(Schema.brand("AetherApiBaseUrl"));
 export type AetherApiBaseUrl = typeof AetherApiBaseUrl.Type;
 

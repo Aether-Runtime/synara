@@ -259,7 +259,10 @@ describe("ServerSettingsService", () => {
 
   it.each([
     ["", "The Aether API base URL is required."],
-    ["http://api.runaether.dev", "The Aether API base URL must use https://."],
+    [
+      "http://api.runaether.dev",
+      "The Aether API base URL must use https:// (http:// only for localhost, 127.0.0.1 or [::1]).",
+    ],
     ["not a url", "The Aether API base URL is not a valid URL."],
   ])(
     "rejects the Aether API base URL %j loudly and keeps the stored value",
@@ -284,6 +287,20 @@ describe("ServerSettingsService", () => {
       expect(result.settings.providers.aether.apiBaseUrl).toBe("https://aether.example.com");
     },
   );
+
+  it("stores a loopback http Aether API base URL for local development", async () => {
+    const settings = await runWithSettings(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        yield* service.start;
+        return yield* service.updateSettings({
+          providers: { aether: { apiBaseUrl: "http://localhost:8787" } },
+        });
+      }),
+    );
+
+    expect(settings.providers.aether.apiBaseUrl).toBe("http://localhost:8787");
+  });
 
   it.each([
     {

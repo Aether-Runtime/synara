@@ -79,6 +79,9 @@ export const makeCheckAetherProviderStatus = (input: {
           maxConcurrent: 2,
           maxQueued: 4,
           requirePublicAddress: true,
+          // The schema admits `http:` only for loopback hosts (a local Aether API). outboundHttp
+          // then also checks that the host really resolves to a loopback address.
+          allowLoopbackHttp: url.protocol === "http:",
         },
         url,
         method: "GET",
@@ -94,7 +97,7 @@ export const makeCheckAetherProviderStatus = (input: {
         authStatus: "unknown",
         message:
           cause instanceof OutboundPolicyError
-            ? "The Aether API base URL must be a public https:// address."
+            ? "The Aether API base URL must be a public https:// address, or http:// on localhost."
             : cause instanceof OutboundHttpError && cause.code === "timeout"
               ? "Timed out reaching the Aether API."
               : "Could not reach the Aether API.",

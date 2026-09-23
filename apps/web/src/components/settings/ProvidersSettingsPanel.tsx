@@ -407,7 +407,8 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
         settingsKey: "aetherApiBaseUrl",
         label: "Aether API base URL",
         placeholder: "https://api.runaether.dev",
-        description: "Change only to reach a different Aether deployment. Must be https.",
+        description:
+          "Change only to reach a different Aether deployment. Must be https://, except http:// on localhost for local development.",
         // Same check the server applies when the settings patch is decoded.
         validate: aetherApiBaseUrlIssue,
         debounceMs: AETHER_FIELD_DEBOUNCE_MS,
@@ -699,6 +700,11 @@ function ProviderInstallFieldControl(props: {
           props.updateSettings({ [props.field.settingsKey]: nextValue } as Partial<AppSettings>);
         }}
         {...(props.field.debounceMs !== undefined ? { debounceMs: props.field.debounceMs } : {})}
+        // Blur skips onCommit when the draft equals the stored value, so re-check here too:
+        // a draft returned to a valid stored value must clear a stale alert.
+        onBlur={(event) => {
+          if (validate) setValidationError(validate(event.currentTarget.value) ?? null);
+        }}
         aria-invalid={validationError ? true : undefined}
         placeholder={
           isPassword && configured

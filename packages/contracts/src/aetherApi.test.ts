@@ -14,14 +14,28 @@ const decodePatch = Schema.decodeUnknownExit(ServerSettingsPatch);
 
 const settingsWithBaseUrl = (apiBaseUrl: unknown) => ({ providers: { aether: { apiBaseUrl } } });
 
+const HTTPS_REQUIRED =
+  "The Aether API base URL must use https:// (http:// only for localhost, 127.0.0.1 or [::1]).";
+
 describe("Aether API base URL contract", () => {
   it.each([
     ["", "The Aether API base URL is required."],
     ["   ", "The Aether API base URL is required."],
     ["not a url", "The Aether API base URL is not a valid URL."],
     ["api.runaether.dev", "The Aether API base URL is not a valid URL."],
-    ["http://api.runaether.dev", "The Aether API base URL must use https://."],
-    ["ftp://api.runaether.dev", "The Aether API base URL must use https://."],
+    ["http://api.runaether.dev", HTTPS_REQUIRED],
+    ["ftp://api.runaether.dev", HTTPS_REQUIRED],
+    // Loopback lookalikes: only the exact hostnames may use http://.
+    ["http://localhost.evil.com", HTTPS_REQUIRED],
+    ["http://127.0.0.2.example", HTTPS_REQUIRED],
+    ["http://127.0.0.2:8787", HTTPS_REQUIRED],
+    ["http://localhost.:8787", HTTPS_REQUIRED],
+    ["http://evil.com/localhost", HTTPS_REQUIRED],
+    ["http://user:secret@localhost:8787", "The Aether API base URL must not contain credentials."],
+    [
+      "http://localhost:8787/?debug=1",
+      "The Aether API base URL must not contain a query or fragment.",
+    ],
     [
       "https://user:secret@api.runaether.dev",
       "The Aether API base URL must not contain credentials.",
@@ -46,6 +60,10 @@ describe("Aether API base URL contract", () => {
     "https://api.runaether.dev",
     "https://proxy.example.com/aether/",
     "  https://api.runaether.dev  ",
+    // A locally running Aether API during development.
+    "http://localhost:8787",
+    "http://127.0.0.1:8787/api",
+    "http://[::1]:8787",
   ])("accepts and stores %j", (value) => {
     const decoded = decodeSettings(settingsWithBaseUrl(value));
 
