@@ -27,6 +27,7 @@ describe("isProviderInstallSettingsDirty", () => {
       { claudeEnableArtifacts: true },
       { piBinaryPath: "/opt/pi" },
       { piAgentDir: "/tmp/pi-agent" },
+      { aetherApiBaseUrl: "https://aether.example.com" },
     ] satisfies ReadonlyArray<Partial<AppSettings>>;
 
     expect(isProviderInstallSettingsDirty(defaults, defaults)).toBe(false);
@@ -45,6 +46,17 @@ describe("isProviderInstallSettingsDirty", () => {
         defaults,
       ),
     ).toBe(true);
+    expect(
+      isProviderInstallSettingsDirty({ ...defaults, aetherApiKey: "aether-secret" }, defaults),
+    ).toBe(false);
+    expect(
+      isProviderInstallSettingsDirty({ ...defaults, aetherApiKeyConfigured: true }, defaults),
+    ).toBe(true);
+  });
+
+  it("treats Aether's default API base URL as not customized", () => {
+    expect(defaults.aetherApiBaseUrl).toBe("https://api.runaether.dev");
+    expect(isProviderInstallSettingsDirty(defaults, defaults)).toBe(false);
   });
 });
 
@@ -73,8 +85,12 @@ describe("createProviderInstallResetPatch", () => {
         "openCodeServerUrl",
         "piAgentDir",
         "piBinaryPath",
+        "aetherApiKey",
+        "aetherApiBaseUrl",
       ].sort(),
     );
     expect(patch.openCodeServerPassword).toBe("");
+    expect(patch.aetherApiKey).toBe("");
+    expect(patch.aetherApiBaseUrl).toBe("https://api.runaether.dev");
   });
 });

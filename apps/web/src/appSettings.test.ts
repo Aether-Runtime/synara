@@ -90,7 +90,18 @@ describe("server-backed provider enablement", () => {
           },
         },
       }),
-    ).toEqual(["opencode", "pi"]);
+    ).toEqual(["opencode", "pi", "aether"]);
+  });
+
+  it("keeps Aether disabled by default, including through a restore-defaults patch", () => {
+    const defaultDisabledProviders = getServerDisabledProviders(DEFAULT_SERVER_SETTINGS_VIEW);
+    expect(defaultDisabledProviders).toEqual(["aether"]);
+    expect(
+      appSettingsPatchToServerSettingsPatch(
+        { disabledProviders: defaultDisabledProviders },
+        DEFAULT_SERVER_SETTINGS_VIEW,
+      ).providers,
+    ).toBeUndefined();
   });
 
   it("keeps server-backed provider disablement out of local settings", () => {
@@ -148,7 +159,8 @@ describe("server-backed provider enablement", () => {
       },
     };
     const patch = appSettingsPatchToServerSettingsPatch(
-      { disabledProviders: ["opencode", "pi"] },
+      // Aether is disabled in the default server view, so it stays in the list.
+      { disabledProviders: ["opencode", "pi", "aether"] },
       currentSettings,
     );
 
@@ -158,7 +170,7 @@ describe("server-backed provider enablement", () => {
   it("omits unchanged provider defaults from a reset patch", () => {
     const patch = appSettingsPatchToServerSettingsPatch(
       {
-        disabledProviders: [],
+        disabledProviders: getServerDisabledProviders(DEFAULT_SERVER_SETTINGS_VIEW),
         openCodeBinaryPath: DEFAULT_SERVER_SETTINGS_VIEW.providers.opencode.binaryPath,
       },
       DEFAULT_SERVER_SETTINGS_VIEW,
@@ -491,6 +503,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          aether: [],
         },
         "galapagos-alpha",
       ),
@@ -511,6 +524,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          aether: [],
         },
         "",
       ),
@@ -531,6 +545,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          aether: [],
         },
         "GPT-5.3 Codex",
       ),
@@ -551,6 +566,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          aether: [],
         },
         "sonnet",
       ),
@@ -571,6 +587,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          aether: [],
         },
         "custom/selected-model",
       ),
@@ -808,6 +825,7 @@ describe("provider-indexed custom model settings", () => {
     customDevinModels: ["devin/custom-model"],
     customOpenCodeModels: ["openrouter/gpt-oss-120b"],
     customPiModels: ["anthropic/custom-pi"],
+    customAetherModels: ["aether/custom-model"],
   } as const;
 
   it("exports one provider config per provider", () => {
@@ -821,13 +839,14 @@ describe("provider-indexed custom model settings", () => {
       "droid",
       "opencode",
       "pi",
+      "aether",
     ]);
   });
 
-  it("keeps Droid persistence compatible without advertising unsupported custom slugs", () => {
-    expect(CUSTOM_MODEL_EDITOR_PROVIDER_SETTINGS.map((config) => config.provider)).not.toContain(
-      "droid",
-    );
+  it("keeps Droid and Aether persistence compatible without advertising unsupported custom slugs", () => {
+    const editorProviders = CUSTOM_MODEL_EDITOR_PROVIDER_SETTINGS.map((config) => config.provider);
+    expect(editorProviders).not.toContain("droid");
+    expect(editorProviders).not.toContain("aether");
   });
 
   it("reads custom models for each provider", () => {
@@ -852,6 +871,7 @@ describe("provider-indexed custom model settings", () => {
       customDevinModels: ["adaptive"],
       customOpenCodeModels: ["openai/gpt-5"],
       customPiModels: ["anthropic/default-pi"],
+      customAetherModels: ["aether/default-model"],
     } as const;
 
     expect(getDefaultCustomModelsForProvider(defaults, "codex")).toEqual(["default/codex-model"]);
@@ -934,6 +954,7 @@ describe("provider-indexed custom model settings", () => {
       devin: ["devin/custom-model"],
       opencode: ["openrouter/gpt-oss-120b"],
       pi: ["anthropic/custom-pi"],
+      aether: ["aether/custom-model"],
     });
   });
 
@@ -991,6 +1012,7 @@ describe("provider-indexed custom model settings", () => {
         "anthropic/custom-pi",
         "anthropic/custom-pi",
       ],
+      customAetherModels: [" claude-opus-5-5 ", "aether/custom-model", "aether/custom-model"],
     });
 
     expect(
@@ -1187,5 +1209,63 @@ describe("AppSettingsSchema", () => {
     expect(
       normalizeStoredAppSettings(decode(JSON.stringify({ enableAppshots: true }))),
     ).not.toHaveProperty("enableAppshots");
+  });
+});
+
+describe("Aether settings plumbing", () => {
+  it("sends the API key once as a write-only patch and never keeps it locally", () => {
+    expect(
+      appSettingsPatchToServerSettingsPatch({
+        aetherApiKey: "aether-secret",
+        aetherApiBaseUrl: "https://aether.example.com",
+      }).providers,
+    ).toEqual({
+      aether: { apiKey: "aether-secret", apiBaseUrl: "https://aether.example.com" },
+    });
+
+    const local = applyLocalAppSettingsPatch(AppSettingsSchema.makeUnsafe({}), {
+      aetherApiKey: "aether-secret",
+    });
+    expect(local.aetherApiKey).toBe("");
+    expect(local.aetherApiKeyConfigured).toBe(true);
+    expect(JSON.stringify(normalizeStoredAppSettings(local))).not.toContain("aether-secret");
+  });
+
+  it("drops an empty key patch only when no key is stored", () => {
+    const withKey = {
+      ...DEFAULT_SERVER_SETTINGS_VIEW,
+      providers: {
+        ...DEFAULT_SERVER_SETTINGS_VIEW.providers,
+        aether: { ...DEFAULT_SERVER_SETTINGS_VIEW.providers.aether, apiKeyConfigured: true },
+      },
+    };
+
+    expect(
+      appSettingsPatchToServerSettingsPatch({ aetherApiKey: "" }, DEFAULT_SERVER_SETTINGS_VIEW)
+        .providers,
+    ).toBeUndefined();
+    expect(appSettingsPatchToServerSettingsPatch({ aetherApiKey: "" }, withKey).providers).toEqual({
+      aether: { apiKey: "" },
+    });
+  });
+
+  it("decodes Aether in persisted provider preferences instead of dropping or remapping it", () => {
+    const decoded = Schema.decodeUnknownSync(AppSettingsSchema)({
+      defaultProvider: "aether",
+      textGenerationProvider: "codex",
+      providerOrder: ["aether", "codex"],
+      hiddenProviders: ["aether"],
+    });
+
+    expect(decoded.defaultProvider).toBe("aether");
+    expect(decoded.providerOrder.slice(0, 2)).toEqual(["aether", "codex"]);
+    expect(decoded.hiddenProviders).toEqual(["aether"]);
+  });
+
+  it("has no binary path and lists the vendored catalog", () => {
+    expect(getCustomBinaryPathForProvider(AppSettingsSchema.makeUnsafe({}), "aether")).toBe("");
+    expect(getAppModelOptions("aether", []).map((option) => option.slug)).toContain(
+      "claude-opus-5-5",
+    );
   });
 });

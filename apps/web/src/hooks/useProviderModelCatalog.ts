@@ -188,6 +188,12 @@ export function useProviderModelCatalog(input: {
       cwd: discoveryCwd,
       enabled: devinModelDiscoveryEnabled,
     }),
+    // Aether's catalog is vendored (no runtime model list), so it is never queried and
+    // an empty "unsupported" discovery result can never replace the static list.
+    aether: providerModelsQueryOptions({
+      provider: "aether",
+      enabled: false,
+    }),
   } as const;
 
   const claudeDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.claudeAgent);
@@ -326,6 +332,11 @@ export function useProviderModelCatalog(input: {
       ),
       pi: getAppModelOptions("pi", customModelsByProvider.pi, modelHintByProvider?.pi),
       devin: getAppModelOptions("devin", customModelsByProvider.devin, modelHintByProvider?.devin),
+      aether: getAppModelOptions(
+        "aether",
+        customModelsByProvider.aether,
+        modelHintByProvider?.aether,
+      ),
     };
     const result: Record<
       ProviderKind,
@@ -344,6 +355,7 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeDynamicModelsQuery.data,
       pi: piDynamicModelsQuery.data,
       devin: devinDynamicModelsQuery.data,
+      aether: undefined,
     };
     for (const provider of [
       "claudeAgent",
@@ -418,6 +430,7 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeDynamicModelsQuery.data?.models ?? [],
       pi: piDynamicModelsQuery.data?.models ?? [],
       devin: devinDynamicModelsQuery.data?.models ?? [],
+      aether: [],
     }),
     [
       antigravityModelsQuery.data?.models,

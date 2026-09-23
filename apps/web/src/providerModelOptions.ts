@@ -8,6 +8,8 @@ import {
 import {
   MODEL_OPTIONS_BY_PROVIDER,
   PROVIDER_DISPLAY_NAMES,
+  type AetherModelOptions,
+  type AetherModelSelection,
   type AntigravityModelOptions,
   type AntigravityModelSelection,
   type ClaudeModelOptions,
@@ -467,6 +469,11 @@ export function buildModelSelection(
   options?: DevinModelOptions | null | undefined,
 ): DevinModelSelection;
 export function buildModelSelection(
+  provider: "aether",
+  model: string,
+  options?: AetherModelOptions | null | undefined,
+): AetherModelSelection;
+export function buildModelSelection(
   provider: ProviderKind,
   model: string,
   options?: ProviderOptions | null | undefined,
@@ -548,6 +555,14 @@ export function buildModelSelection(
             provider,
             model,
             options: options as PiModelOptions,
+          }
+        : { provider, model };
+    case "aether":
+      return options
+        ? {
+            provider,
+            model,
+            options: options as AetherModelOptions,
           }
         : { provider, model };
   }

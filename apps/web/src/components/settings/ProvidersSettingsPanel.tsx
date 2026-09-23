@@ -85,9 +85,12 @@ type ProviderInstallTextKey =
   | "openCodeBinaryPath"
   | "openCodeServerUrl"
   | "piBinaryPath"
-  | "piAgentDir";
-type ProviderInstallPasswordKey = "openCodeServerPassword";
-type ProviderInstallPasswordConfiguredKey = "openCodeServerPasswordConfigured";
+  | "piAgentDir"
+  | "aetherApiBaseUrl";
+type ProviderInstallPasswordKey = "openCodeServerPassword" | "aetherApiKey";
+type ProviderInstallPasswordConfiguredKey =
+  | "openCodeServerPasswordConfigured"
+  | "aetherApiKeyConfigured";
 type ProviderInstallBooleanKey = "claudeEnableArtifacts" | "openCodeExperimentalWebSockets";
 
 type ProviderInstallTextField = {
@@ -375,6 +378,29 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
       },
     ],
   },
+  {
+    // Cloud provider: no CLI to install, so no CLI docs; it signs in with an API key.
+    provider: "aether",
+    docs: [],
+    fields: [
+      {
+        kind: "password",
+        settingsKey: "aetherApiKey",
+        configuredKey: "aetherApiKeyConfigured",
+        label: "Aether API key",
+        placeholder: "Aether API key",
+        description:
+          "Stored in the Synara server's secret store and never shown again. Refresh status to check it.",
+      },
+      {
+        kind: "text",
+        settingsKey: "aetherApiBaseUrl",
+        label: "Aether API base URL",
+        placeholder: "https://api.runaether.dev",
+        description: "Change only to reach a different Aether deployment. Must be https.",
+      },
+    ],
+  },
 ];
 
 function isProviderInstallFieldDirty(
@@ -404,17 +430,16 @@ export function isProviderInstallSettingsDirty(
   );
 }
 
+// Rows start open when they carry a customized value. Comparing with the defaults (not
+// truthiness) keeps rows whose default is non-empty, like Aether's API URL, closed.
 function createProviderInstallDisclosureState(
   settings: AppSettings,
+  defaults: AppSettings,
 ): Record<ProviderKind, boolean> {
   return Object.fromEntries(
     PROVIDER_INSTALL_SETTINGS.map((config) => [
       config.provider,
-      config.fields.some((field) =>
-        field.kind === "password"
-          ? settings[field.configuredKey]
-          : Boolean(settings[field.settingsKey]),
-      ),
+      isProviderInstallConfigDirty(config, settings, defaults),
     ]),
   ) as Record<ProviderKind, boolean>;
 }
@@ -526,6 +551,7 @@ function SortableProviderVisibilityRow(props: {
 }
 
 function ProviderDocsLinks({ docs }: { docs: ProviderInstallSettings["docs"] }) {
+  if (docs.length === 0) return null;
   return (
     <div className={cn(SETTINGS_OUTLINED_SURFACE_CLASS_NAME, "px-3 py-2.5")}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -828,7 +854,7 @@ export function ProvidersSettingsPanel({
   const providerStatusesReconciled = hasReconciledServerProviderStatuses(queryClient);
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   const [openInstallProviders, setOpenInstallProviders] = useState<Record<ProviderKind, boolean>>(
-    () => createProviderInstallDisclosureState(settings),
+    () => createProviderInstallDisclosureState(settings, defaults),
   );
   const [updatingProviders, setUpdatingProviders] = useState<ReadonlySet<ProviderKind>>(
     () => new Set(),

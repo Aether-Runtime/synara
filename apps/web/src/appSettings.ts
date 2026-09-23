@@ -9,6 +9,7 @@ import { Option, Schema, SchemaTransformation } from "effect";
 import {
   type AssistantDeliveryMode,
   DesktopAppIcon,
+  DEFAULT_AETHER_API_BASE_URL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_SERVER_SETTINGS_VIEW,
@@ -17,6 +18,7 @@ import {
   ProviderKind,
   type GitTextGenerationProvider,
   type ProviderStartOptions,
+  type ServerSettings,
   type ServerSettingsView,
   type ServerSettingsPatch,
 } from "@synara/contracts";
@@ -145,7 +147,8 @@ type CustomModelSettingsKey =
   | "customDroidModels"
   | "customDevinModels"
   | "customOpenCodeModels"
-  | "customPiModels";
+  | "customPiModels"
+  | "customAetherModels";
 export type ProviderCustomModelConfig = {
   provider: ProviderKind;
   settingsKey: CustomModelSettingsKey;
@@ -166,6 +169,7 @@ const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>
   droid: new Set(getModelOptions("droid").map((option) => option.slug)),
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
   pi: new Set(getModelOptions("pi").map((option) => option.slug)),
+  aether: new Set(getModelOptions("aether").map((option) => option.slug)),
 };
 
 const withDefaults =
@@ -193,6 +197,7 @@ const PersistedProviderKind = Schema.Literals([
   "kilo",
   "opencode",
   "pi",
+  "aether",
 ]).pipe(
   Schema.decodeTo(
     ProviderKind,
@@ -290,6 +295,12 @@ export const AppSettingsSchema = Schema.Struct({
   ),
   openCodeServerPasswordConfigured: Schema.Boolean.pipe(withDefaults(() => false)),
   openCodeExperimentalWebSockets: Schema.Boolean.pipe(withDefaults(() => false)),
+  aetherApiBaseUrl: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    withDefaults(() => DEFAULT_AETHER_API_BASE_URL),
+  ),
+  // Write-only, like openCodeServerPassword: sent once as a patch, never stored locally.
+  aetherApiKey: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  aetherApiKeyConfigured: Schema.Boolean.pipe(withDefaults(() => false)),
   defaultThreadEnvMode: EnvMode.pipe(withDefaults(() => "local" as const satisfies EnvMode)),
   confirmThreadDelete: Schema.Boolean.pipe(withDefaults(() => true)),
   // Desktop quit dialog: remember interrupted chats and continue them on the next launch.
@@ -393,6 +404,7 @@ export const AppSettingsSchema = Schema.Struct({
   customDroidModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customOpenCodeModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customPiModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
+  customAetherModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   textGenerationProvider: PersistedProviderKind.pipe(withDefaults(() => "codex" as const)),
   textGenerationModel: Schema.optional(TrimmedNonEmptyString),
   uiFontFamily: Schema.String.check(Schema.isMaxLength(256)).pipe(withDefaults(() => "")),
@@ -526,14 +538,24 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
     placeholder: "provider/model",
     example: "anthropic/claude-sonnet-4-5",
   },
+  aether: {
+    provider: "aether",
+    settingsKey: "customAetherModels",
+    defaultSettingsKey: "customAetherModels",
+    title: "Aether",
+    description: "Save additional Aether model slugs for the picker.",
+    placeholder: "aether-model-slug",
+    example: "claude-opus-5-5",
+  },
 };
 
 export const MODEL_PROVIDER_SETTINGS = Object.values(PROVIDER_CUSTOM_MODEL_CONFIG);
 
-// Droid's ACP catalog is authoritative and rejects unknown slugs. Preserve its
-// persisted config for compatibility, but do not offer an editor it cannot honor.
+// Droid's ACP catalog and Aether's API are authoritative and reject unknown slugs.
+// Preserve their persisted config for compatibility, but do not offer an editor they
+// cannot honor.
 export const CUSTOM_MODEL_EDITOR_PROVIDER_SETTINGS = MODEL_PROVIDER_SETTINGS.filter(
-  (config) => config.provider !== "droid",
+  (config) => config.provider !== "droid" && config.provider !== "aether",
 );
 
 export function normalizeCustomModelSlugs(
@@ -644,8 +666,15 @@ export function resolveTerminalFontFamilyStack(value: string | null | undefined)
   return hasGenericFallback ? family : `${family}, monospace`;
 }
 
+// Providers that launch a local executable; cloud providers have no binary path.
+type BinaryPathProvider = {
+  [Provider in ProviderKind]: "binaryPath" extends keyof ServerSettings["providers"][Provider]
+    ? Provider
+    : never;
+}[ProviderKind];
+
 function normalizeProviderBinaryPathOverride(
-  provider: ProviderKind,
+  provider: BinaryPathProvider,
   value: string | null | undefined,
 ): string {
   const trimmed = value?.trim() ?? "";
@@ -671,6 +700,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     // Password fields are accepted only as write-only update patches. Never retain
     // reusable provider credentials in browser state or localStorage.
     openCodeServerPassword: "",
+    aetherApiKey: "",
     claudeBinaryPath: normalizeProviderBinaryPathOverride("claudeAgent", settings.claudeBinaryPath),
     codexBinaryPath: normalizeProviderBinaryPathOverride("codex", settings.codexBinaryPath),
     cursorBinaryPath: normalizeProviderBinaryPathOverride("cursor", settings.cursorBinaryPath),
@@ -705,6 +735,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customDroidModels: normalizeCustomModelSlugs(settings.customDroidModels, "droid"),
     customOpenCodeModels: normalizeCustomModelSlugs(settings.customOpenCodeModels, "opencode"),
     customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
+    customAetherModels: normalizeCustomModelSlugs(settings.customAetherModels, "aether"),
     hiddenProviders: normalizeHiddenProviders(settings.hiddenProviders),
     disabledProviders: normalizeHiddenProviders(settings.disabledProviders),
     providerOrder: normalizeProviderOrder(settings.providerOrder),
@@ -764,6 +795,8 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     openCodeServerUrl: settings.providers.opencode.serverUrl,
     piAgentDir: settings.providers.pi.agentDir,
     piBinaryPath: settings.providers.pi.binaryPath,
+    aetherApiBaseUrl: settings.providers.aether.apiBaseUrl,
+    aetherApiKeyConfigured: settings.providers.aether.apiKeyConfigured,
     customCodexModels: settings.providers.codex.customModels,
     customClaudeModels: settings.providers.claudeAgent.customModels,
     customCursorModels: settings.providers.cursor.customModels,
@@ -773,6 +806,7 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     customDroidModels: settings.providers.droid.customModels,
     customOpenCodeModels: settings.providers.opencode.customModels,
     customPiModels: settings.providers.pi.customModels,
+    customAetherModels: settings.providers.aether.customModels,
     disabledProviders: getServerDisabledProviders(settings),
     textGenerationProvider: settings.textGenerationModelSelection.provider,
     textGenerationModel: settings.textGenerationModelSelection.model,
@@ -808,6 +842,17 @@ function touchesProviderDiscoverySettings(patch: Partial<AppSettings>): boolean 
   );
 }
 
+// Aether's health check is its credential check, so a new key or URL needs a re-probe.
+function touchesProviderHealthSettings(patch: Partial<AppSettings>): boolean {
+  return hasOwn(patch, "aetherApiKey") || hasOwn(patch, "aetherApiBaseUrl");
+}
+
+// Write-only secret patch fields and the view flag that says whether one is stored.
+const WRITE_ONLY_SECRET_CONFIGURED_KEYS: Readonly<Record<string, string>> = {
+  serverPassword: "serverPasswordConfigured",
+  apiKey: "apiKeyConfigured",
+};
+
 function serverSettingValuesEqual(left: unknown, right: unknown): boolean {
   if (Array.isArray(left) && Array.isArray(right)) {
     return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -826,9 +871,10 @@ function pruneProviderPatchAgainstCurrentSettings(
     const patchRecord = providerPatch as Record<string, unknown>;
     const currentRecord = currentSettings.providers[provider] as unknown as Record<string, unknown>;
     for (const [key, value] of Object.entries(patchRecord)) {
+      const configuredKey = WRITE_ONLY_SECRET_CONFIGURED_KEYS[key];
       const matchesCurrent =
-        key === "serverPassword"
-          ? value === "" && currentRecord.serverPasswordConfigured === false
+        configuredKey !== undefined
+          ? value === "" && currentRecord[configuredKey] === false
           : serverSettingValuesEqual(value, currentRecord[key]);
       if (matchesCurrent) {
         delete patchRecord[key];
@@ -978,6 +1024,19 @@ export function appSettingsPatchToServerSettingsPatch(
       ...(hasOwn(patch, "customPiModels") ? { customModels: patch.customPiModels ?? [] } : {}),
     };
   }
+  if (
+    hasOwn(patch, "aetherApiBaseUrl") ||
+    hasOwn(patch, "aetherApiKey") ||
+    hasOwn(patch, "customAetherModels")
+  ) {
+    providers.aether = {
+      ...(hasOwn(patch, "aetherApiBaseUrl") ? { apiBaseUrl: patch.aetherApiBaseUrl ?? "" } : {}),
+      ...(hasOwn(patch, "aetherApiKey") ? { apiKey: patch.aetherApiKey ?? "" } : {}),
+      ...(hasOwn(patch, "customAetherModels")
+        ? { customModels: patch.customAetherModels ?? [] }
+        : {}),
+    };
+  }
   if (hasOwn(patch, "disabledProviders")) {
     const disabledProviders = new Set(normalizeHiddenProviders(patch.disabledProviders ?? []));
     for (const provider of DEFAULT_PROVIDER_ORDER) {
@@ -1084,6 +1143,9 @@ export function applyLocalAppSettingsPatch(
     ...(hasOwn(patch, "openCodeServerPassword")
       ? { openCodeServerPasswordConfigured: Boolean(patch.openCodeServerPassword?.trim()) }
       : {}),
+    ...(hasOwn(patch, "aetherApiKey")
+      ? { aetherApiKeyConfigured: Boolean(patch.aetherApiKey?.trim()) }
+      : {}),
   });
 }
 
@@ -1123,6 +1185,7 @@ export function getCustomModelsByProvider(
     droid: getCustomModelsForProvider(settings, "droid"),
     opencode: getCustomModelsForProvider(settings, "opencode"),
     pi: getCustomModelsForProvider(settings, "pi"),
+    aether: getCustomModelsForProvider(settings, "aether"),
   };
 }
 
@@ -1257,6 +1320,7 @@ export function getCustomModelOptionsByProvider(
     droid: getAppModelOptions("droid", customModelsByProvider.droid),
     opencode: getAppModelOptions("opencode", customModelsByProvider.opencode),
     pi: getAppModelOptions("pi", customModelsByProvider.pi),
+    aether: getAppModelOptions("aether", customModelsByProvider.aether),
   };
 }
 
@@ -1436,6 +1500,8 @@ export function getCustomBinaryPathForProvider(
       return normalizeProviderBinaryPathOverride(provider, settings.openCodeBinaryPath);
     case "pi":
       return normalizeProviderBinaryPathOverride(provider, settings.piBinaryPath);
+    case "aether":
+      return "";
   }
 }
 
@@ -1540,7 +1606,7 @@ export function useAppSettings() {
       try {
         const nextSettings = await api.server.updateSettings(serverPatch);
         queryClient.setQueryData(serverQueryKeys.settings(), nextSettings);
-        if (hasOwn(patch, "disabledProviders")) {
+        if (hasOwn(patch, "disabledProviders") || touchesProviderHealthSettings(patch)) {
           await refreshProvidersAfterEnablementChange();
         } else if (touchesProviderDiscoverySettings(patch)) {
           await queryClient

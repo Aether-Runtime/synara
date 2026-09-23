@@ -9,10 +9,11 @@ import {
   type OrchestrationSessionStatus,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadActivity,
-  type ProviderKind,
+  ProviderKind,
   ThreadId,
   type TurnId,
 } from "@synara/contracts";
+import * as Schema from "effect/Schema";
 import { resolveThreadBranchRegressionGuard } from "@synara/shared/git";
 import { mergeAsyncUserInput } from "@synara/shared/asyncUserInput";
 import { normalizeModelSlug } from "@synara/shared/model";
@@ -2023,18 +2024,12 @@ function toLegacySessionStatus(
   }
 }
 
+const isProviderKind = Schema.is(ProviderKind);
+
+// Every current provider passes through. A hand-kept list here once sent a new
+// provider's sessions (Aether) to the Codex fallback below.
 function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (
-    providerName === "codex" ||
-    providerName === "claudeAgent" ||
-    providerName === "cursor" ||
-    providerName === "antigravity" ||
-    providerName === "grok" ||
-    providerName === "droid" ||
-    providerName === "opencode" ||
-    providerName === "pi" ||
-    providerName === "devin"
-  ) {
+  if (isProviderKind(providerName)) {
     return providerName;
   }
   if (providerName === "kilo") {

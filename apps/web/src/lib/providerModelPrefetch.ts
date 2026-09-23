@@ -54,6 +54,9 @@ export const NEW_THREAD_MODEL_PREFETCH_PROVIDERS: ReadonlyArray<Exclude<Provider
   "devin",
 ];
 
+/** Providers whose picker list is a vendored catalog: there is nothing to discover or warm. */
+const STATIC_MODEL_CATALOG_PROVIDERS: ReadonlySet<ProviderKind> = new Set(["aether"]);
+
 /** Warm results stay fresh for 30 minutes instead of the interactive 60s. */
 export const NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS = 30 * 60_000;
 
@@ -172,6 +175,9 @@ export function providerModelsPrefetchQueryOptions(input: {
         cwd,
         priority,
       });
+    case "aether":
+      // Same key the composer reads; the query itself stays disabled there.
+      return providerModelsQueryOptions({ provider: "aether", enabled: false, priority });
     case "pi":
       return providerModelsQueryOptions({
         provider: "pi",
@@ -218,7 +224,7 @@ export function prefetchProviderModelsForNewThread(
 ): void {
   const cwd = input.cwd ?? null;
   const providers = (input.providers ?? NEW_THREAD_MODEL_PREFETCH_PROVIDERS).filter(
-    (provider) => provider !== "droid",
+    (provider) => provider !== "droid" && !STATIC_MODEL_CATALOG_PROVIDERS.has(provider),
   );
 
   for (const provider of providers) {
@@ -362,6 +368,9 @@ export function prefetchModelsForNewThread(
   const statusesReconciled = input.statusesReconciled === true;
   const providerStatuses = input.providerStatuses ?? EMPTY_PROVIDER_STATUSES;
   const isProviderWarmable = (provider: ProviderKind): boolean => {
+    if (STATIC_MODEL_CATALOG_PROVIDERS.has(provider)) {
+      return false;
+    }
     // Mirrors useProviderModelCatalog.shouldDiscoverProvider exactly:
     // the enabled flag short-circuits even the selected provider, then the
     // selected provider always wins, then hidden providers are skipped.

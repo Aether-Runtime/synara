@@ -75,6 +75,12 @@ function serverSettings(overrides: Partial<ServerSettings["providers"]> = {}): S
         experimentalWebSockets: false,
       },
       pi: { ...provider, binaryPath: "pi", agentDir: "" },
+      aether: {
+        enabled: false,
+        apiBaseUrl: "https://api.runaether.dev",
+        apiKeyConfigured: false,
+        customModels: [],
+      },
       ...overrides,
     },
     skills: { disabled: [] },

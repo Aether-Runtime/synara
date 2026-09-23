@@ -385,6 +385,12 @@ describe("wsNativeApi", () => {
             customModels: [],
           },
           pi: { enabled: true, binaryPath: "pi", agentDir: "", customModels: [] },
+          aether: {
+            enabled: false,
+            apiBaseUrl: "https://api.runaether.dev",
+            apiKeyConfigured: false,
+            customModels: [],
+          },
         },
         skills: { disabled: [] },
       },

@@ -39,6 +39,7 @@ export const COMPOSER_PROVIDER_KINDS = [
   "droid",
   "opencode",
   "pi",
+  "aether",
 ] as const satisfies readonly ProviderKind[];
 
 const isProviderKind = Schema.is(ProviderKind);
@@ -218,6 +219,14 @@ export function makeModelSelection(
           ? { options: options as Extract<ModelSelection, { provider: "pi" }>["options"] }
           : {}),
       };
+    case "aether":
+      return {
+        provider,
+        model,
+        ...(options
+          ? { options: options as Extract<ModelSelection, { provider: "aether" }>["options"] }
+          : {}),
+      };
   }
 }
 
@@ -262,6 +271,10 @@ export function normalizeProviderModelOptions(
   const piCandidate =
     candidate?.pi && typeof candidate.pi === "object"
       ? (candidate.pi as Record<string, unknown>)
+      : null;
+  const aetherCandidate =
+    candidate?.aether && typeof candidate.aether === "object"
+      ? (candidate.aether as Record<string, unknown>)
       : null;
 
   const codexReasoningEffort: CodexReasoningEffort | undefined =
@@ -389,6 +402,9 @@ export function normalizeProviderModelOptions(
           ...(devinModelVariant !== undefined ? { modelVariant: devinModelVariant } : {}),
         }
       : undefined;
+  const aetherReasoningEffort = trimStringOrUndefined(aetherCandidate?.reasoningEffort);
+  const aether =
+    aetherReasoningEffort !== undefined ? { reasoningEffort: aetherReasoningEffort } : undefined;
   if (
     !codex &&
     !claude &&
@@ -398,7 +414,8 @@ export function normalizeProviderModelOptions(
     !grok &&
     !droid &&
     !opencode &&
-    !pi
+    !pi &&
+    !aether
   ) {
     return null;
   }
@@ -412,6 +429,7 @@ export function normalizeProviderModelOptions(
     ...(droid ? { droid } : {}),
     ...(opencode ? { opencode } : {}),
     ...(pi ? { pi } : {}),
+    ...(aether ? { aether } : {}),
   };
 }
 
@@ -458,26 +476,12 @@ export function normalizeModelSelection(
         provider,
         provider === "codex" ? legacy?.legacyCodex : undefined,
       );
+  // Only Grok's options depend on the model. Every other provider reads its own entry,
+  // so a newly added provider cannot silently lose its options here.
   const options =
-    provider === "codex"
-      ? modelOptions?.codex
-      : provider === "claudeAgent"
-        ? modelOptions?.claudeAgent
-        : provider === "antigravity"
-          ? modelOptions?.antigravity
-          : provider === "grok"
-            ? normalizeGrokModelOptions(model, modelOptions?.grok)
-            : provider === "droid"
-              ? modelOptions?.droid
-              : provider === "cursor"
-                ? modelOptions?.cursor
-                : provider === "opencode"
-                  ? modelOptions?.opencode
-                  : provider === "pi"
-                    ? modelOptions?.pi
-                    : provider === "devin"
-                      ? modelOptions?.devin
-                      : undefined;
+    provider === "grok"
+      ? normalizeGrokModelOptions(model, modelOptions?.grok)
+      : modelOptions?.[provider];
   const normalizedOptions =
     provider === "antigravity" && hasLegacyAntigravityEffort
       ? {

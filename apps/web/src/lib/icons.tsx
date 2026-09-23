@@ -158,6 +158,8 @@ export const CircleCheckIcon = adaptIcon(IconCircleCheck);
 export const CircleQuestionIcon: LucideIcon = centralIconWrapper("circle-questionmark");
 export const ArrowUpCircleIcon: LucideIcon = centralIconWrapper("arrow-up-circle");
 export const CloudSyncIcon = centralIconWrapper("cloud-sync");
+// Generic cloud glyph for cloud-hosted providers (Aether) until they ship brand artwork.
+export const CloudIcon: LucideIcon = centralIconWrapper("cloud");
 export const Columns2Icon = adaptIcon(IconColumns2);
 export const ChangesIcon = centralIconWrapper("changes");
 export const COPY_ICON_NAME = "square-behind-square-6";

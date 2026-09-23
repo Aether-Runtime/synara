@@ -356,6 +356,31 @@ describe("prefetchModelsForNewThread", () => {
   });
 });
 
+describe("prefetchModelsForNewThread — static Aether catalog", () => {
+  it("never warms Aether, even when it is the selected provider", async () => {
+    const queryClient = new QueryClient();
+    const prefetchQuery = vi.spyOn(queryClient, "prefetchQuery").mockResolvedValue(undefined);
+
+    prefetchModelsForNewThread(queryClient, {
+      settings: makeSettings({ defaultProvider: "aether" }),
+      projectCwd: "/tmp/project",
+    });
+    prefetchProviderModelsForNewThread(queryClient, {
+      settings: makeSettings(),
+      providers: ["aether"],
+    });
+
+    const providers = prefetchQuery.mock.calls.map((call) => call[0].queryKey[2]);
+    expect(providers).not.toContain("aether");
+    expect(
+      providerModelsPrefetchQueryOptions({ provider: "aether", settings: makeSettings() }),
+    ).toMatchObject({
+      queryKey: providerDiscoveryQueryKeys.models("aether", null, null, null, null),
+      enabled: false,
+    });
+  });
+});
+
 describe("prefetchModelsForNewThread — new-thread options key parity", () => {
   it("warms the prepared worktree cwd for the PR-handoff shape (worktreePath + fresh + local)", async () => {
     // PullRequestDetailPanel passes { worktreePath, envMode, fresh: true }; the

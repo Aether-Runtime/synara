@@ -8,6 +8,7 @@ import { type ProviderKind } from "@synara/contracts";
 import type { ReactNode, SVGProps } from "react";
 
 import { CentralIcon } from "~/lib/central-icons";
+import { CloudIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import {
   AntigravityIcon,
@@ -73,6 +74,7 @@ export const PROVIDER_ICON_COMPONENT_BY_PROVIDER: Record<ProviderKind, Icon> = {
   droid: DroidIcon,
   opencode: OpenCodeProviderIcon,
   pi: PiIcon,
+  aether: CloudIcon,
 };
 
 export function providerIconToneClassName(
