@@ -385,7 +385,6 @@ function forbiddenError(
       }
     }
     if (policy !== "org") {
-      const generic = readErrorBody(body);
       const org = Schema.decodeUnknownExit(AetherOrgAuthorizationErrorBody)(body);
       if (org._tag === "Success") {
         return yield* new AetherApiForbiddenError({
@@ -395,6 +394,7 @@ function forbiddenError(
           serverMessage: org.value.error,
         });
       }
+      const generic = readErrorBody(body);
       if (generic !== undefined) {
         return yield* new AetherApiForbiddenError({
           endpoint,
@@ -482,10 +482,7 @@ function statusError<C>(
           endpoint,
           status,
           ...(generic === undefined ? {} : { serverMessage: generic.error }),
-          errors: (generic?.errors ?? []).map((detail) => ({
-            ...(detail.location === undefined ? {} : { location: detail.location }),
-            ...(detail.message === undefined ? {} : { message: detail.message }),
-          })),
+          errors: generic?.errors ?? [],
         }),
       );
     }

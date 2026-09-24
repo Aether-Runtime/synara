@@ -216,7 +216,7 @@ describe("Aether workspace socket", () => {
     fake.respond = (frame, socket) => {
       held.push(frame);
       if (held.length < 2) return;
-      for (const pending of [...held].reverse()) {
+      for (const pending of held.toReversed()) {
         socket.send(
           JSON.stringify(
             pending.channel === "git"
@@ -326,7 +326,9 @@ describe("Aether workspace socket", () => {
       direction: "response",
       channel: "git",
     });
-    expect(error.detail).toContain('Missing key at ["diff"]["files"]["0"]["kind"]');
+    expect(error._tag === "AetherWorkspaceProtocolError" && error.detail).toContain(
+      'Missing key at ["diff"]["files"]["0"]["kind"]',
+    );
   });
 
   it("rejects an unknown diff file kind, naming the field", async () => {
@@ -338,8 +340,7 @@ describe("Aether workspace socket", () => {
       await withSocket(fake, (socket) => socket.requestGitDiff({ mode: "main" })),
     );
 
-    expect(error._tag).toBe("AetherWorkspaceProtocolError");
-    expect(error.detail).toBe(
+    expect(error._tag === "AetherWorkspaceProtocolError" && error.detail).toBe(
       'Expected "text" | "binary" | "too_large", got "lfs" at ["diff"]["files"]["0"]["kind"]',
     );
   });
