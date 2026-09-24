@@ -347,7 +347,9 @@ export function toWsRpcError(cause: unknown, fallbackMessage: string) {
 }
 
 // Editor saves bypass GitCore.withMutation, so they refuse a provider-owned
-// worktree here, before anything touches the file.
+// worktree here, before anything touches the file. The check does not take the
+// repository lock (autosave must not queue behind a long push), so only a save
+// already in flight when a provider claims the worktree can still land.
 export const writeWorkspaceFileOutsideOwnedWorktree = (
   services: {
     readonly worktreeOwnership: WorktreeOwnershipShape;

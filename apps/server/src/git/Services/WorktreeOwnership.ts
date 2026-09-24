@@ -4,17 +4,19 @@
  * A provider that mirrors remote changes into a thread's local worktree (reset
  * to base, then apply the remote diff) claims that worktree for as long as its
  * session runs. While it is owned, `GitCore.withMutation` refuses every other
- * mutation inside it or aimed at it, and the file-write and checkpoint-restore
- * paths refuse writes into it, so nothing races the mirror or gets erased by
- * the next reset. The owner passes by running its mutations with its claim.
+ * mutation inside it or aimed at it; the owner passes by running its mutations
+ * with its claim.
+ *
+ * A claim is taken under the same per-repository lock as `GitCore.withMutation`
+ * (which is why `GitCoreLive` builds this service), so it never interleaves
+ * with a mutation run through `withMutation`, including checkpoint restores
+ * (revert, edit-and-resend), which run under it. Editor saves only check
+ * `assertNotOwned` before writing, without the lock, so a save already in
+ * flight when the claim is taken can still land.
  *
  * Ownership is in memory by design and does not survive a server restart: the
  * provider claims the worktree again when its session resumes. It is unrelated
  * to the agent gateway's durable creation proof (`GitCore.recordWorktreeOwnership`).
- *
- * The live layer is built by `GitCoreLive`, because a claim is taken under the
- * same per-repository lock as `GitCore.withMutation`, so a claim never
- * interleaves with an in-flight mutation.
  *
  * @module WorktreeOwnership
  */

@@ -36,6 +36,7 @@ import {
   PROVIDER_DELIVERY_BLOCK_SUMMARY,
 } from "@synara/shared/providerDeliveryBlock";
 import type { DeepPartial } from "@synara/shared/Struct";
+import { isWorkspaceRootWithin } from "@synara/shared/threadWorkspace";
 import {
   Duration,
   Deferred,
@@ -65,7 +66,7 @@ import {
   type ComputerServiceShape,
 } from "../../computer/Services/ComputerService.ts";
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
-import { TextGenerationError } from "../../git/Errors.ts";
+import { TextGenerationError, WorktreeOwnedError } from "../../git/Errors.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -99,6 +100,11 @@ import {
   type ProviderHealthShape,
 } from "../../provider/Services/ProviderHealth.ts";
 import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
+import {
+  type WorktreeOwner,
+  WorktreeOwnership,
+  type WorktreeOwnershipShape,
+} from "../../git/Services/WorktreeOwnership.ts";
 import { TextGeneration, type TextGenerationShape } from "../../git/Services/TextGeneration.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { TurnCheckpointCoordinatorLive } from "./TurnCheckpointCoordinator.ts";
@@ -572,6 +578,31 @@ describe("ProviderCommandReactor", () => {
     );
     const publishBranch = vi.fn(() => Effect.void);
     const withMutation: GitCoreShape["withMutation"] = (_cwd, effect) => effect;
+    // Worktree roots a provider owns, keyed by root; checks mirror the real registry.
+    const ownedWorktrees = new Map<string, WorktreeOwner>();
+    const findOwnedWorktree = (candidate: string) =>
+      [...ownedWorktrees].find(([root]) => isWorkspaceRootWithin(candidate, root)) ?? null;
+    const worktreeOwnership: WorktreeOwnershipShape = {
+      claim: () => Effect.die("claim unsupported in test"),
+      ownerOf: (candidate) =>
+        Effect.sync(() => {
+          const owned = findOwnedWorktree(candidate);
+          return owned ? { worktreePath: owned[0], owner: owned[1] } : null;
+        }),
+      assertNotOwned: (candidate) =>
+        Effect.suspend(() => {
+          const owned = findOwnedWorktree(candidate);
+          return owned
+            ? Effect.fail(
+                new WorktreeOwnedError({
+                  worktreePath: owned[0],
+                  ownerThreadId: owned[1].threadId,
+                  provider: owned[1].provider,
+                }),
+              )
+            : Effect.void;
+        }),
+    };
     const generateBranchName = vi.fn<TextGenerationShape["generateBranchName"]>(() =>
       Effect.fail(
         new TextGenerationError({
@@ -693,6 +724,7 @@ describe("ProviderCommandReactor", () => {
           withMutation,
         } as unknown as GitCoreShape),
       ),
+      Layer.provideMerge(Layer.succeed(WorktreeOwnership, worktreeOwnership)),
       Layer.provideMerge(
         Layer.succeed(TextGeneration, {
           generateBranchName,
@@ -843,6 +875,7 @@ describe("ProviderCommandReactor", () => {
       clearSessionResumeCursor,
       renameBranch,
       publishBranch,
+      ownedWorktrees,
       generateBranchName,
       generateThreadTitle,
       captureStudioOutputBaseline,
@@ -8230,6 +8263,57 @@ describe("ProviderCommandReactor", () => {
       checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 0),
       fallbackToHead: true,
     });
+  });
+
+  it("refuses an edit resend in a provider-owned worktree before trimming the conversation", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    harness.isGitRepository.mockImplementation(() => Effect.succeed(true));
+    harness.ownedWorktrees.set("/tmp/provider-project", {
+      threadId: ThreadId.makeUnsafe("thread-owner"),
+      provider: "aether",
+    });
+
+    await seedRollbackTarget(harness, {
+      messageId: asMessageId("user-message-owned-edit"),
+      turnId: asTurnId("turn-owned-edit"),
+      createdAt: now,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.makeUnsafe("cmd-owned-edit-complete"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnId: asTurnId("turn-owned-edit"),
+        completedAt: now,
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
+        status: "ready",
+        files: [],
+        assistantMessageId: asMessageId("assistant-user-message-owned-edit"),
+        checkpointTurnCount: 1,
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.edit-and-resend",
+        commandId: CommandId.makeUnsafe("cmd-owned-edit-resend"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        messageId: asMessageId("user-message-owned-edit"),
+        text: "edited prompt in an owned worktree",
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => (await readHarnessThread(harness))?.session?.status === "error");
+    const thread = await readHarnessThread(harness);
+    expect(thread?.session?.lastError).toContain("managed by the aether session");
+    expect(harness.rollbackConversation).not.toHaveBeenCalled();
+    expect(harness.restoreCheckpoint).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
   it("clears the edit loading state when provider rollback fails before resend", async () => {

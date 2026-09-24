@@ -139,6 +139,43 @@ it.layer(TestLayer)("WorktreeOwnership", (it) => {
       }),
     );
 
+    it.effect("refuses overlapping claims on a worktree nested in another, for any owner", () =>
+      Effect.gen(function* () {
+        const { repo } = yield* makeRepository;
+        const ownership = yield* WorktreeOwnership;
+        const nested = path.join(repo, ".worktrees", "nested");
+        yield* git(repo, ["worktree", "add", "-b", "feature/nested", nested]);
+        const overlapping = (worktreePath: string, owner: WorktreeOwner) =>
+          ownership.claim(worktreePath, owner).pipe(Effect.scoped, Effect.flip);
+
+        // The main checkout is owned: its nested worktree cannot be claimed.
+        const outer = yield* claimInNewScope(repo, aetherOwner);
+        expect(yield* overlapping(nested, otherOwner)).toMatchObject({
+          _tag: "WorktreeOwnedError",
+          worktreePath: repo,
+        });
+        expect(yield* overlapping(nested, aetherOwner)).toMatchObject({
+          _tag: "WorktreeOwnedError",
+          worktreePath: repo,
+        });
+        yield* outer.release;
+
+        // The nested worktree is owned: the main checkout containing it cannot be claimed.
+        const inner = yield* claimInNewScope(nested, aetherOwner);
+        expect(inner.claim.worktreePath).toBe(nested);
+        expect(yield* overlapping(repo, otherOwner)).toMatchObject({
+          _tag: "WorktreeOwnedError",
+          worktreePath: nested,
+        });
+        expect(yield* overlapping(repo, aetherOwner)).toMatchObject({
+          _tag: "WorktreeOwnedError",
+          worktreePath: nested,
+        });
+        yield* inner.release;
+        expect(yield* ownership.ownerOf(nested)).toBeNull();
+      }),
+    );
+
     it.effect("canonicalizes claimed and queried paths through symlinks", () =>
       Effect.gen(function* () {
         const { root, owned } = yield* makeRepository;

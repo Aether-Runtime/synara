@@ -20,7 +20,7 @@ import {
   TurnId,
 } from "@synara/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
+import { Deferred, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CheckpointStoreLive } from "../../checkpointing/Layers/CheckpointStore.ts";
@@ -336,6 +336,8 @@ describe("CheckpointReactor", () => {
         input: Parameters<CheckpointStoreShape["deleteCheckpointRefs"]>[0],
       ) => CheckpointStoreError | null;
     } = {};
+    // Lets a test hold a restore open mid-revert.
+    const gates: { restoreCheckpoint?: Effect.Effect<void> } = {};
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionPipelineLive),
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -352,7 +354,11 @@ describe("CheckpointReactor", () => {
           restoreCheckpoint: (input) =>
             Effect.suspend(() => {
               const failure = failures.restoreCheckpoint?.(input) ?? null;
-              return failure === null ? store.restoreCheckpoint(input) : Effect.fail(failure);
+              return (gates.restoreCheckpoint ?? Effect.void).pipe(
+                Effect.andThen(
+                  failure === null ? store.restoreCheckpoint(input) : Effect.fail(failure),
+                ),
+              );
             }),
           deleteCheckpointRefs: (input) =>
             Effect.suspend(() => {
@@ -454,6 +460,7 @@ describe("CheckpointReactor", () => {
       cwd,
       drain,
       failures,
+      gates,
     };
   }
 
@@ -2141,6 +2148,70 @@ describe("CheckpointReactor", () => {
         gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 2)),
       ).toBe(true);
       expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    } finally {
+      await Effect.runPromise(Scope.close(claimScope, Exit.void));
+    }
+  });
+
+  it("makes a worktree claim wait for an in-flight revert", async () => {
+    const harness = await createHarness({ hasSession: false });
+    const createdAt = new Date().toISOString();
+    for (const turnCount of [1, 2] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe(`cmd-claim-wait-revert-diff-${turnCount}`),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+    const restoreStarted = await Effect.runPromise(Deferred.make<void>());
+    const releaseRestore = await Effect.runPromise(Deferred.make<void>());
+    harness.gates.restoreCheckpoint = Deferred.succeed(restoreStarted, undefined).pipe(
+      Effect.andThen(Deferred.await(releaseRestore)),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.makeUnsafe("cmd-claim-wait-revert"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnCount: 1,
+        scope: "thread",
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(Deferred.await(restoreStarted));
+
+    const claimScope = await Effect.runPromise(Scope.make());
+    let claimed = false;
+    const claiming = Effect.runPromise(
+      Scope.provide(
+        harness.worktreeOwnership.claim(harness.cwd, {
+          threadId: ThreadId.makeUnsafe("thread-owner"),
+          provider: "aether",
+        }),
+        claimScope,
+      ),
+    ).then(() => {
+      claimed = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(claimed).toBe(false);
+
+      delete harness.gates.restoreCheckpoint;
+      await Effect.runPromise(Deferred.succeed(releaseRestore, undefined));
+      await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+      await claiming;
+      expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
     } finally {
       await Effect.runPromise(Scope.close(claimScope, Exit.void));
     }

@@ -83,6 +83,7 @@ import {
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { AgentGatewayOperationRepository } from "../../agentGateway/Services/AgentGatewayOperationRepository.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { WorktreeOwnership } from "../../git/Services/WorktreeOwnership.ts";
 import {
   type ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -753,6 +754,7 @@ const make = Effect.gen(function* () {
   const checkpointStore = yield* CheckpointStore;
   const studioOutputReactor = yield* StudioOutputReactor;
   const git = yield* GitCore;
+  const worktreeOwnership = yield* WorktreeOwnership;
   const gatewayOperations = yield* AgentGatewayOperationRepository;
   const acceptedCompletionContexts = new Set<number>();
   const textGeneration = yield* TextGeneration;
@@ -1611,6 +1613,9 @@ const make = Effect.gen(function* () {
     if (!(yield* checkpointStore.isGitRepository(cwd))) {
       return null;
     }
+    // A provider that owns this worktree mirrors its changes into it; refuse
+    // here, before the provider conversation is trimmed.
+    yield* worktreeOwnership.assertNotOwned(cwd);
 
     const targetCheckpointRef =
       targetTurnCount === 0
@@ -1648,11 +1653,16 @@ const make = Effect.gen(function* () {
     if (plan === null) {
       return;
     }
-    const restored = yield* checkpointStore.restoreCheckpoint({
-      cwd: plan.cwd,
-      checkpointRef: plan.checkpointRef,
-      fallbackToHead: plan.targetTurnCount === 0,
-    });
+    // Under the repository lock, so ownership is checked again right before
+    // the restore and a claim cannot slip in while it rewrites the worktree.
+    const restored = yield* git.withMutation(
+      plan.cwd,
+      checkpointStore.restoreCheckpoint({
+        cwd: plan.cwd,
+        checkpointRef: plan.checkpointRef,
+        fallbackToHead: plan.targetTurnCount === 0,
+      }),
+    );
     if (!restored) {
       return yield* Effect.fail(
         new Error(
