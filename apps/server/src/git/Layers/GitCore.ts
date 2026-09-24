@@ -1,7 +1,7 @@
 // FILE: GitCore.ts
 // Purpose: Implements low-level Git operations used by server orchestration and UI status.
 // Layer: Server Git service
-// Exports: GitCoreLive plus makeGitCore test factory.
+// Exports: GitCoreLive (GitCore + WorktreeOwnership) plus makeGitCore test factory.
 import {
   Cache,
   Data,
@@ -18,6 +18,7 @@ import {
   Schema,
   Scope,
   Semaphore,
+  ServiceMap,
   Stream,
 } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -55,6 +56,8 @@ import {
   type ExecuteGitResult,
   type GitWorkingTreePatch,
 } from "../Services/GitCore.ts";
+import { WorktreeOwnership } from "../Services/WorktreeOwnership.ts";
+import { makeWorktreeOwnership } from "./WorktreeOwnership.ts";
 import { ServerConfig } from "../../config.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -289,6 +292,22 @@ function parseRecentCommitLines(stdout: string): ReadonlyArray<GitRecentCommit> 
     commits.push({ sha, shortSha, subject, committedAt });
   }
   return commits;
+}
+
+/** Branch name → worktree path from `git worktree list --porcelain`. */
+function parseWorktreeBranchPaths(stdout: string): Map<string, string> {
+  const branchPaths = new Map<string, string>();
+  let currentPath: string | null = null;
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      currentPath = line.slice("worktree ".length);
+    } else if (line.startsWith("branch refs/heads/") && currentPath) {
+      branchPaths.set(line.slice("branch refs/heads/".length), currentPath);
+    } else if (line === "") {
+      currentPath = null;
+    }
+  }
+  return branchPaths;
 }
 
 function parseRemoteNames(stdout: string): ReadonlyArray<string> {
@@ -766,7 +785,7 @@ export const collectGitOutput = Effect.fn(function* <E>(
   return { text, truncated };
 });
 
-export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"] }) =>
+const makeGitCoreServices = (options?: { executeOverride?: GitCoreShape["execute"] }) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -826,6 +845,15 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
                   ...input.env,
                   ...trace2Monitor.env,
                 },
+                ...(input.stdin !== undefined
+                  ? {
+                      stdin: Stream.make(
+                        typeof input.stdin === "string"
+                          ? new TextEncoder().encode(input.stdin)
+                          : input.stdin,
+                      ),
+                    }
+                  : {}),
               }),
             )
             .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
@@ -982,7 +1010,10 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
           ),
         ),
       );
-    const withMutation: GitCoreShape["withMutation"] = (cwd, effect) =>
+    const withRepositoryLock = <A, E, R>(
+      cwd: string,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E | GitCommandError, R> =>
       Effect.gen(function* () {
         const key = yield* resolveRepositoryMutationKey(cwd);
         const lock = yield* repositoryMutationMapLock.withPermit(
@@ -1021,6 +1052,56 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
           ),
         );
       });
+
+    const worktreeOwnership = yield* makeWorktreeOwnership({
+      withRepositoryLock,
+      resolveWorktreeRoot: (worktreePath) =>
+        Effect.tryPromise({
+          try: () => nodeFs.realpath(worktreePath),
+          catch: (cause) =>
+            new GitCommandError({
+              operation: "WorktreeOwnership.claim",
+              command: "realpath",
+              cwd: worktreePath,
+              detail: "The worktree path does not exist.",
+              cause,
+            }),
+        }).pipe(
+          Effect.flatMap((realPath) =>
+            runGitStdout("WorktreeOwnership.claim.toplevel", realPath, [
+              "rev-parse",
+              "--show-toplevel",
+            ]),
+          ),
+          Effect.flatMap((toplevel) =>
+            Effect.tryPromise({
+              try: () => nodeFs.realpath(toplevel.trim()),
+              catch: (cause) =>
+                new GitCommandError({
+                  operation: "WorktreeOwnership.claim",
+                  command: "realpath",
+                  cwd: worktreePath,
+                  detail: "The worktree root could not be resolved.",
+                  cause,
+                }),
+            }),
+          ),
+        ),
+      listCheckedOutBranches: (cwd) =>
+        runGitStdout("GitCore.withMutation.worktreeList", cwd, [
+          "worktree",
+          "list",
+          "--porcelain",
+        ]).pipe(Effect.map(parseWorktreeBranchPaths)),
+    });
+
+    // Ownership is checked while holding the lock, so a claim can neither
+    // interleave with this mutation nor slip in between the check and the work.
+    const withMutation: GitCoreShape["withMutation"] = (cwd, effect, options) =>
+      withRepositoryLock(
+        cwd,
+        worktreeOwnership.assertMutationAllowed(cwd, options).pipe(Effect.andThen(effect)),
+      );
 
     const readMoveAwareWorkingTreeSummary = (
       cwd: string,
@@ -2913,19 +2994,13 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
 
         const worktreeMap = new Map<string, string>();
         if (worktreeList.code === 0) {
-          let currentPath: string | null = null;
-          for (const line of worktreeList.stdout.split("\n")) {
-            if (line.startsWith("worktree ")) {
-              const candidatePath = line.slice("worktree ".length);
-              const exists = yield* fileSystem.stat(candidatePath).pipe(
-                Effect.map(() => true),
-                Effect.catch(() => Effect.succeed(false)),
-              );
-              currentPath = exists ? candidatePath : null;
-            } else if (line.startsWith("branch refs/heads/") && currentPath) {
-              worktreeMap.set(line.slice("branch refs/heads/".length), currentPath);
-            } else if (line === "") {
-              currentPath = null;
+          for (const [branch, candidatePath] of parseWorktreeBranchPaths(worktreeList.stdout)) {
+            const exists = yield* fileSystem.stat(candidatePath).pipe(
+              Effect.map(() => true),
+              Effect.catch(() => Effect.succeed(false)),
+            );
+            if (exists) {
+              worktreeMap.set(branch, candidatePath);
             }
           }
         }
@@ -4145,7 +4220,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         );
       });
 
-    return {
+    const gitCore = {
       withMutation,
       execute,
       status,
@@ -4193,6 +4268,17 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
       stageFiles,
       unstageFiles,
     } satisfies GitCoreShape;
+    return { gitCore, worktreeOwnership: worktreeOwnership.service };
   });
 
-export const GitCoreLive = Layer.effect(GitCore, makeGitCore());
+export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"] }) =>
+  makeGitCoreServices(options).pipe(Effect.map(({ gitCore }) => gitCore));
+
+/** Provides GitCore and the WorktreeOwnership registry its mutation lock enforces. */
+export const GitCoreLive = Layer.effectServices(
+  makeGitCoreServices().pipe(
+    Effect.map(({ gitCore, worktreeOwnership }) =>
+      ServiceMap.make(GitCore, gitCore).pipe(ServiceMap.add(WorktreeOwnership, worktreeOwnership)),
+    ),
+  ),
+);

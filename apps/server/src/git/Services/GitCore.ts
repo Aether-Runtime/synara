@@ -37,7 +37,12 @@ import type {
   GitWorkingTreeDiffStatsResult,
 } from "@synara/contracts";
 
-import type { GitCheckoutDirtyWorktreeError, GitCommandError } from "../Errors.ts";
+import type {
+  GitCheckoutDirtyWorktreeError,
+  GitCommandError,
+  WorktreeOwnedError,
+} from "../Errors.ts";
+import type { WorktreeClaim } from "./WorktreeOwnership.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -49,6 +54,8 @@ export interface ExecuteGitInput {
   readonly maxOutputBytes?: number;
   readonly outputMode?: "error" | "truncate";
   readonly progress?: ExecuteGitProgress;
+  /** Bytes written to the git process's stdin (e.g. a patch for `git apply`); closed once written. */
+  readonly stdin?: Uint8Array | string;
 }
 
 export interface ExecuteGitResult {
@@ -201,15 +208,34 @@ export interface GitPublishBranchInput {
   branch: string;
 }
 
+export interface GitMutationOptions {
+  /** The owning provider's claim, which lets it mutate the worktree it owns. */
+  readonly claim?: WorktreeClaim | undefined;
+  /**
+   * What the mutation changes outside `cwd`: worktrees it removes or moves, and
+   * local branches it deletes, renames or force-moves. Each is refused when it
+   * lies in (or, for a branch, is checked out in) a worktree another owner holds.
+   */
+  readonly targets?: {
+    readonly worktreePaths?: ReadonlyArray<string>;
+    readonly branches?: ReadonlyArray<string>;
+  };
+}
+
 /**
  * GitCoreShape - Service API for low-level Git repository interactions.
  */
 export interface GitCoreShape {
-  /** Serialize one complete mutation saga by canonical repository common directory. */
+  /**
+   * Serialize one complete mutation saga by canonical repository common directory.
+   * Refuses with `WorktreeOwnedError`, before `effect` runs, when `cwd` or a
+   * declared target is in a worktree a provider owns (see WorktreeOwnership).
+   */
   readonly withMutation: <A, E, R>(
     cwd: string,
     effect: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | GitCommandError, R>;
+    options?: GitMutationOptions,
+  ) => Effect.Effect<A, E | GitCommandError | WorktreeOwnedError, R>;
   /**
    * Execute a raw Git command.
    */
