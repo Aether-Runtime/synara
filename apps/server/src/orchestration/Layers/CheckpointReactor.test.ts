@@ -31,6 +31,7 @@ import {
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
+import { WorktreeOwnership } from "../../git/Services/WorktreeOwnership.ts";
 import { CheckpointReactorLive } from "./CheckpointReactor.ts";
 import { TurnCheckpointCoordinatorLive } from "./TurnCheckpointCoordinator.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -280,7 +281,7 @@ async function waitForGitRefMissing(cwd: string, ref: string, timeoutMs = 30_000
 
 describe("CheckpointReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | CheckpointReactor | CheckpointStore,
+    OrchestrationEngineService | CheckpointReactor | CheckpointStore | WorktreeOwnership,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -383,6 +384,7 @@ describe("CheckpointReactor", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const reactor = await runtime.runPromise(Effect.service(CheckpointReactor));
     const checkpointStore = await runtime.runPromise(Effect.service(CheckpointStore));
+    const worktreeOwnership = await runtime.runPromise(Effect.service(WorktreeOwnership));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start.pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(reactor.drain);
@@ -448,6 +450,7 @@ describe("CheckpointReactor", () => {
       engine,
       provider,
       checkpointStore,
+      worktreeOwnership,
       cwd,
       drain,
       failures,
@@ -2079,6 +2082,68 @@ describe("CheckpointReactor", () => {
     // The rescue snapshot is throwaway: a successful revert must not leave one
     // behind, since nothing else ever sweeps them.
     expect(listRevertRescueRefs(harness.cwd)).toEqual([]);
+  });
+
+  it("refuses to revert a provider-owned worktree before touching any file", async () => {
+    const harness = await createHarness({ hasSession: false });
+    const createdAt = new Date().toISOString();
+    for (const turnCount of [1, 2] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe(`cmd-owned-revert-diff-${turnCount}`),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+    const claimScope = await Effect.runPromise(Scope.make());
+    await Effect.runPromise(
+      Scope.provide(
+        harness.worktreeOwnership.claim(harness.cwd, {
+          threadId: ThreadId.makeUnsafe("thread-owner"),
+          provider: "aether",
+        }),
+        claimScope,
+      ),
+    );
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "mirrored\n", "utf8");
+
+    try {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.makeUnsafe("cmd-owned-revert"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnCount: 1,
+          scope: "thread",
+          createdAt,
+        }),
+      );
+
+      const thread = await waitForThread(harness.engine, (entry) =>
+        entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+      );
+      const failure = thread.activities.find(
+        (activity) => activity.kind === "checkpoint.revert.failed",
+      );
+      expect(JSON.stringify(failure?.payload)).toContain("managed by the aether session");
+      await harness.drain();
+      expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("mirrored\n");
+      expect(listRevertRescueRefs(harness.cwd)).toEqual([]);
+      expect(
+        gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 2)),
+      ).toBe(true);
+      expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    } finally {
+      await Effect.runPromise(Scope.close(claimScope, Exit.void));
+    }
   });
 
   it("reverts a thread whose provider session is no longer running", async () => {

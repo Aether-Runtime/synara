@@ -77,7 +77,7 @@ import { ComputerEventInterests } from "./computer/computerEventInterests";
 import { GitCore } from "./git/Services/GitCore";
 import { GitHubCli } from "./git/Services/GitHubCli";
 import { GitManager } from "./git/Services/GitManager";
-import { WorktreeOwnership } from "./git/Services/WorktreeOwnership";
+import { WorktreeOwnership, type WorktreeOwnershipShape } from "./git/Services/WorktreeOwnership";
 import { GitHubCliError, WorktreeOwnedError } from "./git/Errors";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
@@ -139,6 +139,7 @@ import {
   WorkspaceFileConflictError,
   WorkspaceFileDeletedError,
   WorkspaceFileSystem,
+  type WorkspaceFileSystemShape,
 } from "./workspace/Services/WorkspaceFileSystem";
 import {
   MAX_STREAMS_PER_RPC_CLIENT,
@@ -344,6 +345,20 @@ export function toWsRpcError(cause: unknown, fallbackMessage: string) {
     cause,
   });
 }
+
+// Editor saves bypass GitCore.withMutation, so they refuse a provider-owned
+// worktree here, before anything touches the file.
+export const writeWorkspaceFileOutsideOwnedWorktree = (
+  services: {
+    readonly worktreeOwnership: WorktreeOwnershipShape;
+    readonly workspaceFileSystem: WorkspaceFileSystemShape;
+    readonly path: Path.Path;
+  },
+  input: Parameters<WorkspaceFileSystemShape["writeFile"]>[0],
+) =>
+  services.worktreeOwnership
+    .assertNotOwned(services.path.resolve(input.cwd, input.relativePath))
+    .pipe(Effect.andThen(services.workspaceFileSystem.writeFile(input)));
 
 // Process-wide so a subscriber's restart chain survives its own reconnects
 // (the client id is stable across a socket reconnect), but keyed per
@@ -1283,10 +1298,10 @@ const makeWsRpcHandlersLayer = () =>
             "Failed to create local file preview grant",
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
-          // Editor saves bypass GitCore.withMutation, so refuse writes into a
-          // provider-owned worktree here, before anything touches the file.
-          worktreeOwnership.assertNotOwned(path.resolve(input.cwd, input.relativePath)).pipe(
-            Effect.andThen(workspaceFileSystem.writeFile(input)),
+          writeWorkspaceFileOutsideOwnedWorktree(
+            { worktreeOwnership, workspaceFileSystem, path },
+            input,
+          ).pipe(
             Effect.mapError((cause) =>
               cause instanceof WorkspaceFileConflictError
                 ? new WsRpcError({

@@ -9,7 +9,8 @@
  * the next reset. The owner passes by running its mutations with its claim.
  *
  * Ownership is in memory by design and does not survive a server restart: the
- * provider claims the worktree again when its session resumes.
+ * provider claims the worktree again when its session resumes. It is unrelated
+ * to the agent gateway's durable creation proof (`GitCore.recordWorktreeOwnership`).
  *
  * The live layer is built by `GitCoreLive`, because a claim is taken under the
  * same per-repository lock as `GitCore.withMutation`, so a claim never

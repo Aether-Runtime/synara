@@ -281,6 +281,7 @@ describe("ProviderCommandReactor", () => {
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session" | "restart-session";
     readonly conversationRollback?: "native" | "restart-session";
+    readonly managesWorktreeBranch?: boolean;
     readonly checkpointStore?: Partial<CheckpointStoreShape>;
     readonly studioOutputReactor?: Partial<StudioOutputReactorShape>;
     readonly forkThreadResult?: ProviderForkThreadResult | null;
@@ -633,6 +634,9 @@ describe("ProviderCommandReactor", () => {
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
           ...(input?.conversationRollback
             ? { conversationRollback: input.conversationRollback }
+            : {}),
+          ...(input?.managesWorktreeBranch !== undefined
+            ? { managesWorktreeBranch: input.managesWorktreeBranch }
             : {}),
         }),
       rollbackConversation,
@@ -10511,6 +10515,54 @@ describe("ProviderCommandReactor", () => {
       associatedWorktreePath: "/tmp/provider-project/.worktrees/cb661f0d",
       associatedWorktreeBranch: "synara/app-startup-crash",
       associatedWorktreeRef: "synara/app-startup-crash",
+    });
+  });
+
+  it("keeps a provider-managed worktree branch unrenamed and unpushed on the first turn", async () => {
+    const harness = await createHarness({ managesWorktreeBranch: true });
+    const now = new Date().toISOString();
+    harness.generateBranchName.mockImplementation(() =>
+      Effect.succeed({ branch: "provider-managed-branch" }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-managed-worktree-bootstrap"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        envMode: "worktree",
+        branch: "synara/cb661f0d",
+        worktreePath: "/tmp/provider-project/.worktrees/cb661f0d",
+        associatedWorktreePath: "/tmp/provider-project/.worktrees/cb661f0d",
+        associatedWorktreeBranch: "synara/cb661f0d",
+        associatedWorktreeRef: "synara/cb661f0d",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-managed-turn-start-worktree-rename"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-managed-worktree-rename"),
+          role: "user",
+          text: "The provider owns this branch, do not rename it",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(harness.generateBranchName).not.toHaveBeenCalled();
+    expect(harness.renameBranch).not.toHaveBeenCalled();
+    expect(harness.publishBranch).not.toHaveBeenCalled();
+    expect(await readHarnessThread(harness)).toMatchObject({
+      branch: "synara/cb661f0d",
+      associatedWorktreeBranch: "synara/cb661f0d",
     });
   });
 
