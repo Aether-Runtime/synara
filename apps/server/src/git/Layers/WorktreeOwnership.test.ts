@@ -182,12 +182,10 @@ it.layer(TestLayer)("WorktreeOwnership", (it) => {
           .pipe(Effect.forkChild);
         yield* Deferred.await(mutationStarted);
 
-        const claiming = yield* ownership
-          .claim(owned, aetherOwner)
-          .pipe(
-            Effect.tap(() => Effect.sync(() => events.push("claimed"))),
-            Effect.forkChild,
-          );
+        const claiming = yield* ownership.claim(owned, aetherOwner).pipe(
+          Effect.tap(() => Effect.sync(() => events.push("claimed"))),
+          Effect.forkChild,
+        );
         yield* pause(300);
         expect(events).toEqual([]);
         expect(yield* ownership.ownerOf(owned)).toBeNull();
@@ -236,38 +234,40 @@ it.layer(TestLayer)("WorktreeOwnership", (it) => {
       }),
     );
 
-    it.effect("refuses removing the owned worktree or deleting its branch from the main checkout", () =>
-      Effect.gen(function* () {
-        const { repo, owned } = yield* makeRepository;
-        const ownership = yield* WorktreeOwnership;
-        const gitCore = yield* GitCore;
-        yield* ownership.claim(owned, aetherOwner);
-        const ownedHead = yield* git(repo, ["rev-parse", "refs/heads/feature/owned"]);
+    it.effect(
+      "refuses removing the owned worktree or deleting its branch from the main checkout",
+      () =>
+        Effect.gen(function* () {
+          const { repo, owned } = yield* makeRepository;
+          const ownership = yield* WorktreeOwnership;
+          const gitCore = yield* GitCore;
+          yield* ownership.claim(owned, aetherOwner);
+          const ownedHead = yield* git(repo, ["rev-parse", "refs/heads/feature/owned"]);
 
-        const removal = yield* gitCore
-          .withMutation(repo, gitCore.removeWorktree({ cwd: repo, path: owned, force: true }), {
-            targets: { worktreePaths: [owned] },
-          })
-          .pipe(Effect.flip);
-        expect(removal).toBeInstanceOf(WorktreeOwnedError);
-        expect(existsSync(owned)).toBe(true);
+          const removal = yield* gitCore
+            .withMutation(repo, gitCore.removeWorktree({ cwd: repo, path: owned, force: true }), {
+              targets: { worktreePaths: [owned] },
+            })
+            .pipe(Effect.flip);
+          expect(removal).toBeInstanceOf(WorktreeOwnedError);
+          expect(existsSync(owned)).toBe(true);
 
-        // `git update-ref -d` would delete a checked-out branch, so this is
-        // refused by the declared target rather than by git itself.
-        const deletion = yield* gitCore
-          .withMutation(
-            repo,
-            gitCore.deleteBranchIfUnchanged({
-              cwd: repo,
-              branch: "feature/owned",
-              expectedHead: ownedHead,
-            }),
-            { targets: { branches: ["feature/owned"] } },
-          )
-          .pipe(Effect.flip);
-        expect(deletion).toBeInstanceOf(WorktreeOwnedError);
-        expect(yield* git(repo, ["rev-parse", "refs/heads/feature/owned"])).toBe(ownedHead);
-      }),
+          // `git update-ref -d` would delete a checked-out branch, so this is
+          // refused by the declared target rather than by git itself.
+          const deletion = yield* gitCore
+            .withMutation(
+              repo,
+              gitCore.deleteBranchIfUnchanged({
+                cwd: repo,
+                branch: "feature/owned",
+                expectedHead: ownedHead,
+              }),
+              { targets: { branches: ["feature/owned"] } },
+            )
+            .pipe(Effect.flip);
+          expect(deletion).toBeInstanceOf(WorktreeOwnedError);
+          expect(yield* git(repo, ["rev-parse", "refs/heads/feature/owned"])).toBe(ownedHead);
+        }),
     );
 
     it.effect("lets the owner mutate its worktree with its own claim only", () =>
@@ -333,9 +333,9 @@ it.layer(TestLayer)("WorktreeOwnership", (it) => {
           contents: "overwritten\n",
         }).pipe(Effect.flip);
         expect(refused).toBeInstanceOf(WorktreeOwnedError);
-        expect(yield* Effect.promise(() => fs.readFile(path.join(owned, "README.md"), "utf8"))).toBe(
-          "# test\n",
-        );
+        expect(
+          yield* Effect.promise(() => fs.readFile(path.join(owned, "README.md"), "utf8")),
+        ).toBe("# test\n");
         expect(toWsRpcError(refused, "Failed to write workspace file")).toMatchObject({
           code: "WORKTREE_OWNED",
           retryable: false,
