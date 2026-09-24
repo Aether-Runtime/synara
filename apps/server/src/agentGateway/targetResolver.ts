@@ -1,4 +1,5 @@
 import {
+  AETHER_REASONING_EFFORT_OPTIONS,
   CLAUDE_CODE_EFFORT_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -248,6 +249,10 @@ const PROVIDER_TARGET_OPTION_RULES = {
         allowsCustomValue: true,
       }),
     },
+  }),
+  aether: defineProviderOptionConfig<"aether">({
+    primaryOptionKey: "reasoningEffort",
+    options: { reasoningEffort: providerOptionRule("string", AETHER_REASONING_EFFORT_OPTIONS) },
   }),
 } as const satisfies Record<ProviderKind, ProviderTargetOptionConfig>;
 

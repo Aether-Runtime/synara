@@ -4,6 +4,7 @@ import {
   DEFAULT_DROID_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
+  ServerSettingsError,
 } from "@synara/contracts";
 import { Effect, FileSystem, Layer } from "effect";
 import { describe, expect, it } from "vitest";
@@ -202,6 +203,103 @@ describe("ServerSettingsService", () => {
     expect(JSON.stringify(result.view)).not.toContain("opencode-secret");
     expect(JSON.stringify(result.view)).not.toContain('"serverPassword"');
     expect(result.persisted).not.toContain("opencode-secret");
+  });
+
+  it("keeps the Aether API key server-only and round-trips the rest of its settings", async () => {
+    const result = await runWithSettings(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const { settingsPath } = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* service.start;
+        const defaults = yield* service.getSettingsView;
+        const view = yield* service.updateSettingsView({
+          providers: {
+            aether: {
+              enabled: true,
+              apiBaseUrl: "https://aether.example.com",
+              apiKey: "  aether-secret-key  ",
+            },
+          },
+        });
+        const persisted = yield* fs.readFileString(settingsPath);
+        // A later patch without the key must not clear it; an empty key clears it.
+        const afterUnrelatedPatch = yield* service.updateSettingsView({
+          providers: { aether: { enabled: false } },
+        });
+        const cleared = yield* service.updateSettingsView({
+          providers: { aether: { apiKey: "" } },
+        });
+        return { defaults, view, persisted, afterUnrelatedPatch, cleared };
+      }),
+    );
+
+    expect(result.defaults.providers.aether).toEqual({
+      enabled: false,
+      apiBaseUrl: "https://api.runaether.dev",
+      apiKeyConfigured: false,
+      customModels: [],
+    });
+    expect(result.view.providers.aether).toEqual({
+      enabled: true,
+      apiBaseUrl: "https://aether.example.com",
+      apiKeyConfigured: true,
+      customModels: [],
+    });
+    for (const exposed of [JSON.stringify(result.view), result.persisted]) {
+      expect(exposed).not.toContain("aether-secret-key");
+      expect(exposed).not.toContain('"apiKey"');
+    }
+    expect(result.afterUnrelatedPatch.providers.aether).toMatchObject({
+      enabled: false,
+      apiKeyConfigured: true,
+    });
+    expect(result.cleared.providers.aether.apiKeyConfigured).toBe(false);
+  });
+
+  it.each([
+    ["", "The Aether API base URL is required."],
+    [
+      "http://api.runaether.dev",
+      "The Aether API base URL must use https:// (http:// only for localhost, 127.0.0.1 or [::1]).",
+    ],
+    ["not a url", "The Aether API base URL is not a valid URL."],
+  ])(
+    "rejects the Aether API base URL %j loudly and keeps the stored value",
+    async (apiBaseUrl, issue) => {
+      const result = await runWithSettings(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsService;
+          yield* service.start;
+          yield* service.updateSettings({
+            providers: { aether: { apiBaseUrl: "https://aether.example.com" } },
+          });
+          const failure = yield* Effect.flip(
+            service.updateSettings({ providers: { aether: { apiBaseUrl } } }),
+          );
+          const settings = yield* service.getSettings;
+          return { failure, settings };
+        }),
+      );
+
+      expect(result.failure).toBeInstanceOf(ServerSettingsError);
+      expect(result.failure.message).toContain(issue);
+      expect(result.settings.providers.aether.apiBaseUrl).toBe("https://aether.example.com");
+    },
+  );
+
+  it("stores a loopback http Aether API base URL for local development", async () => {
+    const settings = await runWithSettings(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        yield* service.start;
+        return yield* service.updateSettings({
+          providers: { aether: { apiBaseUrl: "http://localhost:8787" } },
+        });
+      }),
+    );
+
+    expect(settings.providers.aether.apiBaseUrl).toBe("http://localhost:8787");
   });
 
   it.each([

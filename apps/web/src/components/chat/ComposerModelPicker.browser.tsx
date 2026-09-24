@@ -41,6 +41,7 @@ const EMPTY_BY_PROVIDER: Record<ProviderKind, never[]> = {
   droid: [],
   opencode: [],
   pi: [],
+  aether: [],
 };
 
 const MODEL_OPTIONS_BY_PROVIDER: Record<ProviderKind, ReadonlyArray<ProviderModelOption>> = {

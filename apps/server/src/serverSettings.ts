@@ -40,9 +40,11 @@ import {
   hasDedicatedTextGenerationProvider,
 } from "./git/textGenerationSelection";
 import {
+  PROVIDER_SECRET_PROVIDERS,
+  PROVIDER_SECRETS,
   ProviderCredentials,
   ProviderCredentialsLive,
-  type ExternalProviderServer,
+  type ProviderSecretProvider,
 } from "./providerCredentials";
 
 export interface ServerSettingsShape {
@@ -202,36 +204,48 @@ function normalizeSettings(
   );
 }
 
-const EXTERNAL_SERVER_PROVIDERS = ["opencode"] as const;
+function readProviderSecretField(
+  providers: unknown,
+  provider: ProviderSecretProvider,
+): string | undefined {
+  if (providers === null || typeof providers !== "object") return undefined;
+  const providerRecord = (providers as Record<string, unknown>)[provider];
+  if (providerRecord === null || typeof providerRecord !== "object") return undefined;
+  const value = (providerRecord as Record<string, unknown>)[PROVIDER_SECRETS[provider].patchKey];
+  return typeof value === "string" ? value : undefined;
+}
 
-function readLegacyProviderPasswords(raw: string): ReadonlyMap<ExternalProviderServer, string> {
+// Secrets written to settings.json by older builds (or by hand) move into the secret
+// store; the rewritten file no longer carries them because ServerSettings omits the field.
+function readLegacyProviderSecrets(raw: string): ReadonlyMap<ProviderSecretProvider, string> {
   try {
-    const parsed = JSON.parse(raw) as {
-      providers?: Partial<Record<ExternalProviderServer, { readonly serverPassword?: unknown }>>;
-    };
-    const passwords = new Map<ExternalProviderServer, string>();
-    for (const provider of EXTERNAL_SERVER_PROVIDERS) {
-      const value = parsed.providers?.[provider]?.serverPassword;
-      if (typeof value === "string" && value.trim().length > 0) {
-        passwords.set(provider, value.trim());
+    const parsed = JSON.parse(raw) as { providers?: unknown };
+    const secrets = new Map<ProviderSecretProvider, string>();
+    for (const provider of PROVIDER_SECRET_PROVIDERS) {
+      const value = readProviderSecretField(parsed.providers, provider)?.trim();
+      if (value) {
+        secrets.set(provider, value);
       }
     }
-    return passwords;
+    return secrets;
   } catch {
     return new Map();
   }
 }
 
-function omitProviderPasswords(patch: ServerSettingsPatch): ServerSettingsPatch {
+function omitProviderSecrets(patch: ServerSettingsPatch): ServerSettingsPatch {
   if (!patch.providers) return patch;
-  const { serverPassword: _openCodePassword, ...opencode } = patch.providers.opencode ?? {};
-  return {
-    ...patch,
-    providers: {
-      ...patch.providers,
-      ...(patch.providers.opencode ? { opencode } : {}),
-    },
-  };
+  const providers: Record<string, unknown> = { ...patch.providers };
+  for (const provider of PROVIDER_SECRET_PROVIDERS) {
+    const providerPatch = patch.providers[provider];
+    if (!providerPatch) continue;
+    const { [PROVIDER_SECRETS[provider].patchKey]: _secret, ...rest } = providerPatch as Record<
+      string,
+      unknown
+    >;
+    providers[provider] = rest;
+  }
+  return { ...patch, providers: providers as NonNullable<ServerSettingsPatch["providers"]> };
 }
 
 // Migrate only portable Kilo state. Its model/options shape and enabled flag
@@ -353,21 +367,21 @@ const makeServerSettings = Effect.gen(function* () {
     PubSub.publish(changesPubSub, settings).pipe(Effect.asVoid);
 
   const withCredentialState = (settings: ServerSettings) =>
-    Effect.all({
-      opencode: providerCredentials.isServerPasswordConfigured("opencode"),
-    }).pipe(
-      Effect.map(
-        (configured): ServerSettings => ({
-          ...settings,
-          providers: {
-            ...settings.providers,
-            opencode: {
-              ...settings.providers.opencode,
-              serverPasswordConfigured: configured.opencode,
-            },
-          },
-        }),
-      ),
+    Effect.forEach(PROVIDER_SECRET_PROVIDERS, (provider) =>
+      providerCredentials
+        .isSecretConfigured(provider)
+        .pipe(Effect.map((configured) => [provider, configured] as const)),
+    ).pipe(
+      Effect.map((entries): ServerSettings => {
+        const providers: Record<string, unknown> = { ...settings.providers };
+        for (const [provider, configured] of entries) {
+          providers[provider] = {
+            ...settings.providers[provider],
+            [PROVIDER_SECRETS[provider].configuredKey]: configured,
+          };
+        }
+        return { ...settings, providers: providers as ServerSettings["providers"] };
+      }),
       Effect.mapError(
         (cause) =>
           new ServerSettingsError({
@@ -422,10 +436,10 @@ const makeServerSettings = Effect.gen(function* () {
         migrated: false,
       };
     }
-    const legacyPasswords = readLegacyProviderPasswords(raw);
+    const legacySecrets = readLegacyProviderSecrets(raw);
     yield* Effect.forEach(
-      legacyPasswords,
-      ([provider, password]) => providerCredentials.replaceServerPassword(provider, password),
+      legacySecrets,
+      ([provider, secret]) => providerCredentials.replaceSecret(provider, secret),
       { discard: true },
     ).pipe(
       Effect.mapError(
@@ -443,7 +457,7 @@ const makeServerSettings = Effect.gen(function* () {
       ),
       revision: decoded.revision,
       migrated:
-        legacyPasswords.size > 0 ||
+        legacySecrets.size > 0 ||
         decoded.legacyFormat ||
         decoded.migrationVersion !== SERVER_SETTINGS_MIGRATION_VERSION,
     };
@@ -510,15 +524,15 @@ const makeServerSettings = Effect.gen(function* () {
       Effect.gen(function* () {
         const disk = yield* loadSettingsFromDisk;
         const current = disk.settings;
-        for (const provider of EXTERNAL_SERVER_PROVIDERS) {
-          const password = patch.providers?.[provider]?.serverPassword;
-          if (password !== undefined) {
-            yield* providerCredentials.replaceServerPassword(provider, password).pipe(
+        for (const provider of PROVIDER_SECRET_PROVIDERS) {
+          const secret = readProviderSecretField(patch.providers, provider);
+          if (secret !== undefined) {
+            yield* providerCredentials.replaceSecret(provider, secret).pipe(
               Effect.mapError(
                 (cause) =>
                   new ServerSettingsError({
                     settingsPath,
-                    detail: `failed to update ${provider} server password`,
+                    detail: `failed to update ${provider} ${PROVIDER_SECRETS[provider].label}`,
                     cause,
                   }),
               ),
@@ -528,7 +542,7 @@ const makeServerSettings = Effect.gen(function* () {
         const normalized = yield* normalizeSettings(
           settingsPath,
           current,
-          omitProviderPasswords(patch),
+          omitProviderSecrets(patch),
         );
         const next = yield* withCredentialState(normalized);
         const nextRevision = Math.max(disk.revision, yield* Ref.get(revisionRef)) + 1;

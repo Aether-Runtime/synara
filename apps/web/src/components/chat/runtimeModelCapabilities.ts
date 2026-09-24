@@ -110,6 +110,7 @@ export function getRuntimeAwareModelCapabilities(input: {
     input.runtimeModel?.optionDescriptors ?? staticCapabilities.optionDescriptors;
   const runtimeEfforts = input.runtimeModel?.supportedReasoningEfforts;
   // Providers with dynamic catalogs, including Droid, expose model-specific effort ladders here.
+  // Aether is deliberately absent: its vendored catalog is the authoritative ladder.
   if (
     (input.provider !== "codex" &&
       input.provider !== "cursor" &&

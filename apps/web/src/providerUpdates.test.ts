@@ -3,7 +3,12 @@
 // Layer: Web utility tests
 // Exports: Vitest suites for providerUpdates.ts
 
-import type { ProviderKind, ServerProviderStatus, ServerSettings } from "@synara/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type ProviderKind,
+  type ServerProviderStatus,
+  type ServerSettings,
+} from "@synara/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -75,6 +80,12 @@ function serverSettings(overrides: Partial<ServerSettings["providers"]> = {}): S
         experimentalWebSockets: false,
       },
       pi: { ...provider, binaryPath: "pi", agentDir: "" },
+      aether: {
+        enabled: false,
+        apiBaseUrl: DEFAULT_SERVER_SETTINGS.providers.aether.apiBaseUrl,
+        apiKeyConfigured: false,
+        customModels: [],
+      },
       ...overrides,
     },
     skills: { disabled: [] },

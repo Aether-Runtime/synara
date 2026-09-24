@@ -5,6 +5,7 @@ import { assertFailure } from "@effect/vitest/utils";
 
 import { Effect, Layer, Stream } from "effect";
 
+import { AetherAdapter } from "../Services/AetherAdapter.ts";
 import { AntigravityAdapter, AntigravityAdapterShape } from "../Services/AntigravityAdapter.ts";
 import { ClaudeAdapter, ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { CodexAdapter, CodexAdapterShape } from "../Services/CodexAdapter.ts";
@@ -16,6 +17,7 @@ import { OpenCodeAdapter, OpenCodeAdapterShape } from "../Services/OpenCodeAdapt
 import { PiAdapter, PiAdapterShape } from "../Services/PiAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderAdapterRegistryLive } from "./ProviderAdapterRegistry.ts";
+import { makeAetherAdapter } from "./AetherAdapter.ts";
 import { ProviderUnsupportedError } from "../Errors.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
@@ -176,6 +178,9 @@ const fakeAntigravityAdapter: AntigravityAdapterShape = {
   streamEvents: Stream.empty,
 };
 
+// The real skeleton: registry construction runs the conformance assertion on it.
+const aetherAdapter = makeAetherAdapter();
+
 const registryLayer = (codexAdapter = fakeCodexAdapter) =>
   Layer.mergeAll(
     Layer.provide(
@@ -190,6 +195,7 @@ const registryLayer = (codexAdapter = fakeCodexAdapter) =>
         Layer.succeed(DroidAdapter, fakeDroidAdapter),
         Layer.succeed(OpenCodeAdapter, fakeOpenCodeAdapter),
         Layer.succeed(PiAdapter, fakePiAdapter),
+        Layer.succeed(AetherAdapter, aetherAdapter),
       ),
     ),
     NodeServices.layer,
@@ -210,6 +216,7 @@ layer("ProviderAdapterRegistryLive", (it) => {
       const droid = yield* registry.getByProvider("droid");
       const opencode = yield* registry.getByProvider("opencode");
       const pi = yield* registry.getByProvider("pi");
+      const aether = yield* registry.getByProvider("aether");
       assert.equal(codex, fakeCodexAdapter);
       assert.equal(claude, fakeClaudeAdapter);
       assert.equal(cursor, fakeCursorAdapter);
@@ -219,6 +226,7 @@ layer("ProviderAdapterRegistryLive", (it) => {
       assert.equal(droid, fakeDroidAdapter);
       assert.equal(opencode, fakeOpenCodeAdapter);
       assert.equal(pi, fakePiAdapter);
+      assert.equal(aether, aetherAdapter);
 
       const providers = yield* registry.listProviders();
       assert.deepEqual(providers, [
@@ -231,6 +239,7 @@ layer("ProviderAdapterRegistryLive", (it) => {
         "droid",
         "opencode",
         "pi",
+        "aether",
       ]);
     }),
   );

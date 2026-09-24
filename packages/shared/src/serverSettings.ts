@@ -45,12 +45,16 @@ export function applyServerSettingsPatch(
   };
 }
 
-/** Server-owned launch options derived from the persisted non-secret settings snapshot. */
+/**
+ * Server-owned launch options derived from the persisted non-secret settings snapshot.
+ * Every provider must have an entry: `ProviderStartOptions` keys are optional, so the
+ * `satisfies` below is what catches a newly added provider.
+ */
 export function providerStartOptionsFromServerSettings(
   settings: ServerSettings,
 ): ProviderStartOptions {
   const { providers } = settings;
-  return {
+  const options = {
     codex: {
       ...(providers.codex.binaryPath ? { binaryPath: providers.codex.binaryPath } : {}),
       ...(providers.codex.homePath ? { homePath: providers.codex.homePath } : {}),
@@ -84,5 +88,8 @@ export function providerStartOptionsFromServerSettings(
     devin: {
       ...(providers.devin.binaryPath ? { binaryPath: providers.devin.binaryPath } : {}),
     },
-  };
+    // Already a validated URL: settings decoding is the only place it is interpreted.
+    aether: { apiBaseUrl: providers.aether.apiBaseUrl },
+  } satisfies Required<ProviderStartOptions>;
+  return options;
 }

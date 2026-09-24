@@ -3,6 +3,7 @@
 // Layer: Settings panel
 
 import {
+  aetherApiBaseUrlIssue,
   PROVIDER_DISPLAY_NAMES,
   type ProviderKind,
   type ServerProviderStatus,
@@ -85,9 +86,12 @@ type ProviderInstallTextKey =
   | "openCodeBinaryPath"
   | "openCodeServerUrl"
   | "piBinaryPath"
-  | "piAgentDir";
-type ProviderInstallPasswordKey = "openCodeServerPassword";
-type ProviderInstallPasswordConfiguredKey = "openCodeServerPasswordConfigured";
+  | "piAgentDir"
+  | "aetherApiBaseUrl";
+type ProviderInstallPasswordKey = "openCodeServerPassword" | "aetherApiKey";
+type ProviderInstallPasswordConfiguredKey =
+  | "openCodeServerPasswordConfigured"
+  | "aetherApiKeyConfigured";
 type ProviderInstallBooleanKey = "claudeEnableArtifacts" | "openCodeExperimentalWebSockets";
 
 type ProviderInstallTextField = {
@@ -96,6 +100,9 @@ type ProviderInstallTextField = {
   readonly label: string;
   readonly placeholder: string;
   readonly description: ReactNode;
+  /** Returns why a draft is invalid; an invalid draft is shown inline and never committed. */
+  readonly validate?: (value: string) => string | undefined;
+  readonly debounceMs?: number;
 };
 type ProviderInstallPasswordField = {
   readonly kind: "password";
@@ -104,7 +111,12 @@ type ProviderInstallPasswordField = {
   readonly label: string;
   readonly placeholder: string;
   readonly description: ReactNode;
+  readonly debounceMs?: number;
 };
+
+// Saving an Aether credential or URL re-probes provider health (every enabled CLI), so these
+// fields wait for a real pause instead of committing each keystroke burst.
+const AETHER_FIELD_DEBOUNCE_MS = 1_500;
 type ProviderInstallBooleanField = {
   readonly kind: "boolean";
   readonly settingsKey: ProviderInstallBooleanKey;
@@ -375,6 +387,34 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
       },
     ],
   },
+  {
+    // Cloud provider: no CLI to install, so no CLI docs; it signs in with an API key.
+    provider: "aether",
+    docs: [],
+    fields: [
+      {
+        kind: "password",
+        settingsKey: "aetherApiKey",
+        configuredKey: "aetherApiKeyConfigured",
+        label: "Aether API key",
+        placeholder: "Aether API key",
+        description:
+          "Stored in the Synara server's secret store and never shown again. Saving it re-checks the connection.",
+        debounceMs: AETHER_FIELD_DEBOUNCE_MS,
+      },
+      {
+        kind: "text",
+        settingsKey: "aetherApiBaseUrl",
+        label: "Aether API base URL",
+        placeholder: "https://api.runaether.dev",
+        description:
+          "Change only to reach a different Aether deployment. Must be https://, except http:// on localhost for local development.",
+        // Same check the server applies when the settings patch is decoded.
+        validate: aetherApiBaseUrlIssue,
+        debounceMs: AETHER_FIELD_DEBOUNCE_MS,
+      },
+    ],
+  },
 ];
 
 function isProviderInstallFieldDirty(
@@ -404,17 +444,16 @@ export function isProviderInstallSettingsDirty(
   );
 }
 
+// Rows start open when they carry a customized value. Comparing with the defaults (not
+// truthiness) keeps rows whose default is non-empty, like Aether's API URL, closed.
 function createProviderInstallDisclosureState(
   settings: AppSettings,
+  defaults: AppSettings,
 ): Record<ProviderKind, boolean> {
   return Object.fromEntries(
     PROVIDER_INSTALL_SETTINGS.map((config) => [
       config.provider,
-      config.fields.some((field) =>
-        field.kind === "password"
-          ? settings[field.configuredKey]
-          : Boolean(settings[field.settingsKey]),
-      ),
+      isProviderInstallConfigDirty(config, settings, defaults),
     ]),
   ) as Record<ProviderKind, boolean>;
 }
@@ -526,6 +565,7 @@ function SortableProviderVisibilityRow(props: {
 }
 
 function ProviderDocsLinks({ docs }: { docs: ProviderInstallSettings["docs"] }) {
+  if (docs.length === 0) return null;
   return (
     <div className={cn(SETTINGS_OUTLINED_SURFACE_CLASS_NAME, "px-3 py-2.5")}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -612,6 +652,7 @@ function ProviderInstallFieldControl(props: {
   updateSettings: (patch: Partial<AppSettings>) => void;
 }) {
   const id = `provider-install-${props.field.settingsKey}`;
+  const [validationError, setValidationError] = useState<string | null>(null);
   if (props.field.kind === "boolean") {
     return (
       <label
@@ -640,6 +681,7 @@ function ProviderInstallFieldControl(props: {
   const configured =
     props.field.kind === "password" ? props.settings[props.field.configuredKey] : false;
   const isPassword = props.field.kind === "password";
+  const validate = props.field.kind === "text" ? props.field.validate : undefined;
   return (
     <label htmlFor={id} className="block">
       <span className="block text-ui leading-snug font-medium text-foreground">
@@ -651,9 +693,19 @@ function ProviderInstallFieldControl(props: {
         variant="soft"
         className="mt-1"
         value={isPassword ? "" : props.settings[props.field.settingsKey]}
-        onCommit={(nextValue) =>
-          props.updateSettings({ [props.field.settingsKey]: nextValue } as Partial<AppSettings>)
-        }
+        onCommit={(nextValue) => {
+          const issue = validate?.(nextValue);
+          setValidationError(issue ?? null);
+          if (issue) return;
+          props.updateSettings({ [props.field.settingsKey]: nextValue } as Partial<AppSettings>);
+        }}
+        {...(props.field.debounceMs !== undefined ? { debounceMs: props.field.debounceMs } : {})}
+        // Blur skips onCommit when the draft equals the stored value, so re-check here too:
+        // a draft returned to a valid stored value must clear a stale alert.
+        onBlur={(event) => {
+          if (validate) setValidationError(validate(event.currentTarget.value) ?? null);
+        }}
+        aria-invalid={validationError ? true : undefined}
         placeholder={
           isPassword && configured
             ? "Configured — enter a replacement or leave blank"
@@ -663,6 +715,11 @@ function ProviderInstallFieldControl(props: {
         autoComplete={isPassword ? "new-password" : undefined}
         spellCheck={false}
       />
+      {validationError ? (
+        <span className="mt-1 block text-ui leading-snug text-destructive" role="alert">
+          {validationError}
+        </span>
+      ) : null}
       <span className="mt-1 block text-ui leading-snug text-muted-foreground">
         {props.field.description}
       </span>
@@ -828,7 +885,7 @@ export function ProvidersSettingsPanel({
   const providerStatusesReconciled = hasReconciledServerProviderStatuses(queryClient);
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   const [openInstallProviders, setOpenInstallProviders] = useState<Record<ProviderKind, boolean>>(
-    () => createProviderInstallDisclosureState(settings),
+    () => createProviderInstallDisclosureState(settings, defaults),
   );
   const [updatingProviders, setUpdatingProviders] = useState<ReadonlySet<ProviderKind>>(
     () => new Set(),

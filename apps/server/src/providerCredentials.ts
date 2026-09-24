@@ -1,27 +1,57 @@
 // FILE: providerCredentials.ts
-// Purpose: Owns server-only credentials used to connect to external provider servers.
+// Purpose: Owns server-only credentials used to connect to external provider servers and APIs.
 // Layer: Server provider security boundary
 
+import type { ProviderKind, ServerSettings, ServerSettingsPatch } from "@synara/contracts";
 import { Effect, Layer, ServiceMap } from "effect";
 
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore";
 import { ServerSecretStore, type SecretStoreError } from "./auth/Services/ServerSecretStore";
 
-export type ExternalProviderServer = "opencode";
+/**
+ * Provider secrets kept in the server secret store. Each one is written through a
+ * patch-only settings field (`patchKey`) and reaches clients only as a boolean
+ * (`configuredKey`); the value itself never leaves the server.
+ */
+export const PROVIDER_SECRETS = {
+  opencode: {
+    secretName: "provider-opencode-server-password",
+    patchKey: "serverPassword",
+    configuredKey: "serverPasswordConfigured",
+    label: "server password",
+  },
+  aether: {
+    secretName: "provider-aether-api-key",
+    patchKey: "apiKey",
+    configuredKey: "apiKeyConfigured",
+    label: "API key",
+  },
+} as const satisfies { readonly [P in ProviderKind]?: ProviderSecretField<P> };
 
-const secretName = (provider: ExternalProviderServer): string =>
-  `provider-${provider}-server-password`;
+// Pins each entry's field names to the settings contract so a rename cannot drift.
+interface ProviderSecretField<P extends ProviderKind> {
+  readonly secretName: string;
+  readonly patchKey: keyof NonNullable<NonNullable<ServerSettingsPatch["providers"]>[P]>;
+  readonly configuredKey: keyof ServerSettings["providers"][P];
+  readonly label: string;
+}
+
+export type ProviderSecretProvider = keyof typeof PROVIDER_SECRETS;
+
+export const PROVIDER_SECRET_PROVIDERS = Object.keys(
+  PROVIDER_SECRETS,
+) as ReadonlyArray<ProviderSecretProvider>;
 
 export interface ProviderCredentialsShape {
-  readonly getServerPassword: (
-    provider: ExternalProviderServer,
+  readonly getSecret: (
+    provider: ProviderSecretProvider,
   ) => Effect.Effect<string | null, SecretStoreError>;
-  readonly replaceServerPassword: (
-    provider: ExternalProviderServer,
-    password: string | null,
+  readonly replaceSecret: (
+    provider: ProviderSecretProvider,
+    value: string | null,
   ) => Effect.Effect<void, SecretStoreError>;
-  readonly isServerPasswordConfigured: (
-    provider: ExternalProviderServer,
+  readonly isSecretConfigured: (
+    provider: ProviderSecretProvider,
   ) => Effect.Effect<boolean, SecretStoreError>;
 }
 
@@ -30,17 +60,17 @@ export class ProviderCredentials extends ServiceMap.Service<
   ProviderCredentialsShape
 >()("synara/providerCredentials/ProviderCredentials") {}
 
-export const resolveProviderServerPassword = (provider: ExternalProviderServer) =>
+export const resolveProviderSecret = (provider: ProviderSecretProvider) =>
   Effect.gen(function* () {
     const credentials = yield* ProviderCredentials;
-    return (yield* credentials.getServerPassword(provider)) ?? undefined;
+    return (yield* credentials.getSecret(provider)) ?? undefined;
   }).pipe(Effect.orDie);
 
-export const makeProviderServerPasswordResolver =
+export const makeProviderSecretResolver =
   (credentials: ProviderCredentialsShape) =>
-  (provider: ExternalProviderServer): Effect.Effect<string | undefined> =>
-    credentials.getServerPassword(provider).pipe(
-      Effect.map((password) => password ?? undefined),
+  (provider: ProviderSecretProvider): Effect.Effect<string | undefined> =>
+    credentials.getSecret(provider).pipe(
+      Effect.map((value) => value ?? undefined),
       Effect.orDie,
     );
 
@@ -49,33 +79,30 @@ const makeProviderCredentials = Effect.gen(function* () {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder("utf-8", { fatal: true });
 
-  const getServerPassword: ProviderCredentialsShape["getServerPassword"] = (provider) =>
-    secrets.get(secretName(provider)).pipe(
+  const getSecret: ProviderCredentialsShape["getSecret"] = (provider) =>
+    secrets.get(PROVIDER_SECRETS[provider].secretName).pipe(
       Effect.map((value) => {
         if (!value || value.byteLength === 0) return null;
-        const password = decoder.decode(value);
-        return password.length > 0 ? password : null;
+        const decoded = decoder.decode(value);
+        return decoded.length > 0 ? decoded : null;
       }),
     );
 
-  const replaceServerPassword: ProviderCredentialsShape["replaceServerPassword"] = (
-    provider,
-    password,
-  ) => {
-    const normalized = password?.trim() ?? "";
+  const replaceSecret: ProviderCredentialsShape["replaceSecret"] = (provider, value) => {
+    const normalized = value?.trim() ?? "";
+    const { secretName } = PROVIDER_SECRETS[provider];
     return normalized.length > 0
-      ? secrets.set(secretName(provider), encoder.encode(normalized))
-      : secrets.remove(secretName(provider));
+      ? secrets.set(secretName, encoder.encode(normalized))
+      : secrets.remove(secretName);
   };
 
-  const isServerPasswordConfigured: ProviderCredentialsShape["isServerPasswordConfigured"] = (
-    provider,
-  ) => getServerPassword(provider).pipe(Effect.map((password) => password !== null));
+  const isSecretConfigured: ProviderCredentialsShape["isSecretConfigured"] = (provider) =>
+    getSecret(provider).pipe(Effect.map((value) => value !== null));
 
   return {
-    getServerPassword,
-    replaceServerPassword,
-    isServerPasswordConfigured,
+    getSecret,
+    replaceSecret,
+    isSecretConfigured,
   } satisfies ProviderCredentialsShape;
 });
 

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { AETHER_CATALOG, type AetherAgentFamily } from "./aetherCatalog";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 import type { ProviderKind } from "./orchestration";
 
@@ -159,6 +160,12 @@ export const DevinModelOptions = Schema.Struct({
 });
 export type DevinModelOptions = typeof DevinModelOptions.Type;
 
+export const AetherModelOptions = Schema.Struct({
+  // Passed through to Aether as `reasoning_effort`; valid values come from the vendored catalog.
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
+});
+export type AetherModelOptions = typeof AetherModelOptions.Type;
+
 export const ProviderModelOptions = Schema.Struct({
   codex: Schema.optional(CodexModelOptions),
   claudeAgent: Schema.optional(ClaudeModelOptions),
@@ -169,6 +176,7 @@ export const ProviderModelOptions = Schema.Struct({
   droid: Schema.optional(DroidModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
   pi: Schema.optional(PiModelOptions),
+  aether: Schema.optional(AetherModelOptions),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
 
@@ -566,6 +574,64 @@ type ModelDefinition = {
   readonly name: string;
   readonly capabilities: ModelCapabilities;
 };
+
+// Aether efforts are sent to Aether verbatim, so every option is a plain API effort
+// (Aether applies ultrathink/ultracode itself). The catalog lists codex efforts
+// high-to-low; the picker shows every family low-to-high like the local providers.
+const AETHER_EFFORT_LABELS: Readonly<Record<string, string>> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+  ultrathink: "Ultrathink",
+  ultracode: "Ultracode",
+};
+const AETHER_EFFORT_ORDER = Object.keys(AETHER_EFFORT_LABELS);
+
+function aetherModelCapabilities(family: AetherAgentFamily, slug: string): ModelCapabilities {
+  const effort = AETHER_CATALOG.reasoningEffort[family];
+  const options: readonly string[] =
+    effort.modelOptions.find((group) => (group.models as readonly string[]).includes(slug))
+      ?.options ?? [];
+  const rank = (value: string) => {
+    const index = AETHER_EFFORT_ORDER.indexOf(value);
+    return index === -1 ? AETHER_EFFORT_ORDER.length : index;
+  };
+  return {
+    // A model outside every catalog group (Claude Haiku 4.5) takes no effort. A group
+    // without the family default (Claude Sonnet 4.6) marks none and Aether picks.
+    reasoningEffortLevels: [...options]
+      .toSorted((left, right) => rank(left) - rank(right))
+      .map((value): EffortOption => {
+        const label = AETHER_EFFORT_LABELS[value] ?? value;
+        return value === effort.default ? { value, label, isDefault: true } : { value, label };
+      }),
+    supportsFastMode: false,
+    supportsThinkingToggle: false,
+    promptInjectedEffortLevels: [],
+    contextWindowOptions: [],
+  };
+}
+
+function aetherModelDefinition<const Slug extends string>(
+  family: AetherAgentFamily,
+  model: { readonly slug: Slug; readonly name: string },
+) {
+  return {
+    slug: model.slug,
+    name: model.name,
+    capabilities: aetherModelCapabilities(family, model.slug),
+  } as const satisfies ModelDefinition;
+}
+
+const AETHER_MODEL_OPTIONS = [
+  ...AETHER_CATALOG.agents.codex.models.map((model) => aetherModelDefinition("codex", model)),
+  ...AETHER_CATALOG.agents["claude-code"].models.map((model) =>
+    aetherModelDefinition("claude-code", model),
+  ),
+];
 
 // Static catalog entries that rely on live CLI discovery advertise no
 // capabilities of their own.
@@ -1149,6 +1215,8 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       },
     },
   ],
+  // Vendored from Aether's platform catalog (see aetherCatalog.ts); Aether rejects other slugs.
+  aether: AETHER_MODEL_OPTIONS,
 } as const satisfies Record<ProviderKind, readonly ModelDefinition[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 
@@ -1166,6 +1234,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderWithDefaultModel, ModelSl
   grok: "grok-4.6",
   droid: "claude-opus-4-8",
   opencode: "openai/gpt-5",
+  aether: "claude-opus-5-5",
 };
 
 // Backward compatibility for existing Codex-only call sites.
@@ -1346,6 +1415,17 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
     sonnet: "claude-sonnet-5",
     fable: "claude-fable-5",
   },
+  // Aether rejects retired slugs, so renamed catalog entries keep an alias here.
+  aether: {
+    "claude-fable-5": "claude-fable-5-1",
+    fable: "claude-fable-5-1",
+    opus: "claude-opus-5-5",
+    sonnet: "claude-sonnet-5",
+    haiku: "claude-haiku-4-5",
+    astra: "gpt-6-astra",
+    sol: "gpt-6-sol",
+    luna: "gpt-6-luna",
+  },
 };
 
 // ── Agent mention aliases ─────────────────────────────────────────────
@@ -1388,4 +1468,5 @@ export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  aether: "Aether",
 };

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { getComposerProviderState } from "./composerProviderRegistry";
 import { TraitsPicker } from "./TraitsPicker";
 import { getComposerTraitSelection } from "./composerTraits";
+import { getRuntimeAwareModelCapabilities } from "./runtimeModelCapabilities";
 
 const OPENCODE_RUNTIME_MODEL_WITH_REASONING: ProviderModelDescriptor = {
   slug: "openai/gpt-5.4",
@@ -160,6 +161,58 @@ const DEVIN_RUNTIME_GPT_5_6_WITH_VARIANTS: ProviderModelDescriptor = {
 };
 
 describe("getComposerProviderState", () => {
+  it("dispatches a selected Aether effort explicitly, including the catalog default", () => {
+    for (const reasoningEffort of ["xhigh", "ultracode"]) {
+      expect(
+        getComposerProviderState({
+          provider: "aether",
+          model: "claude-opus-5-5",
+          prompt: "",
+          modelOptions: { aether: { reasoningEffort } },
+        }),
+      ).toEqual({
+        provider: "aether",
+        promptEffort: reasoningEffort,
+        modelOptionsForDispatch: { reasoningEffort },
+      });
+    }
+  });
+
+  it("drops an Aether effort the selected model does not offer and shows the default", () => {
+    expect(
+      getComposerProviderState({
+        provider: "aether",
+        model: "gpt-6-luna",
+        prompt: "",
+        // Also ignores other providers' state for the same model family.
+        modelOptions: { aether: { reasoningEffort: "ultra" }, codex: { reasoningEffort: "low" } },
+      }),
+    ).toEqual({
+      provider: "aether",
+      promptEffort: "xhigh",
+      modelOptionsForDispatch: undefined,
+    });
+  });
+
+  it("offers each Aether model its catalog effort ladder, ignoring runtime ladders", () => {
+    expect(
+      getComposerTraitSelection("aether", "gpt-6-astra", "", undefined).effortLevels.map(
+        (effort) => effort.value,
+      ),
+    ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(
+      getRuntimeAwareModelCapabilities({
+        provider: "aether",
+        model: "claude-sonnet-4-6",
+        runtimeModel: {
+          slug: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          supportedReasoningEfforts: [{ value: "xhigh" }],
+        },
+      }).reasoningEffortLevels.map((effort) => effort.value),
+    ).toEqual(["low", "medium", "high", "ultrathink"]);
+  });
+
   it("dispatches Devin effort selections with their concrete model variant", () => {
     const state = getComposerProviderState({
       provider: "devin",

@@ -28,8 +28,9 @@ import type { ProviderUsageContext } from "./types";
 // Providers whose live snapshot is enriched with on-disk token-total lines (24h/7d/30d).
 const LOCAL_ARCHIVE_PROVIDERS: ReadonlySet<ProviderKind> = new Set(["codex", "claudeAgent"]);
 
-const providerChildKind = (provider: ProviderKind): ProviderChildKind =>
-  provider === "claudeAgent" ? "claude" : provider;
+// Aether runs in the cloud and never launches a local process, so it has no child kind.
+const providerChildKind = (provider: ProviderKind): ProviderChildKind | null =>
+  provider === "aether" ? null : provider === "claudeAgent" ? "claude" : provider;
 
 function buildContext(): ProviderUsageContext {
   return {
@@ -65,12 +66,11 @@ function buildProviderContext(
   provider: ProviderKind,
   ctx: ProviderUsageContext,
 ): ProviderUsageContext {
+  const childKind = providerChildKind(provider);
   return {
     ...ctx,
-    env: buildProviderChildEnvironment({
-      provider: providerChildKind(provider),
-      baseEnv: ctx.env,
-    }),
+    // A provider without a local process (Aether, no usage fetcher yet) inherits nothing.
+    env: childKind ? buildProviderChildEnvironment({ provider: childKind, baseEnv: ctx.env }) : {},
   };
 }
 

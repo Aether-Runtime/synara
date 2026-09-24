@@ -96,6 +96,8 @@ export function formatProviderLabel(provider: ProviderKind): string {
       return "OpenCode";
     case "pi":
       return "Pi";
+    case "aether":
+      return "Aether";
   }
 }
 

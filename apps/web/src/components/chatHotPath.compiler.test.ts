@@ -184,6 +184,13 @@ const HOT_PATH_MODULES: readonly HotPathModule[] = [
   // these run on every composer keystroke and every sidebar action.
   { relativePath: "../hooks/useComposerSlashCommands.ts", allowedBailoutReasons: [] },
   { relativePath: "../hooks/useLocalStorage.ts", allowedBailoutReasons: [] },
+  // Nearly every surface reads settings; uncompiled, it re-normalizes and hands every
+  // caller a fresh settings object on each render.
+  {
+    relativePath: "../appSettings.ts",
+    requiredFunction: "useAppSettings",
+    allowedBailoutReasons: [],
+  },
   { relativePath: "../hooks/useSidebarThreadActions.ts", allowedBailoutReasons: [] },
 ];
 

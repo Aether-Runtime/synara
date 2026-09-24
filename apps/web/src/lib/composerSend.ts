@@ -241,6 +241,8 @@ export function resolvePromptEffortFromModelSelection(
       );
     case "opencode":
       return null;
+    case "aether":
+      return modelSelection.options?.reasoningEffort ?? null;
   }
 }
 

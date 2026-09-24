@@ -6,18 +6,30 @@
 import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderOptionDescriptor } from "./model";
+import type { ProviderKind } from "./orchestration";
 
-const ProviderDiscoveryKind = Schema.Literals([
-  "codex",
-  "claudeAgent",
-  "cursor",
-  "antigravity",
-  "grok",
-  "droid",
-  "opencode",
-  "pi",
-  "devin",
-]);
+// orchestration.ts imports this module, so ProviderKind is repeated here. The type
+// check keeps the copy exhaustive: a provider missing below fails to compile.
+function exhaustiveProviderKinds<const Kinds extends readonly ProviderKind[]>(
+  kinds: Exclude<ProviderKind, Kinds[number]> extends never ? Kinds : never,
+): Kinds {
+  return kinds;
+}
+
+const ProviderDiscoveryKind = Schema.Literals(
+  exhaustiveProviderKinds([
+    "codex",
+    "claudeAgent",
+    "cursor",
+    "antigravity",
+    "grok",
+    "droid",
+    "opencode",
+    "pi",
+    "devin",
+    "aether",
+  ]),
+);
 
 export const ProviderSkillInterface = Schema.Struct({
   displayName: Schema.optional(TrimmedNonEmptyString),

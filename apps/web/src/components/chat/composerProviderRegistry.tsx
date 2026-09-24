@@ -192,6 +192,21 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
       normalizedOptions = Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
       break;
     }
+    case "aether": {
+      const providerOptions = modelOptions?.aether;
+      rawEffort = trimOrNull(providerOptions?.reasoningEffort);
+      // The catalog default is a vendored copy of Aether's, so a selected effort is
+      // always sent explicitly rather than trusting both sides to agree.
+      const reasoningEffort =
+        rawEffort && hasEffortLevel(caps, rawEffort) ? providerOptions?.reasoningEffort : undefined;
+      normalizedOptions = reasoningEffort ? { reasoningEffort } : undefined;
+      break;
+    }
+    default: {
+      // A provider without a case would silently dispatch without its options.
+      const unhandledProvider: never = provider;
+      throw new Error(`Unhandled composer provider: ${String(unhandledProvider)}`);
+    }
   }
 
   const draftEffort = trimOrNull(rawEffort);

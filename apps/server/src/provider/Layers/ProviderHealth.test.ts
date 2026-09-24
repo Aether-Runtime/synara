@@ -165,6 +165,7 @@ const allProvidersDisabledSettings = {
     droid: { enabled: false },
     opencode: { enabled: false },
     pi: { enabled: false },
+    aether: { enabled: false },
   },
 } as const;
 
@@ -180,6 +181,7 @@ const allProvidersDisabledServerSettings = {
     droid: { ...DEFAULT_SERVER_SETTINGS.providers.droid, enabled: false },
     opencode: { ...DEFAULT_SERVER_SETTINGS.providers.opencode, enabled: false },
     pi: { ...DEFAULT_SERVER_SETTINGS.providers.pi, enabled: false },
+    aether: { ...DEFAULT_SERVER_SETTINGS.providers.aether, enabled: false },
   },
 } satisfies typeof DEFAULT_SERVER_SETTINGS;
 
@@ -505,7 +507,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
       );
       const codex = statuses.find((status) => status.provider === "codex");
 
-      assert.strictEqual(statuses.length, 9);
+      assert.strictEqual(statuses.length, 10);
       assert.strictEqual(codex?.available, false);
       assert.strictEqual(codex?.message, "Provider is disabled in Synara settings.");
     });
@@ -640,7 +642,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         const providerHealth = yield* ProviderHealth;
         const statuses = yield* providerHealth.refresh;
 
-        assert.strictEqual(statuses.length, 9);
+        assert.strictEqual(statuses.length, 10);
         for (const status of statuses) {
           assert.strictEqual(status.available, false);
           assert.strictEqual(status.message, "Provider is disabled in Synara settings.");
@@ -795,7 +797,61 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           return yield* providerHealth.getStatuses;
         }).pipe(Effect.provide(layer));
 
-        assert.deepStrictEqual(statuses, []);
+        // Aether is the only provider disabled by default, so only its settings overlay
+        // appears; nothing was probed.
+        assert.deepStrictEqual(
+          statuses.map((status) => [status.provider, status.message]),
+          [["aether", "Provider is disabled in Synara settings."]],
+        );
+        assert.strictEqual(spawnCount, 0);
+      }),
+    );
+  });
+
+  describe("Aether health", () => {
+    it.effect("checks Aether without looking up or spawning an executable", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "provider-health-aether-",
+        });
+        let spawnCount = 0;
+        const layer = ProviderHealthLive.pipe(
+          Layer.provideMerge(
+            ServerSettingsService.layerTest({
+              providers: { ...allProvidersDisabledSettings.providers, aether: { enabled: true } },
+            }),
+          ),
+          Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
+          Layer.provideMerge(
+            mockSpawnerLayer(() => {
+              spawnCount += 1;
+              return { stdout: "", stderr: "", code: 0 };
+            }),
+          ),
+        );
+
+        const statuses = yield* Effect.gen(function* () {
+          const providerHealth = yield* ProviderHealth;
+          return yield* providerHealth.refresh;
+        }).pipe(Effect.provide(layer));
+        const aether = statuses.find((status) => status.provider === "aether");
+
+        // No key is saved in this fresh secret store, so no request is made either.
+        assert.deepStrictEqual(
+          {
+            status: aether?.status,
+            available: aether?.available,
+            authStatus: aether?.authStatus,
+            message: aether?.message,
+          },
+          {
+            status: "warning",
+            available: true,
+            authStatus: "unauthenticated",
+            message: "Aether is not configured. Add an Aether API key in Settings → Providers.",
+          },
+        );
         assert.strictEqual(spawnCount, 0);
       }),
     );

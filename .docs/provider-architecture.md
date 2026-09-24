@@ -4,7 +4,7 @@ Synara treats provider integrations as adapters behind server-owned orchestratio
 
 ## Implemented providers
 
-`ProviderAdapterRegistryLive` currently registers nine first-class provider kinds:
+`ProviderAdapterRegistryLive` currently registers ten first-class provider kinds:
 
 - `codex`
 - `claudeAgent`
@@ -15,6 +15,7 @@ Synara treats provider integrations as adapters behind server-owned orchestratio
 - `droid`
 - `opencode`
 - `pi`
+- `aether` — cloud provider, registered as a skeleton: settings, API-key health check and the vendored model catalog work, while sessions fail with "The Aether provider is not implemented yet" (see `plans/aether-cloud-provider.md`)
 
 The registry is intentionally small. It maps `ProviderKind` to an adapter and lists the registered providers; it does not own session routing, persistence, or cross-provider orchestration.
 

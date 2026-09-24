@@ -1,7 +1,7 @@
 // FILE: storeNormalization.test.ts
 // Purpose: Pins the incremental activity accumulator to the `normalizeActivities` fold it replaces.
 
-import { MessageId, TurnId, type PendingClaudeCacheReview } from "@synara/contracts";
+import { MessageId, ProviderKind, TurnId, type PendingClaudeCacheReview } from "@synara/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,6 +11,7 @@ import {
   mergeReadModelThreadDetailWithLiveHotPath,
   normalizeActivities,
   normalizeChatMessage,
+  normalizeThreadSession,
   normalizeThreadFromReadModel,
   normalizeThreadShellSnapshot,
   threadShellsEqual,
@@ -532,5 +533,26 @@ describe("asynchronous question hydration", () => {
     const restored = normalizeChatMessage(pending, answered);
     expect(restored.asyncUserInput?.response).toEqual(response);
     expect(restored.completedAt).toBe(createdAt);
+  });
+});
+
+describe("normalizeThreadSession", () => {
+  it("keeps every provider's session on its own provider instead of the Codex fallback", () => {
+    for (const providerName of ProviderKind.literals) {
+      const incoming = makeReadModelThread({
+        session: {
+          threadId: makeThread().id,
+          status: "ready",
+          providerName,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-09-23T00:00:00.000Z",
+        },
+      }).session;
+
+      expect(normalizeThreadSession(incoming, null)?.provider).toBe(providerName);
+    }
+    expect(ProviderKind.literals).toContain("aether");
   });
 });

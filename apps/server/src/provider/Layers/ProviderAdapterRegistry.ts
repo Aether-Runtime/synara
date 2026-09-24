@@ -28,6 +28,7 @@ import { GrokAdapter } from "../Services/GrokAdapter.ts";
 import { OpenCodeAdapter } from "../Services/OpenCodeAdapter.ts";
 import { PiAdapter } from "../Services/PiAdapter.ts";
 import { AntigravityAdapter } from "../Services/AntigravityAdapter.ts";
+import { AetherAdapter } from "../Services/AetherAdapter.ts";
 
 export interface ProviderAdapterRegistryLiveOptions {
   readonly adapters?: ReadonlyArray<ProviderAdapterShape<ProviderAdapterError>>;
@@ -48,6 +49,7 @@ const makeProviderAdapterRegistry = (options?: ProviderAdapterRegistryLiveOption
             yield* DroidAdapter,
             yield* OpenCodeAdapter,
             yield* PiAdapter,
+            yield* AetherAdapter,
           ];
 
     for (const adapter of adapters) {

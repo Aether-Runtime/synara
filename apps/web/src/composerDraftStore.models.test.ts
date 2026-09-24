@@ -1,11 +1,15 @@
-import { ThreadId, type ModelSelection } from "@synara/contracts";
+import { ProviderKind, ThreadId, type ModelSelection } from "@synara/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   deriveEffectiveComposerModelState,
   resolvePreferredComposerModelSelection,
   useComposerDraftStore,
 } from "./composerDraftStore";
-import { normalizeModelSelection } from "./composerDraftModels";
+import {
+  COMPOSER_PROVIDER_KINDS,
+  normalizeModelSelection,
+  normalizeProviderModelOptions,
+} from "./composerDraftModels";
 import {
   modelSelection,
   providerModelOptions,
@@ -420,6 +424,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        aether: [],
       },
       availableModelOptionsByProvider: {
         opencode: [{ slug: "opencode/gpt-5-nano", name: "GPT-5 Nano" }],
@@ -448,6 +453,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        aether: [],
       },
       availableModelOptionsByProvider: {
         opencode: [
@@ -481,6 +487,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        aether: [],
       },
       availableModelOptionsByProvider: {
         opencode: [
@@ -514,6 +521,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        aether: [],
       },
       availableModelOptionsByProvider: {
         pi: [
@@ -1052,5 +1060,36 @@ describe("composerDraftStore provider-scoped option updates", () => {
         reasoningEffort: "high",
       }),
     );
+  });
+});
+
+describe("Aether composer drafts", () => {
+  it("lists every provider as a composer provider", () => {
+    expect([...COMPOSER_PROVIDER_KINDS].toSorted()).toEqual([...ProviderKind.literals].toSorted());
+  });
+
+  it("keeps Aether selections and their effort instead of dropping or remapping them", () => {
+    expect(
+      normalizeModelSelection({
+        provider: "aether",
+        model: "claude-opus-5-5",
+        options: { reasoningEffort: "ultracode" },
+      }),
+    ).toEqual({
+      provider: "aether",
+      model: "claude-opus-5-5",
+      options: { reasoningEffort: "ultracode" },
+    });
+    // Retired catalog slugs migrate through the Aether alias table.
+    expect(normalizeModelSelection({ provider: "aether", model: "claude-fable-5" })).toEqual({
+      provider: "aether",
+      model: "claude-fable-5-1",
+    });
+    expect(
+      normalizeProviderModelOptions({
+        aether: { reasoningEffort: " xhigh " },
+        codex: { reasoningEffort: "low" },
+      }),
+    ).toEqual({ aether: { reasoningEffort: "xhigh" }, codex: { reasoningEffort: "low" } });
   });
 });

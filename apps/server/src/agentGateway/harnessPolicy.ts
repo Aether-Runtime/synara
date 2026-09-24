@@ -77,6 +77,8 @@ export interface SynaraHarnessPolicyDeliveryState {
   enableComputerControl?: boolean | undefined;
 }
 
+// Aether is deliberately absent: its agent runs in a cloud VM that cannot reach the
+// local Synara gateway, so it never receives thread-scoped synara_* tools.
 const PROVIDERS_WITH_THREAD_SCOPED_SYNARA_MCP = new Set<ProviderKind>([
   "codex",
   "claudeAgent",

@@ -57,8 +57,10 @@ import {
   type ProviderChildKind,
 } from "../../providerChildEnvironment.ts";
 import { buildOpenCodeServerProcessEnv } from "../providerBinaryResolution.ts";
+import { ProviderCredentials, ProviderCredentialsLive } from "../../providerCredentials";
 import { ServerSettingsService } from "../../serverSettings";
 import { isWindowsShellCommandMissingResult } from "../../shell-command-detection";
+import { makeCheckAetherProviderStatus } from "../aether/aetherHealth";
 import {
   buildCursorAgentCommand,
   buildCursorAgentHeadlessEnv,
@@ -127,6 +129,7 @@ const DROID_PROVIDER = "droid" as const;
 const DEVIN_PROVIDER = "devin" as const;
 const OPENCODE_PROVIDER = "opencode" as const;
 const PI_PROVIDER = "pi" as const;
+const AETHER_PROVIDER = "aether" as const;
 type ProviderStatuses = ReadonlyArray<ServerProviderStatus>;
 const DISABLED_PROVIDER_STATUS_MESSAGE = "Provider is disabled in Synara settings.";
 const MINIMUM_ANTIGRAVITY_CLI_VERSION = "1.0.12";
@@ -141,15 +144,20 @@ const PROVIDERS = [
   DEVIN_PROVIDER,
   OPENCODE_PROVIDER,
   PI_PROVIDER,
+  AETHER_PROVIDER,
 ] as const satisfies ReadonlyArray<ProviderKind>;
 
-const providerChildKind = (provider: ProviderKind): ProviderChildKind =>
-  provider === CLAUDE_AGENT_PROVIDER ? "claude" : provider;
+// Aether runs in the cloud and never launches a local process, so it has no child kind.
+const providerChildKind = (provider: ProviderKind): ProviderChildKind | null =>
+  provider === AETHER_PROVIDER ? null : provider === CLAUDE_AGENT_PROVIDER ? "claude" : provider;
 
-const providerCommandEnv = (provider: ProviderKind): NodeJS.ProcessEnv =>
-  provider === OPENCODE_PROVIDER
-    ? buildOpenCodeServerProcessEnv({})
-    : buildProviderChildEnvironment({ provider: providerChildKind(provider) });
+const providerCommandEnv = (provider: ProviderKind): NodeJS.ProcessEnv => {
+  if (provider === OPENCODE_PROVIDER) {
+    return buildOpenCodeServerProcessEnv({});
+  }
+  const childKind = providerChildKind(provider);
+  return childKind ? buildProviderChildEnvironment({ provider: childKind }) : {};
+};
 
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
 const MAX_REFRESH_REVISION_RETRIES = 1;
@@ -2072,6 +2080,7 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
       const serverSettings = yield* ServerSettingsService;
+      const providerCredentials = yield* ProviderCredentials;
       const changesPubSub = yield* Effect.acquireRelease(
         PubSub.unbounded<ReadonlyArray<ServerProviderStatus>>(),
         PubSub.shutdown,
@@ -2157,6 +2166,9 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
             return settings.providers.pi.binaryPath;
           case "devin":
             return settings.providers.devin.binaryPath;
+          case "aether":
+            // Cloud provider: nothing to resolve or update locally.
+            return undefined;
         }
       };
 
@@ -2369,6 +2381,14 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
                     settings.providers.pi.agentDir,
                     settings.providers.pi.binaryPath,
                   ),
+                ),
+                checkProviderWhenEnabled(
+                  settings,
+                  AETHER_PROVIDER,
+                  makeCheckAetherProviderStatus({
+                    apiBaseUrl: settings.providers.aether.apiBaseUrl,
+                    readApiKey: providerCredentials.getSecret("aether"),
+                  }),
                 ),
               ],
               {
@@ -2757,7 +2777,7 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
         },
       } satisfies ProviderHealthShape;
     }),
-  );
+  ).pipe(Layer.provide(ProviderCredentialsLive));
 }
 
 export const ProviderHealthLive = makeProviderHealthLive();
