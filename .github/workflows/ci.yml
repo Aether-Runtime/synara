@@ -395,6 +395,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Fork guard: copies of Emanuele-web04/synara carry no release tags, so
+      # read them from upstream. The lineage check below is unchanged.
+      # Checking upstream's live tag set is intentional: this work is meant to go
+      # upstream, so a migration collision with a new upstream release should
+      # turn fork CI red early. Do not pin or cache these tags.
+      - name: Fetch upstream release tags
+        if: github.repository != 'Emanuele-web04/synara'
+        run: git fetch --no-tags https://github.com/Emanuele-web04/synara.git 'refs/tags/v*:refs/tags/v*'
+
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
