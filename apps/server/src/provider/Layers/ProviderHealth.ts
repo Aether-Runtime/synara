@@ -57,10 +57,11 @@ import {
   type ProviderChildKind,
 } from "../../providerChildEnvironment.ts";
 import { buildOpenCodeServerProcessEnv } from "../providerBinaryResolution.ts";
-import { ProviderCredentials, ProviderCredentialsLive } from "../../providerCredentials";
+import { ProviderCredentialsLive } from "../../providerCredentials";
 import { ServerSettingsService } from "../../serverSettings";
 import { isWindowsShellCommandMissingResult } from "../../shell-command-detection";
-import { makeCheckAetherProviderStatus } from "../aether/aetherHealth";
+import { checkAetherProviderStatus } from "../aether/aetherHealth";
+import { AetherApiClientLive } from "./AetherApiClient";
 import {
   buildCursorAgentCommand,
   buildCursorAgentHeadlessEnv,
@@ -92,6 +93,7 @@ import {
   type CommandResult,
 } from "../providerCliOutput";
 import { probeProviderCliVersion } from "../providerCliVersionProbe";
+import { AetherApiClient } from "../Services/AetherApiClient";
 import { ProviderHealth, type ProviderHealthShape } from "../Services/ProviderHealth";
 import {
   orderProviderStatuses,
@@ -2080,7 +2082,7 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
       const serverSettings = yield* ServerSettingsService;
-      const providerCredentials = yield* ProviderCredentials;
+      const aetherApiClient = yield* AetherApiClient;
       const changesPubSub = yield* Effect.acquireRelease(
         PubSub.unbounded<ReadonlyArray<ServerProviderStatus>>(),
         PubSub.shutdown,
@@ -2385,10 +2387,7 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
                 checkProviderWhenEnabled(
                   settings,
                   AETHER_PROVIDER,
-                  makeCheckAetherProviderStatus({
-                    apiBaseUrl: settings.providers.aether.apiBaseUrl,
-                    readApiKey: providerCredentials.getSecret("aether"),
-                  }),
+                  checkAetherProviderStatus(aetherApiClient),
                 ),
               ],
               {
@@ -2777,7 +2776,7 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
         },
       } satisfies ProviderHealthShape;
     }),
-  ).pipe(Layer.provide(ProviderCredentialsLive));
+  ).pipe(Layer.provide(AetherApiClientLive), Layer.provide(ProviderCredentialsLive));
 }
 
 export const ProviderHealthLive = makeProviderHealthLive();
