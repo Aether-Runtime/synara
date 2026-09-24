@@ -3199,6 +3199,7 @@ const make = Effect.gen(function* () {
 
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
+    readonly provider: ProviderKind;
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly messageId: string;
@@ -3209,6 +3210,15 @@ const make = Effect.gen(function* () {
       return;
     }
     if (!isTemporaryWorktreeBranch(input.branch)) {
+      return;
+    }
+    // The provider owns this branch (e.g. it mirrors a remote branch into the
+    // worktree), so renaming or pushing it here would fight the provider.
+    const managesWorktreeBranch = yield* providerService.getCapabilities(input.provider).pipe(
+      Effect.map((capabilities) => capabilities.managesWorktreeBranch === true),
+      Effect.catch(() => Effect.succeed(false)),
+    );
+    if (managesWorktreeBranch) {
       return;
     }
 
@@ -3573,6 +3583,7 @@ const make = Effect.gen(function* () {
 
       yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
         threadId: event.payload.threadId,
+        provider: event.payload.modelSelection?.provider ?? (providerName as ProviderKind),
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         messageId: message.id,

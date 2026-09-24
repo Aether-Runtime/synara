@@ -77,7 +77,8 @@ import { ComputerEventInterests } from "./computer/computerEventInterests";
 import { GitCore } from "./git/Services/GitCore";
 import { GitHubCli } from "./git/Services/GitHubCli";
 import { GitManager } from "./git/Services/GitManager";
-import { GitHubCliError } from "./git/Errors";
+import { WorktreeOwnership } from "./git/Services/WorktreeOwnership";
+import { GitHubCliError, WorktreeOwnedError } from "./git/Errors";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
 import {
@@ -319,6 +320,14 @@ export function toWsRpcError(cause: unknown, fallbackMessage: string) {
       cause,
     });
   }
+  if (Schema.is(WorktreeOwnedError)(cause)) {
+    return new WsRpcError({
+      message: cause.message,
+      code: "WORKTREE_OWNED",
+      retryable: false,
+      cause,
+    });
+  }
   // Missing projector cursors make the snapshot fence underivable. Mark the
   // failure non-retryable with its own code so clients surface a diagnosable
   // fault instead of restarting the stream into the same condition forever.
@@ -399,6 +408,7 @@ const makeWsRpcHandlersLayer = () =>
       const textGeneration = yield* TextGeneration;
       const workspaceEntries = yield* WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem;
+      const worktreeOwnership = yield* WorktreeOwnership;
       const threadDiagnostics = yield* ThreadDiagnosticsQuery;
       const eventStore = yield* OrchestrationEventStore;
       const providerRuntimeEvents = yield* ProviderRuntimeEventRepository;
@@ -1273,7 +1283,10 @@ const makeWsRpcHandlersLayer = () =>
             "Failed to create local file preview grant",
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
-          workspaceFileSystem.writeFile(input).pipe(
+          // Editor saves bypass GitCore.withMutation, so refuse writes into a
+          // provider-owned worktree here, before anything touches the file.
+          worktreeOwnership.assertNotOwned(path.resolve(input.cwd, input.relativePath)).pipe(
+            Effect.andThen(workspaceFileSystem.writeFile(input)),
             Effect.mapError((cause) =>
               cause instanceof WorkspaceFileConflictError
                 ? new WsRpcError({
@@ -1591,7 +1604,9 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             refreshGitStatusAfter(
               input.cwd,
-              git.withMutation(input.cwd, git.removeWorktree(input)),
+              git.withMutation(input.cwd, git.removeWorktree(input), {
+                targets: { worktreePaths: [input.path] },
+              }),
             ),
             "Failed to remove worktree",
           ),

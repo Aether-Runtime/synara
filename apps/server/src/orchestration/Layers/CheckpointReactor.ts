@@ -45,6 +45,7 @@ import {
   threadHasInFlightTurn,
 } from "../commandInvariants.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
+import { WorktreeOwnership } from "../../git/Services/WorktreeOwnership.ts";
 import { resolveProviderSessionThread } from "../providerSessionThread.ts";
 
 type ReactorInput =
@@ -137,6 +138,7 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const receiptBus = yield* RuntimeReceiptBus;
   const turnCheckpointCoordinator = yield* TurnCheckpointCoordinator;
+  const worktreeOwnership = yield* WorktreeOwnership;
   const pendingMessageStartByThread = new Map<ThreadId, MessageId>();
   // Coalesces live turn-diff recomputes: at most one queued + one in-flight per
   // thread. The flag is cleared when the worker starts processing the job so an
@@ -1070,6 +1072,22 @@ const make = Effect.gen(function* () {
           event.payload.scope === "files"
             ? "No git workspace is available for file Undo."
             : "No git workspace is available for this thread's checkpoints.",
+        createdAt: now,
+      }).pipe(Effect.catch(() => Effect.void));
+      return;
+    }
+
+    // A provider that owns this worktree mirrors its changes into it, and a
+    // restore would race or be erased by that mirror. Refuse before any file
+    // or checkpoint ref changes.
+    const ownedWorktreeRefusal = yield* worktreeOwnership
+      .assertNotOwned(checkpointCwd)
+      .pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => null }));
+    if (ownedWorktreeRefusal !== null) {
+      yield* appendRevertFailureActivity({
+        threadId: event.payload.threadId,
+        turnCount: event.payload.turnCount,
+        detail: ownedWorktreeRefusal,
         createdAt: now,
       }).pipe(Effect.catch(() => Effect.void));
       return;

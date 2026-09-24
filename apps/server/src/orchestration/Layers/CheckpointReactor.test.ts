@@ -373,6 +373,7 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(TurnCheckpointCoordinatorLive),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(checkpointStoreLayer),
+      Layer.provideMerge(GitCoreLive),
       Layer.provideMerge(ServerConfigLayer),
       Layer.provideMerge(NodeServices.layer),
       Layer.provideMerge(SqlitePersistenceMemory),

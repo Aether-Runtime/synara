@@ -2841,7 +2841,15 @@ The local stash entry was kept for recovery.`,
     pullRequestSnapshot,
     preparePullRequestThread: (input) =>
       gitCore.withMutation(input.cwd, preparePullRequestThread(input)),
-    handoffThread: (input) => gitCore.withMutation(input.cwd, handoffThread(input)),
+    handoffThread: (input) =>
+      gitCore.withMutation(input.cwd, handoffThread(input), {
+        // A handoff stashes in, removes, or recreates the thread's worktree.
+        targets: {
+          worktreePaths: [input.worktreePath, input.associatedWorktreePath].filter(
+            (worktreePath): worktreePath is string => worktreePath !== null,
+          ),
+        },
+      }),
     runStackedAction: (input, options) =>
       gitCore.withMutation(input.cwd, runStackedAction(input, options)),
   } satisfies GitManagerShape;
