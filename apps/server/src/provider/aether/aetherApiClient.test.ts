@@ -19,8 +19,14 @@ import {
   type AetherHttpRequest,
 } from "./aetherApiClient.ts";
 import { AetherApiNotConfiguredError, type AetherApiError } from "./aetherApiErrors.ts";
-import type { AetherCreateTaskRequest, AetherRespondToTaskRequest } from "./aetherApiSchemas.ts";
 import {
+  AETHER_TOOL_STATUSES,
+  isKnownAetherValue,
+  type AetherCreateTaskRequest,
+  type AetherRespondToTaskRequest,
+} from "./aetherApiSchemas.ts";
+import {
+  activityItemBody,
   activityPageBody,
   admissionBody,
   connectConnectingBody,
@@ -32,6 +38,9 @@ import {
   PROJECT_ID,
   profileBody,
   projectBody,
+  pullRequestBody,
+  seamBody,
+  seamMessageBody,
   subagentsBody,
   TASK_ID,
   taskBody,
@@ -39,6 +48,7 @@ import {
   turnBody,
   TURN_ID,
   turnsPageBody,
+  userMessageBody,
   WORKSPACE_ID,
   withoutKey,
 } from "./testing/aetherApiFixtures.ts";
@@ -647,11 +657,6 @@ describe("Aether API client: decoding", () => {
         'Expected "text" | "thinking" | "tool" | "seam", got "image" at ["items"]["0"]["variant"]',
       ],
       [
-        (client) => client.getTurnActivity(TASK_ID, TURN_ID),
-        activityPageBody({ items: [toolMessageBody({ status: "running" })] }),
-        '["items"]["0"]["tool"]["status"]',
-      ],
-      [
         (client) => client.getLiveConversation(TASK_ID, []),
         liveSnapshotBody({ open: [liveMessageBody({ variant: "image" })] }),
         'Expected "text" | "thinking", got "image" at ["open"]["0"]["variant"]',
@@ -688,6 +693,93 @@ describe("Aether API client: decoding", () => {
 
     expect(error).toEqual(expect.objectContaining({ _tag: "AetherApiServerError", status: 502 }));
     expect(error).not.toHaveProperty("serverMessage");
+  });
+});
+
+describe("Aether API client: descriptive values it does not know", () => {
+  it("still decodes the page, keeping each unknown value as sent", async () => {
+    const activity = await succeed(
+      clientWith(
+        json(
+          200,
+          activityPageBody({
+            items: [
+              userMessageBody({
+                deliveryStatus: "cancelled",
+                messageEvent: { kind: "calendar_invite", when: "tomorrow" },
+              }),
+              toolMessageBody({ status: "running", itemType: "notebook_edit" }),
+              { ...seamMessageBody(), seam: { ...seamBody(), trigger: "scheduled" } },
+            ],
+          }),
+        ),
+      ).client.getTurnActivity(TASK_ID, TURN_ID),
+    );
+    const [user, tool, seam] = activity.items;
+    expect(user).toMatchObject({
+      deliveryStatus: "cancelled",
+      messageEvent: { kind: "calendar_invite", when: "tomorrow" },
+    });
+    expect(tool).toMatchObject({ tool: { status: "running", itemType: "notebook_edit" } });
+    expect(seam).toMatchObject({ seam: { trigger: "scheduled" } });
+    if (tool === undefined || !("tool" in tool)) throw new Error("expected a tool row");
+    expect(isKnownAetherValue(AETHER_TOOL_STATUSES, tool.tool.status)).toBe(false);
+    expect(isKnownAetherValue(AETHER_TOOL_STATUSES, "output-available")).toBe(true);
+
+    const task = await succeed(
+      clientWith(
+        json(
+          200,
+          taskBody("processing", {
+            agent_type: "gemini",
+            reasoning_effort: "extreme",
+            primary_pull_request: { ...pullRequestBody(), state: "draft" },
+            activity_items: [{ ...activityItemBody(), type: "ci_pending" }],
+          }),
+        ),
+      ).client.getTask(TASK_ID),
+    );
+    expect(task).toMatchObject({
+      agent_type: "gemini",
+      reasoning_effort: "extreme",
+      primary_pull_request: { state: "draft" },
+      activity_items: [{ type: "ci_pending" }],
+    });
+
+    const subagents = await succeed(
+      clientWith(
+        json(200, {
+          subagents: [{ ...(subagentsBody().subagents as Json[])[0], status: "hibernating" }],
+        }),
+      ).client.listSubagents(TASK_ID),
+    );
+    expect(subagents.subagents[0]?.status).toBe("hibernating");
+  });
+
+  it("refuses to send an unknown settings value back, naming the field", async () => {
+    const { client, requests } = clientWith(json(200, taskBody("queued")));
+
+    const error = await fail(
+      client.updateTask(TASK_ID, {
+        ...updateRequest,
+        agent_type: "gemini",
+      } as unknown as typeof updateRequest),
+    );
+
+    expect(error._tag).toBe("AetherApiEncodeError");
+    expect(error._tag === "AetherApiEncodeError" && error.detail).toContain('["agent_type"]');
+    expect(requests).toEqual([]);
+  });
+
+  it("still fails a turns page whose turn state it does not know", async () => {
+    const error = await fail(
+      clientWith(
+        json(200, turnsPageBody({ turns: [turnBody({ state: "paused" })] })),
+      ).client.getConversationTurns(TASK_ID),
+    );
+
+    // Settlement branches on the turn state, so it stays closed.
+    expect(error._tag).toBe("AetherApiDecodeError");
   });
 });
 

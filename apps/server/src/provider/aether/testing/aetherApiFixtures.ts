@@ -54,7 +54,7 @@ export const projectBody = (overrides: Json = {}): Json => ({
   ...overrides,
 });
 
-const pullRequestBody = (): Json => ({
+export const pullRequestBody = (): Json => ({
   pull_request_id: "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b",
   pr_number: 7,
   html_url: "https://github.com/Aether-Runtime/synara/pull/7",
@@ -146,20 +146,20 @@ export const taskSummaryBody = (status: TaskStatusFixture, overrides: Json = {})
   ...overrides,
 });
 
+export const activityItemBody = (): Json => ({
+  id: "act_01",
+  task_id: TASK_ID,
+  created_at: TIMESTAMP,
+  sequence: 3,
+  type: "workspace_lifecycle",
+  message: "Workspace started.",
+  event_id: "evt_01",
+});
+
 /** `Task…WithActivity` (`GET`/`PUT /tasks/{taskID}`). */
 export const taskBody = (status: TaskStatusFixture, overrides: Json = {}): Json => ({
   ...taskSummaryBody(status),
-  activity_items: [
-    {
-      id: "act_01",
-      task_id: TASK_ID,
-      created_at: TIMESTAMP,
-      sequence: 3,
-      type: "workspace_lifecycle",
-      message: "Workspace started.",
-      event_id: "evt_01",
-    },
-  ],
+  activity_items: [activityItemBody()],
   agent_segments: [],
   runtime_intervals: [],
   latest_workspace_warning: "Disk is 90% full.",
@@ -227,14 +227,16 @@ export const seamMessageBody = (): Json => ({
   variant: "seam",
   timestamp: TIMESTAMP,
   sequence: 5,
-  seam: {
-    reason: "compaction",
-    sessionId: "session_01",
-    boundaryId: "boundary_01",
-    trigger: "auto",
-    preTokens: 180_000,
-    postTokens: 20_000,
-  },
+  seam: seamBody(),
+});
+
+export const seamBody = (): Json => ({
+  reason: "compaction",
+  sessionId: "session_01",
+  boundaryId: "boundary_01",
+  trigger: "auto",
+  preTokens: 180_000,
+  postTokens: 20_000,
 });
 
 export const turnBody = (overrides: Json = {}): Json => ({

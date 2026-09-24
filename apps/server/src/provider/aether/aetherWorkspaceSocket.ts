@@ -35,7 +35,6 @@ import {
   AetherUserActivityMessage,
   AetherWorkspaceErrorMessage,
   type AetherFileRead,
-  type AetherFileErrorCode,
   type AetherGitDiffMode,
   type AetherGitDiffResult,
 } from "./aetherWorkspaceProtocol.ts";
@@ -181,7 +180,8 @@ export interface AetherWorkspaceSocket {
   readonly sendUserActivity: () => Effect.Effect<void, AetherWorkspaceSocketClosedError>;
   /**
    * Pings now and then every `intervalMs` (at most the protocol's 30s) until interrupted or the
-   * socket closes, which fails it. Fork it for as long as the workspace must stay awake.
+   * socket closes, which fails it. Fork it for as long as the workspace must stay awake. An
+   * interval that is not a positive number is a defect.
    */
   readonly keepAlive: (options?: {
     readonly intervalMs?: number;
@@ -217,6 +217,20 @@ export function aetherWorkspaceSocketUrl(
 
 type PendingRequest = Deferred.Deferred<unknown, AetherWorkspaceSocketClosedError>;
 
+/** Resolves the socket host to one address, aborting when `signal` fires. */
+export type AetherWorkspaceAddressResolver = (
+  url: URL,
+  signal: AbortSignal,
+) => Promise<{ readonly address: string; readonly family: 4 | 6 }>;
+
+/** outboundHttp's rules: a public address, or exact loopback for an `http:` API base URL. */
+const resolvePinnedWorkspaceAddress: AetherWorkspaceAddressResolver = (url, signal) =>
+  resolveOutboundPinnedAddress(url, {
+    requirePublicAddress: true,
+    allowLoopbackHttp: url.protocol === "http:",
+    signal,
+  });
+
 type Notice =
   | { readonly _tag: "ServerError"; readonly error: string }
   | { readonly _tag: "Malformed"; readonly detail: string };
@@ -232,6 +246,8 @@ export const openAetherWorkspaceSocket = (input: {
   readonly workspaceId: string;
   readonly transport: AetherWorkspaceTransport;
   readonly options?: AetherWorkspaceSocketOptions;
+  /** Replaces outboundHttp's address resolution; for tests. */
+  readonly resolveAddress?: AetherWorkspaceAddressResolver;
 }): Effect.Effect<AetherWorkspaceSocket, AetherWorkspaceSocketOpenError, Scope.Scope> =>
   Effect.gen(function* () {
     const { workspaceId } = input;
@@ -319,34 +335,29 @@ export const openAetherWorkspaceSocket = (input: {
       // but are not this transport's concern.
     };
 
-    const pinnedAddress = yield* Effect.tryPromise({
-      try: (signal) =>
-        resolveOutboundPinnedAddress(urls.httpUrl, {
-          requirePublicAddress: true,
-          allowLoopbackHttp: urls.httpUrl.protocol === "http:",
-          signal,
-        }),
-      catch: (cause) =>
-        new AetherWorkspaceSocketOpenError({
-          workspaceId,
-          detail: "The workspace host did not resolve to an allowed address.",
-          cause,
-        }),
-    });
-    const lookup: LookupFunction = (_hostname, options, callback) =>
-      invokePinnedDnsLookup(pinnedAddress, options, callback);
-
     const tokenUrl = new URL(urls.socketUrl);
     tokenUrl.searchParams.set("token", input.connection.apiKey);
-    const socketOptions: WebSocket.ClientOptions & { readonly lookup: LookupFunction } = {
-      handshakeTimeout: openTimeoutMs,
-      maxPayload,
-      followRedirects: false,
-      lookup,
-    };
+    const resolveAddress = input.resolveAddress ?? resolvePinnedWorkspaceAddress;
 
-    const socket = yield* Effect.acquireRelease(
-      Effect.callback<WebSocket, AetherWorkspaceSocketOpenError>((resume) => {
+    // One deadline over address resolution and the upgrade: a stalled resolver must not hold
+    // the caller longer than `openTimeoutMs` (the REST path gets the same from outboundHttp).
+    const open = Effect.gen(function* () {
+      const pinnedAddress = yield* Effect.tryPromise({
+        try: (signal) => resolveAddress(urls.httpUrl, signal),
+        catch: (cause) =>
+          new AetherWorkspaceSocketOpenError({
+            workspaceId,
+            detail: "The workspace host did not resolve to an allowed address.",
+            cause,
+          }),
+      });
+      const socketOptions: WebSocket.ClientOptions & { readonly lookup: LookupFunction } = {
+        maxPayload,
+        followRedirects: false,
+        lookup: (_hostname, options, callback) =>
+          invokePinnedDnsLookup(pinnedAddress, options, callback),
+      };
+      return yield* Effect.callback<WebSocket, AetherWorkspaceSocketOpenError>((resume) => {
         const ws = new WebSocket(tokenUrl, socketOptions);
         let opened = false;
         const failOpen = (detail: string, extra: { status?: number; cause?: unknown } = {}) => {
@@ -380,24 +391,25 @@ export const openAetherWorkspaceSocket = (input: {
         });
         ws.on("message", onFrame);
         return Effect.sync(() => {
-          // Interrupted while opening.
+          // Interrupted while opening, including by the deadline below.
           opened = true;
           ws.terminate();
         });
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: openTimeoutMs,
-          onTimeout: () =>
-            Effect.fail(
-              new AetherWorkspaceSocketOpenError({
-                workspaceId,
-                detail: `The socket did not open within ${openTimeoutMs}ms.`,
-              }),
-            ),
-        }),
-      ),
-      (ws) => closeSocket(ws),
+      });
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: openTimeoutMs,
+        onTimeout: () =>
+          Effect.fail(
+            new AetherWorkspaceSocketOpenError({
+              workspaceId,
+              detail: `The socket did not open within ${openTimeoutMs}ms.`,
+            }),
+          ),
+      }),
     );
+
+    const socket = yield* Effect.acquireRelease(open, (ws) => closeSocket(ws));
 
     function closeSocket(ws: WebSocket): Effect.Effect<void> {
       return Effect.gen(function* () {
@@ -587,7 +599,7 @@ export const openAetherWorkspaceSocket = (input: {
                     channel: "files",
                     requestType: "read",
                     detail: response.error,
-                    code: response.code satisfies AetherFileErrorCode,
+                    code: response.code,
                   }),
                 ),
           ),
@@ -596,10 +608,14 @@ export const openAetherWorkspaceSocket = (input: {
       sendUserActivity,
 
       keepAlive: (options) => {
-        const intervalMs = Math.min(
-          options?.intervalMs ?? AETHER_ACTIVITY_PING_INTERVAL_MS,
-          AETHER_ACTIVITY_PING_INTERVAL_MS,
-        );
+        const requested = options?.intervalMs ?? AETHER_ACTIVITY_PING_INTERVAL_MS;
+        // A zero, negative or NaN interval would ping in a tight loop.
+        if (!Number.isFinite(requested) || requested <= 0) {
+          return Effect.die(
+            new RangeError(`keepAlive intervalMs must be a positive number, got ${requested}.`),
+          );
+        }
+        const intervalMs = Math.min(requested, AETHER_ACTIVITY_PING_INTERVAL_MS);
         return Effect.forever(sendUserActivity().pipe(Effect.andThen(Effect.sleep(intervalMs))));
       },
 

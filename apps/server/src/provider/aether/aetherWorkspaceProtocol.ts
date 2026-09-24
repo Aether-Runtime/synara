@@ -7,8 +7,9 @@
 //
 // Frames the client sends are encoded strictly (the workspace service rejects unknown keys).
 // Frames it receives follow the REST rules: unknown keys are ignored, and a missing required
-// field or an unknown discriminator value (`success`, file `kind`, line `kind`) fails the
-// decode naming the field.
+// field or an unknown discriminator value (`success`, diff file `kind` and `status`, line
+// `kind`, read `encoding`) fails the decode naming the field. The files error `code` is an open
+// string, so a code this client does not know still reports the failure.
 
 import { NonNegativeInt, PositiveInt } from "@synara/contracts";
 import { Schema } from "effect";
@@ -135,7 +136,7 @@ export const AetherFileReadRequest = Schema.Struct({
   path: NonEmptyString,
 });
 
-export const AetherFileErrorCode = Schema.Literals([
+export const AETHER_FILE_ERROR_CODES = [
   "NOT_FOUND",
   "NOT_INITIALIZED",
   "PERMISSION_DENIED",
@@ -146,8 +147,8 @@ export const AetherFileErrorCode = Schema.Literals([
   "INVALID_PATH",
   "PATH_EXISTS",
   "INTERNAL_ERROR",
-]);
-export type AetherFileErrorCode = typeof AetherFileErrorCode.Type;
+] as const;
+export type AetherFileErrorCode = (typeof AETHER_FILE_ERROR_CODES)[number];
 
 export const AetherFileRead = Schema.Struct({
   channel: Schema.Literal("files"),
@@ -172,7 +173,8 @@ export const AetherFileReadResponse = Schema.Union([
     requestId: NonEmptyString,
     success: Schema.Literal(false),
     error: NonEmptyString,
-    code: AetherFileErrorCode,
+    /** Open enum; known values: `AETHER_FILE_ERROR_CODES`. A new code still reports the failure. */
+    code: NonEmptyString,
     path: Schema.optionalKey(Schema.String),
   }),
 ]);

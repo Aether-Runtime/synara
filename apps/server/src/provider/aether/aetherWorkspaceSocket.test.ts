@@ -1,3 +1,4 @@
+import * as Net from "node:net";
 import type { AddressInfo } from "node:net";
 
 import { AetherApiBaseUrl } from "@synara/contracts";
@@ -10,6 +11,7 @@ import { makeAetherApiClient } from "./aetherApiClient.ts";
 import {
   aetherWorkspaceSocketUrl,
   connectAetherWorkspace,
+  openAetherWorkspaceSocket,
   type AetherWorkspaceSocket,
   type AetherWorkspaceSocketOptions,
 } from "./aetherWorkspaceSocket.ts";
@@ -549,5 +551,105 @@ describe("Aether workspace socket", () => {
 
     expect(failureOf(exit)).toMatchObject({ _tag: "AetherWorkspaceSocketOpenError" });
     expect(fake.upgrades).toEqual([]);
+  });
+  it("gives up opening when the server accepts the connection but never upgrades it", async () => {
+    const held: Net.Socket[] = [];
+    const tcp = Net.createServer((socket) => held.push(socket));
+    await new Promise<void>((resolve) => tcp.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = tcp.address() as AddressInfo;
+    try {
+      const startedAt = Date.now();
+      const exit = await Effect.runPromiseExit(
+        Effect.scoped(
+          openAetherWorkspaceSocket({
+            connection: {
+              apiBaseUrl: AetherApiBaseUrl.makeUnsafe(`http://127.0.0.1:${port}`),
+              apiKey: API_KEY,
+            },
+            workspaceId: WORKSPACE_ID,
+            transport: { websocket_path: WEBSOCKET_PATH, preview_token: PREVIEW_TOKEN },
+            options: { openTimeoutMs: 150 },
+          }),
+        ),
+      );
+
+      expect(failureOf(exit)).toMatchObject({
+        _tag: "AetherWorkspaceSocketOpenError",
+        detail: "The socket did not open within 150ms.",
+      });
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(held.length).toBe(1);
+    } finally {
+      for (const socket of held) socket.destroy();
+      await new Promise<void>((resolve) => tcp.close(() => resolve()));
+    }
+  });
+
+  it("counts a stalled address lookup against the open timeout and aborts it", async () => {
+    let lookupSignal: AbortSignal | undefined;
+
+    const exit = await Effect.runPromiseExit(
+      Effect.scoped(
+        openAetherWorkspaceSocket({
+          connection: {
+            apiBaseUrl: AetherApiBaseUrl.makeUnsafe("https://api.runaether.dev"),
+            apiKey: API_KEY,
+          },
+          workspaceId: WORKSPACE_ID,
+          transport: { websocket_path: WEBSOCKET_PATH, preview_token: PREVIEW_TOKEN },
+          options: { openTimeoutMs: 100 },
+          resolveAddress: (_url, signal) => {
+            lookupSignal = signal;
+            return new Promise(() => undefined);
+          },
+        }),
+      ),
+    );
+
+    expect(failureOf(exit)).toMatchObject({
+      _tag: "AetherWorkspaceSocketOpenError",
+      detail: "The socket did not open within 100ms.",
+    });
+    expect(lookupSignal?.aborted).toBe(true);
+  });
+
+  it("refuses a keepalive interval that is not a positive number", async () => {
+    const fake = await startFakeWorkspace();
+
+    const exit = await withSocket(fake, (socket) =>
+      Effect.all(
+        [0, -5, Number.NaN].map((intervalMs) => socket.keepAlive({ intervalMs }).pipe(Effect.exit)),
+      ),
+    );
+
+    for (const result of valueOf(exit)) {
+      expect(Exit.isFailure(result) && Cause.pretty(result.cause)).toContain(
+        "keepAlive intervalMs must be a positive number",
+      );
+    }
+    expect(fake.received).toEqual([]);
+  });
+
+  it("reports a files error code it does not know as a failed request", async () => {
+    const fake = await startFakeWorkspace();
+    fake.respond = (frame, socket) =>
+      socket.send(
+        JSON.stringify({
+          channel: "files",
+          type: "error",
+          requestId: frame.requestId,
+          success: false,
+          error: "quota exceeded",
+          code: "QUOTA_EXCEEDED",
+        }),
+      );
+
+    const error = failureOf(await withSocket(fake, (socket) => socket.readFile("big.bin")));
+
+    expect(error).toMatchObject({
+      _tag: "AetherWorkspaceRequestFailedError",
+      code: "QUOTA_EXCEEDED",
+      detail: "quota exceeded",
+    });
   });
 });

@@ -8,9 +8,16 @@
 // - Unknown keys are ignored: Aether adds fields over time, and `Schema.Struct` strips them.
 // - Each response schema declares the fields Synara reads. A declared field is required exactly
 //   when the OpenAPI requires it, so a missing required field fails the decode and names it.
-// - Enums the client branches on (statuses, `kind`s, `variant`s, `state`s) are closed
-//   `Literals`: an unknown value fails the decode instead of being guessed. Descriptive enums
-//   Synara only displays (`display_state`, subagent `provider`/`task_type`) are open strings.
+// - Discriminators that pick a variant or decide control flow (task `status`,
+//   `awaiting_input.kind`, turn `state`, message `role`/`variant`, seam `reason`, live
+//   `variant`, connect `state`) are closed `Literals`: an unknown value fails the decode and
+//   names the field instead of being guessed.
+// - Descriptive enums on rows and settings (activity item `type`, tool `status`/`itemType`,
+//   `deliveryStatus`, `messageEvent.kind`, subagent `status`, PR `state`, agent/model settings)
+//   are open strings, so one value Aether adds does not fail the whole task or page it sits in.
+//   Each has an exported list of the values this client knows; a consumer narrows with
+//   `isKnownAetherValue` and handles (and reports) the rest itself. Nothing maps an unknown
+//   value to a known one.
 // - Nothing is defaulted. Optional fields stay absent (`optionalKey`), nullable ones stay null.
 //
 // Request schemas mirror the OpenAPI request bodies in full and are encoded with
@@ -43,11 +50,20 @@ export const AetherTurnIdParam = AetherTaskIdParam.check(
 export const AetherProjectIdParam = Uuid;
 export const AetherWorkspaceIdParam = Uuid;
 
+/** Whether an open-enum value is one this client knows (see the decoding rules above). */
+export function isKnownAetherValue<const V extends string>(
+  known: ReadonlyArray<V>,
+  value: string,
+): value is V {
+  return (known as ReadonlyArray<string>).includes(value);
+}
+
 export const AETHER_AGENT_TYPES = ["codex", "claude-code", "opencode", "cursor"] as const;
 export const AetherAgentType = Schema.Literals(AETHER_AGENT_TYPES);
 export type AetherAgentType = typeof AetherAgentType.Type;
 
-export const AetherInteractionMode = Schema.Literals(["default", "plan"]);
+export const AETHER_INTERACTION_MODES = ["default", "plan"] as const;
+export const AetherInteractionMode = Schema.Literals(AETHER_INTERACTION_MODES);
 export type AetherInteractionMode = typeof AetherInteractionMode.Type;
 
 export const AETHER_REASONING_EFFORTS = [
@@ -64,32 +80,33 @@ export const AETHER_REASONING_EFFORTS = [
 export const AetherReasoningEffort = Schema.Literals(AETHER_REASONING_EFFORTS);
 export type AetherReasoningEffort = typeof AetherReasoningEffort.Type;
 
-export const AetherVmSize = Schema.Literals(["small", "medium", "large"]);
+export const AETHER_VM_SIZES = ["small", "medium", "large"] as const;
+export const AetherVmSize = Schema.Literals(AETHER_VM_SIZES);
 export type AetherVmSize = typeof AetherVmSize.Type;
 
 // ---------------------------------------------------------------------------
 // Profile and projects
 // ---------------------------------------------------------------------------
 
-/** `GET /profile`. The health check reads `email`; the rest identifies the account. */
-export const AetherProfile = Schema.Struct({
-  id: NonEmptyString,
-  email: TrimmedNonEmptyString,
-  display_name: Schema.NullOr(Schema.String),
-});
+/** `GET /profile`. Only the health check reads it, and only `email`. */
+export const AetherProfile = Schema.Struct({ email: TrimmedNonEmptyString });
 export type AetherProfile = typeof AetherProfile.Type;
 
+// Settings enums are open on read (known values: AETHER_AGENT_TYPES, AETHER_INTERACTION_MODES,
+// AETHER_REASONING_EFFORTS, AETHER_VM_SIZES): a value set in Aether's web app that this client
+// does not know must not make every project or task unreadable. Request schemas stay closed, so
+// echoing an unknown value back fails that one request, naming the field.
 export const AetherProjectTaskDefaults = Schema.Struct({
-  agent_type: AetherAgentType,
+  agent_type: Schema.String,
   model: NonEmptyString,
-  interaction_mode: AetherInteractionMode,
-  reasoning_effort: Schema.optionalKey(Schema.NullOr(AetherReasoningEffort)),
+  interaction_mode: Schema.String,
+  reasoning_effort: Schema.optionalKey(Schema.NullOr(Schema.String)),
   auto_fix_ci: Schema.Boolean,
   auto_fix_pr_comments: Schema.Boolean,
   auto_rebase: Schema.Boolean,
   post_pr_screenshots: Schema.Boolean,
   post_pr_demo_video: Schema.Boolean,
-  default_vm_size: Schema.optionalKey(Schema.NullOr(AetherVmSize)),
+  default_vm_size: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type AetherProjectTaskDefaults = typeof AetherProjectTaskDefaults.Type;
 
@@ -165,6 +182,11 @@ export const AetherAwaitingInput = Schema.Union([
 ]);
 export type AetherAwaitingInput = typeof AetherAwaitingInput.Type;
 export type AetherAwaitingInputKind = AetherAwaitingInput["kind"];
+export const AETHER_AWAITING_INPUT_KINDS = [
+  "message",
+  "questions",
+  "plan",
+] as const satisfies ReadonlyArray<AetherAwaitingInputKind>;
 
 const AskUserToolResponseData = Schema.Struct({
   answers: Schema.Record(
@@ -226,9 +248,11 @@ export const AetherTaskPullRequest = Schema.Struct({
   pr_number: PositiveInt,
   html_url: NonEmptyString,
   title: Schema.String,
-  state: Schema.optionalKey(Schema.Literals(["open", "closed", "merged"])),
+  /** Open enum; known values: `AETHER_PULL_REQUEST_STATES`. */
+  state: Schema.optionalKey(Schema.String),
   branch_name: Schema.optionalKey(NonEmptyString),
 });
+export const AETHER_PULL_REQUEST_STATES = ["open", "closed", "merged"] as const;
 export type AetherTaskPullRequest = typeof AetherTaskPullRequest.Type;
 
 export const AetherTaskActivityItem = Schema.Struct({
@@ -236,19 +260,21 @@ export const AetherTaskActivityItem = Schema.Struct({
   task_id: NonEmptyString,
   created_at: NonEmptyString,
   sequence: SafeNonNegativeInt,
-  type: Schema.Literals([
-    "done",
-    "error",
-    "question",
-    "stop",
-    "workspace_lifecycle",
-    "workspace_warning",
-    "ci_passed",
-    "ci_failed",
-  ]),
+  /** Open enum; known values: `AETHER_TASK_ACTIVITY_TYPES`. */
+  type: Schema.String,
   message: NonBlankString,
 });
 export type AetherTaskActivityItem = typeof AetherTaskActivityItem.Type;
+export const AETHER_TASK_ACTIVITY_TYPES = [
+  "done",
+  "error",
+  "question",
+  "stop",
+  "workspace_lifecycle",
+  "workspace_warning",
+  "ci_passed",
+  "ci_failed",
+] as const;
 
 // Fields every task status variant carries. `latest_sequence` no longer exists on the read
 // model; `latest_message_revision` is compared for equality only (see the OpenAPI description).
@@ -259,10 +285,11 @@ const taskFields = {
   project_id: NonEmptyString,
   parent_task_id: Schema.NullOr(Schema.String),
   name: NonEmptyString,
-  agent_type: AetherAgentType,
+  // Open settings enums, as on the project defaults above.
+  agent_type: Schema.String,
   model: NonEmptyString,
-  interaction_mode: AetherInteractionMode,
-  reasoning_effort: Schema.optionalKey(Schema.NullOr(AetherReasoningEffort)),
+  interaction_mode: Schema.String,
+  reasoning_effort: Schema.optionalKey(Schema.NullOr(Schema.String)),
   auto_fix_ci: Schema.Boolean,
   auto_fix_pr_comments: Schema.Boolean,
   auto_rebase: Schema.Boolean,
@@ -363,43 +390,38 @@ export const AetherConversationContext = Schema.Struct({
 
 /**
  * Why a user message exists when a person did not type it (PR comment, CI failure, parent
- * task message, …). The `kind` is checked here; each kind's payload is kept as sent until a
- * consumer renders it.
+ * task message, …). `kind` is an open enum (known values: `AETHER_MESSAGE_EVENT_KINDS`); each
+ * kind's payload is kept as sent until a consumer renders it.
  */
 export const AetherMessageEvent = Schema.StructWithRest(
-  Schema.Struct({
-    kind: Schema.Literals([
-      "pr_comment",
-      "ci_failure",
-      "auto_rebase",
-      "pr_review",
-      "external",
-      "github_batch",
-      "parent_message",
-      "task_signal_batch",
-      "child_turn_result",
-      "local_parent_message",
-      "task_stopped",
-    ]),
-  }),
+  Schema.Struct({ kind: NonEmptyString }),
   PreservedKeys,
 );
 export type AetherMessageEvent = typeof AetherMessageEvent.Type;
+export const AETHER_MESSAGE_EVENT_KINDS = [
+  "pr_comment",
+  "ci_failure",
+  "auto_rebase",
+  "pr_review",
+  "external",
+  "github_batch",
+  "parent_message",
+  "task_signal_batch",
+  "child_turn_result",
+  "local_parent_message",
+  "task_stopped",
+] as const;
 
-export const AetherDeliveryStatus = Schema.Literals([
-  "queued",
-  "processing",
-  "processed",
-  "bundled",
-]);
-export type AetherDeliveryStatus = typeof AetherDeliveryStatus.Type;
+export const AETHER_DELIVERY_STATUSES = ["queued", "processing", "processed", "bundled"] as const;
+export type AetherDeliveryStatus = (typeof AETHER_DELIVERY_STATUSES)[number];
 
 export const AetherUserMessage = Schema.Struct({
   id: NonEmptyString,
   role: Schema.Literal("user"),
   variant: Schema.optionalKey(Schema.Literal("text")),
   content: Schema.String,
-  deliveryStatus: AetherDeliveryStatus,
+  /** Open enum; known values: `AETHER_DELIVERY_STATUSES`. */
+  deliveryStatus: Schema.String,
   timestamp: NonEmptyString,
   sequence: SafeNonNegativeInt,
   clientMessageId: Schema.optionalKey(Schema.String),
@@ -435,7 +457,7 @@ export const AetherThinkingMessage = Schema.Struct({
 });
 export type AetherThinkingMessage = typeof AetherThinkingMessage.Type;
 
-export const AetherToolStatus = Schema.Literals([
+export const AETHER_TOOL_STATUSES = [
   "input-streaming",
   "input-available",
   "output-available",
@@ -443,10 +465,10 @@ export const AetherToolStatus = Schema.Literals([
   "output-denied",
   "approval-responded",
   "approval-requested",
-]);
-export type AetherToolStatus = typeof AetherToolStatus.Type;
+] as const;
+export type AetherToolStatus = (typeof AETHER_TOOL_STATUSES)[number];
 
-export const AetherCanonicalItemType = Schema.Literals([
+export const AETHER_CANONICAL_ITEM_TYPES = [
   "user_message",
   "assistant_message",
   "reasoning",
@@ -467,8 +489,8 @@ export const AetherCanonicalItemType = Schema.Literals([
   "context_compaction",
   "error",
   "unknown",
-]);
-export type AetherCanonicalItemType = typeof AetherCanonicalItemType.Type;
+] as const;
+export type AetherCanonicalItemType = (typeof AETHER_CANONICAL_ITEM_TYPES)[number];
 
 export const AetherToolDisplay = Schema.Struct({
   label: NonEmptyString,
@@ -480,9 +502,11 @@ export const AetherTimelineTool = Schema.Struct({
   id: NonEmptyString,
   name: NonEmptyString,
   input: Schema.Record(Schema.String, Schema.Unknown),
-  status: AetherToolStatus,
+  /** Open enum; known values: `AETHER_TOOL_STATUSES`. One unknown row must not fail the page. */
+  status: Schema.String,
   display: AetherToolDisplay,
-  itemType: Schema.optionalKey(AetherCanonicalItemType),
+  /** Open enum; known values: `AETHER_CANONICAL_ITEM_TYPES`. */
+  itemType: Schema.optionalKey(Schema.String),
   result: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
   // Top-level on tool rows (not inside `result`).
@@ -509,7 +533,8 @@ export const AetherTimelineSeam = Schema.Union([
     reason: Schema.Literal("compaction"),
     sessionId: NonEmptyString,
     boundaryId: NonEmptyString,
-    trigger: Schema.Literals(["manual", "auto"]),
+    /** Open enum; known values: `manual`, `auto`. */
+    trigger: Schema.String,
     preTokens: SafeNonNegativeInt,
     postTokens: Schema.optionalKey(SafeNonNegativeInt),
   }),
@@ -629,16 +654,8 @@ export const AetherTaskSubagent = Schema.Struct({
   description: NonEmptyString,
   is_backgrounded: Schema.Boolean,
   ambient: Schema.Boolean,
-  status: Schema.Literals([
-    "pending",
-    "running",
-    "paused",
-    "completed",
-    "failed",
-    "killed",
-    "stopped",
-    "stream_closed",
-  ]),
+  /** Open enum; known values: `AETHER_SUBAGENT_STATUSES`. */
+  status: Schema.String,
   started_at: NonEmptyString,
   updated_at: NonEmptyString,
   ended_at: Schema.optionalKey(NonEmptyString),
@@ -655,6 +672,16 @@ export const AetherTaskSubagent = Schema.Struct({
   ),
 });
 export type AetherTaskSubagent = typeof AetherTaskSubagent.Type;
+export const AETHER_SUBAGENT_STATUSES = [
+  "pending",
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "killed",
+  "stopped",
+  "stream_closed",
+] as const;
 
 export const AetherTaskSubagents = Schema.Struct({ subagents: Schema.Array(AetherTaskSubagent) });
 export type AetherTaskSubagents = typeof AetherTaskSubagents.Type;
@@ -744,13 +771,15 @@ export const AetherQueuedStopRequiresDiscardBody = Schema.Struct({
 });
 /**
  * A respond conflict naming the kind of input the task is waiting for (a response that does
- * not fit the pending input). The earlier Aether client handled it, but the OpenAPI's respond
- * 409 union does not list it: see the P2 pull request's deviations.
+ * not fit the pending input). The OpenAPI's respond 409 union omits this body, and its
+ * `ErrorResponse` forbids the extra key; the earlier Aether client (the AetherDriver) received
+ * and handled it, so it is decoded whenever `awaiting_input_kind` is present. Unconfirmed
+ * against the current server.
  */
 export const AetherAwaitingInputConflictBody = Schema.Struct({
   error: NonEmptyString,
   code: Schema.optionalKey(Schema.String),
-  awaiting_input_kind: Schema.Literals(["message", "questions", "plan"]),
+  awaiting_input_kind: Schema.Literals(AETHER_AWAITING_INPUT_KINDS),
 });
 
 export const AetherConnectConflictBody = Schema.Union([

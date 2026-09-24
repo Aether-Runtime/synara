@@ -2,6 +2,7 @@ import {
   encodeOutboundMultipart,
   invokePinnedDnsLookup,
   OutboundHttpError,
+  resolveOutboundPinnedAddress,
 } from "@synara/shared/outboundHttp";
 import {
   assertJsonWithinLimits,
@@ -109,5 +110,35 @@ describe("invokePinnedDnsLookup", () => {
       address: [{ address: "1.2.3.4", family: 4 }],
       family: undefined,
     });
+  });
+});
+
+describe("resolveOutboundPinnedAddress", () => {
+  it("returns a public literal address without a lookup", async () => {
+    await expect(
+      resolveOutboundPinnedAddress(new URL("https://93.184.216.34/ws")),
+    ).resolves.toEqual({ address: "93.184.216.34", family: 4 });
+  });
+
+  it("refuses a host that resolves to a private or loopback address", async () => {
+    for (const url of ["https://10.0.0.8/ws", "https://[::1]/ws", "https://localhost/ws"]) {
+      await expect(resolveOutboundPinnedAddress(new URL(url)), url).rejects.toMatchObject({
+        name: "OutboundPolicyError",
+        code: "private-address",
+      });
+    }
+  });
+
+  it("allows loopback only for an http URL on a loopback host when asked to", async () => {
+    await expect(
+      resolveOutboundPinnedAddress(new URL("http://127.0.0.1:8787/ws"), {
+        allowLoopbackHttp: true,
+      }),
+    ).resolves.toEqual({ address: "127.0.0.1", family: 4 });
+    await expect(
+      resolveOutboundPinnedAddress(new URL("http://10.0.0.8:8787/ws"), {
+        allowLoopbackHttp: true,
+      }),
+    ).rejects.toBeInstanceOf(OutboundPolicyError);
   });
 });

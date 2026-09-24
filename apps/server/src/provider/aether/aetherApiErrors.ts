@@ -11,6 +11,8 @@
 
 import { Schema, SchemaAST, SchemaIssue } from "effect";
 
+import { AETHER_AWAITING_INPUT_KINDS, AETHER_ORG_AUTHORIZATION_CODES } from "./aetherApiSchemas.ts";
+
 // ---------------------------------------------------------------------------
 // Configuration, transport, timeout, encode and decode
 // ---------------------------------------------------------------------------
@@ -139,12 +141,7 @@ export const AetherForbiddenReason = Schema.Union([
   /** The organization refused the caller. */
   Schema.Struct({
     kind: Schema.Literal("org"),
-    code: Schema.Literals([
-      "org_membership_required",
-      "org_role_insufficient",
-      "org_suspended",
-      "account_deleting",
-    ]),
+    code: Schema.Literals(AETHER_ORG_AUTHORIZATION_CODES),
   }),
   /** The generic error body, where the route declares it. */
   Schema.Struct({ kind: Schema.Literal("other"), code: Schema.optional(Schema.String) }),
@@ -294,7 +291,7 @@ export const AetherRespondConflict = Schema.Union([
   /** The response does not fit the pending input, whose kind is named. */
   Schema.Struct({
     kind: Schema.Literal("awaiting_input_kind"),
-    awaitingInputKind: Schema.Literals(["message", "questions", "plan"]),
+    awaitingInputKind: Schema.Literals(AETHER_AWAITING_INPUT_KINDS),
     code: Schema.optional(Schema.String),
   }),
   /** The generic error body the route also declares. */
