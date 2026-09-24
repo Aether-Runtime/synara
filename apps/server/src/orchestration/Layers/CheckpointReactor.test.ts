@@ -2217,6 +2217,69 @@ describe("CheckpointReactor", () => {
     }
   });
 
+  it("does not hold the repository lock while the provider rolls back its conversation", async () => {
+    const harness = await createHarness({ hasSession: false });
+    const createdAt = new Date().toISOString();
+    for (const turnCount of [1, 2] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe(`cmd-unlocked-rollback-diff-${turnCount}`),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+    // Session recovery during the rollback may itself claim the worktree (a
+    // provider re-claims when its session resumes), so the claim must not wait
+    // behind the revert.
+    const rollbackStarted = await Effect.runPromise(Deferred.make<void>());
+    const releaseRollback = await Effect.runPromise(Deferred.make<void>());
+    harness.provider.rollbackConversation.mockImplementationOnce(() =>
+      Deferred.succeed(rollbackStarted, undefined).pipe(
+        Effect.andThen(Deferred.await(releaseRollback)),
+      ),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.makeUnsafe("cmd-unlocked-rollback-revert"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnCount: 1,
+        scope: "thread",
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(Deferred.await(rollbackStarted));
+
+    const claimScope = await Effect.runPromise(Scope.make());
+    try {
+      const claim = await Effect.runPromise(
+        Scope.provide(
+          harness.worktreeOwnership.claim(harness.cwd, {
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            provider: "aether",
+          }),
+          claimScope,
+        ).pipe(Effect.timeout("5 seconds")),
+      );
+      expect(claim.worktreePath).toBe(fs.realpathSync(harness.cwd));
+
+      await Effect.runPromise(Deferred.succeed(releaseRollback, undefined));
+      await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+      expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
+    } finally {
+      await Effect.runPromise(Scope.close(claimScope, Exit.void));
+    }
+  });
+
   it("reverts a thread whose provider session is no longer running", async () => {
     const harness = await createHarness({ hasSession: false });
     const createdAt = new Date().toISOString();
