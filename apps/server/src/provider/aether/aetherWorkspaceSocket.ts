@@ -239,9 +239,10 @@ const openSocket = (
           resume(Effect.succeed(ws));
         });
         ws.on("unexpected-response", (_request, response) =>
-          failOpen(`The workspace refused the socket upgrade (HTTP ${response.statusCode}).`, {
-            ...(response.statusCode === undefined ? {} : { status: response.statusCode }),
-          }),
+          failOpen(
+            `The workspace refused the socket upgrade (HTTP ${response.statusCode}).`,
+            response.statusCode === undefined ? {} : { status: response.statusCode },
+          ),
         );
         ws.on("error", (cause) => {
           if (!settled) return failOpen("The socket failed before it opened.", { cause });
@@ -253,9 +254,11 @@ const openSocket = (
         ws.on("close", (code, reason) => {
           failOpen(`The socket closed before it opened (code ${code}).`);
           failPending(
-            socketError("closed", `The workspace socket closed (code ${code}).`, {
-              ...(failure === undefined ? {} : { cause: failure }),
-            }),
+            socketError(
+              "closed",
+              `The workspace socket closed (code ${code}).`,
+              failure === undefined ? {} : { cause: failure },
+            ),
           );
           Deferred.doneUnsafe(
             closedSignal,

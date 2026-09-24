@@ -248,8 +248,14 @@ export const AetherAdmissionErrorBody = Schema.Struct({
 const conflict = <const Code extends string>(code: Code) =>
   Schema.Struct({ error: NonEmptyString, code: Schema.Literal(code) });
 
+const IdempotencyKeyReused = conflict("idempotency_key_reused");
+const QueuedStopRequiresDiscard = conflict("queued_stop_requires_discard");
 const TaskCreatorDeleted = conflict("task_creator_deleted");
-
+const StalePendingInput = Schema.Struct({
+  error: NonEmptyString,
+  code: Schema.Literal("stale_pending_input"),
+  current_tool_id: Schema.optionalKey(AetherToolId),
+});
 /**
  * A respond conflict naming the kind of input the task waits for. The OpenAPI's respond 409
  * union omits it (and `ErrorResponse` forbids the extra key), but the AetherDriver received and
@@ -261,37 +267,40 @@ const AwaitingInputConflict = Schema.Struct({
   code: Schema.optionalKey(Schema.String),
   awaiting_input_kind: Schema.Literals(["message", "questions", "plan"]),
 });
+const ConnectTransitional = Schema.Struct({
+  kind: Schema.Literal("transitional"),
+  error: NonEmptyString,
+  retry_after_ms: PositiveInt,
+});
+const ConnectNotRunning = Schema.Struct({
+  kind: Schema.Literals(["startable", "not_connectable"]),
+  error: NonEmptyString,
+});
 
-/** Each endpoint's 409 bodies, as the OpenAPI declares them (first match wins). */
+/** Each endpoint's 409 bodies, as the OpenAPI declares them. The first match wins. */
 export const AetherConflictBodies = {
-  createTask: conflict("idempotency_key_reused"),
+  createTask: IdempotencyKeyReused,
   respondToTask: Schema.Union([
-    Schema.Struct({
-      error: NonEmptyString,
-      code: Schema.Literal("stale_pending_input"),
-      current_tool_id: Schema.optionalKey(AetherToolId),
-    }),
+    StalePendingInput,
     TaskCreatorDeleted,
     AwaitingInputConflict,
     AetherErrorBody,
   ]),
-  stopTask: Schema.Union([conflict("queued_stop_requires_discard"), AetherErrorBody]),
-  connectWorkspace: Schema.Union([
-    Schema.Struct({
-      kind: Schema.Literal("transitional"),
-      error: NonEmptyString,
-      retry_after_ms: PositiveInt,
-    }),
-    Schema.Struct({
-      kind: Schema.Literals(["startable", "not_connectable"]),
-      error: NonEmptyString,
-    }),
-    TaskCreatorDeleted,
-  ]),
+  stopTask: Schema.Union([QueuedStopRequiresDiscard, AetherErrorBody]),
+  connectWorkspace: Schema.Union([ConnectTransitional, ConnectNotRunning, TaskCreatorDeleted]),
 } as const;
 
-/** Any endpoint's decoded 409 body. */
-export const AetherConflictBody = Schema.Union(Object.values(AetherConflictBodies));
+/** Any endpoint's decoded 409 body. The generic body is last so it never absorbs another. */
+export const AetherConflictBody = Schema.Union([
+  IdempotencyKeyReused,
+  QueuedStopRequiresDiscard,
+  TaskCreatorDeleted,
+  StalePendingInput,
+  AwaitingInputConflict,
+  ConnectTransitional,
+  ConnectNotRunning,
+  AetherErrorBody,
+]);
 export type AetherConflictBody = typeof AetherConflictBody.Type;
 
 // ---------------------------------------------------------------------------
