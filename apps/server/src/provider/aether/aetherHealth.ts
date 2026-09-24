@@ -1,34 +1,17 @@
 // FILE: aetherHealth.ts
 // Purpose: Network-only Aether health check: `GET {apiBaseUrl}/profile` with the stored API key.
 // Layer: Server provider health. Aether runs in the cloud, so there is no executable
-// lookup and no version probe.
+// lookup and no version probe. The request and the profile decode are the REST client's
+// (aetherApiClient.ts); this module only turns the outcome into a provider status.
 
-import {
-  resolveAetherApiUrl,
-  TrimmedNonEmptyString,
-  type AetherApiBaseUrl,
-  type ServerProviderStatus,
-} from "@synara/contracts";
-import {
-  decodeOutboundJson,
-  OutboundHttpError,
-  outboundHttp,
-  type OutboundHttpRequest,
-  type OutboundHttpResponse,
-} from "@synara/shared/outboundHttp";
-import { OutboundPolicyError } from "@synara/shared/outboundHttpPolicy";
-import { Effect, Schema } from "effect";
+import type { AetherApiBaseUrl, ServerProviderStatus } from "@synara/contracts";
+import { Effect } from "effect";
+
+import { makeAetherApiClient, type AetherHttpRequest } from "./aetherApiClient.ts";
+import { aetherApiErrorStatus, type AetherApiRequestError } from "./aetherApiErrors.ts";
 
 const PROVIDER = "aether" as const;
 const AETHER_HEALTH_TIMEOUT_MS = 10_000;
-
-/** The part of Aether's `GET /profile` response Synara reads. */
-const AetherProfile = Schema.Struct({ email: TrimmedNonEmptyString });
-const decodeAetherProfile = Schema.decodeUnknownExit(AetherProfile);
-
-export type AetherHttpRequest = (request: OutboundHttpRequest) => Promise<OutboundHttpResponse>;
-
-const defaultAetherHttpRequest: AetherHttpRequest = (request) => outboundHttp.request(request);
 
 export const makeCheckAetherProviderStatus = (input: {
   /** Already validated by the settings schema; this check never re-interprets it. */
@@ -64,78 +47,29 @@ export const makeCheckAetherProviderStatus = (input: {
       });
     }
 
-    const url = resolveAetherApiUrl(input.apiBaseUrl, "/profile");
-    const request = input.request ?? defaultAetherHttpRequest;
-    const response = yield* Effect.tryPromise(() =>
-      request({
-        policy: {
-          service: "aether-health",
-          allowedOrigins: [url.origin],
-          timeoutMs: AETHER_HEALTH_TIMEOUT_MS,
-          maxRequestBytes: 1024,
-          maxResponseBytes: 256 * 1024,
-          // The bearer key must never follow a redirect to another origin.
-          maxRedirects: 0,
-          maxConcurrent: 2,
-          maxQueued: 4,
-          requirePublicAddress: true,
-          // The schema admits `http:` only for loopback hosts (a local Aether API). outboundHttp
-          // then also checks that the host really resolves to a loopback address.
-          allowLoopbackHttp: url.protocol === "http:",
-        },
-        url,
-        method: "GET",
-        headers: { authorization: `Bearer ${apiKey.success}`, accept: "application/json" },
-      }),
-    ).pipe(Effect.result);
+    const client = makeAetherApiClient({
+      connection: Effect.succeed({ apiBaseUrl: input.apiBaseUrl, apiKey: apiKey.success }),
+      timeoutMs: AETHER_HEALTH_TIMEOUT_MS,
+      ...(input.request === undefined ? {} : { request: input.request }),
+    });
+    const profile = yield* client.getProfile().pipe(Effect.result);
 
-    if (response._tag === "Failure") {
-      const cause = response.failure.cause;
-      return status({
-        status: "error",
-        available: false,
-        authStatus: "unknown",
-        message:
-          cause instanceof OutboundPolicyError
-            ? "The Aether API base URL must be a public https:// address, or http:// on localhost."
-            : cause instanceof OutboundHttpError && cause.code === "timeout"
-              ? "Timed out reaching the Aether API."
-              : "Could not reach the Aether API.",
-      });
-    }
-
-    const { status: httpStatus } = response.success;
-    if (httpStatus === 401) {
-      return status({
-        status: "error",
-        available: true,
-        authStatus: "unauthenticated",
-        message:
-          "Aether rejected the API key (HTTP 401). Save a valid key in Settings → Providers.",
-      });
-    }
-    if (httpStatus < 200 || httpStatus >= 300) {
-      return status({
-        status: "error",
-        available: false,
-        authStatus: "unknown",
-        message: `Aether API health check failed: GET /profile returned HTTP ${httpStatus}.`,
-      });
-    }
-
-    let body: unknown;
-    try {
-      body = decodeOutboundJson(response.success, { maxDepth: 16, maxNodes: 10_000 });
-    } catch {
-      body = undefined;
-    }
-    const profile = decodeAetherProfile(body);
     if (profile._tag === "Failure") {
+      const error = profile.failure;
+      if (error._tag === "AetherApiUnauthenticatedError") {
+        return status({
+          status: "error",
+          available: true,
+          authStatus: "unauthenticated",
+          message:
+            "Aether rejected the API key (HTTP 401). Save a valid key in Settings → Providers.",
+        });
+      }
       return status({
         status: "error",
         available: false,
         authStatus: "unknown",
-        message: "Aether API health check failed: GET /profile returned an unexpected response.",
+        message: failureMessage(error),
       });
     }
 
@@ -144,7 +78,22 @@ export const makeCheckAetherProviderStatus = (input: {
       available: true,
       authStatus: "authenticated",
       authType: "apiKey",
-      authLabel: profile.value.email,
-      message: `Connected to Aether as ${profile.value.email}.`,
+      authLabel: profile.success.email,
+      message: `Connected to Aether as ${profile.success.email}.`,
     });
   });
+
+/** Stable, user-facing text: never the transport detail or the server's message. */
+function failureMessage(error: AetherApiRequestError): string {
+  if (error._tag === "AetherApiTimeoutError") return "Timed out reaching the Aether API.";
+  if (error._tag === "AetherApiTransportError") {
+    return error.reason === "policy"
+      ? "The Aether API base URL must be a public https:// address, or http:// on localhost."
+      : "Could not reach the Aether API.";
+  }
+  const httpStatus = aetherApiErrorStatus(error);
+  if (httpStatus === undefined || (httpStatus >= 200 && httpStatus <= 299)) {
+    return "Aether API health check failed: GET /profile returned an unexpected response.";
+  }
+  return `Aether API health check failed: GET /profile returned HTTP ${httpStatus}.`;
+}

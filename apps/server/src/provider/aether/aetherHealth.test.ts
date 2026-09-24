@@ -4,7 +4,8 @@ import { OutboundHttpError } from "@synara/shared/outboundHttp";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { makeCheckAetherProviderStatus, type AetherHttpRequest } from "./aetherHealth.ts";
+import type { AetherHttpRequest } from "./aetherApiClient.ts";
+import { makeCheckAetherProviderStatus } from "./aetherHealth.ts";
 
 const API_BASE_URL = AetherApiBaseUrl.makeUnsafe("https://api.runaether.dev");
 
@@ -28,6 +29,19 @@ function jsonResponse(status: number, body: unknown): OutboundHttpResponse {
   };
 }
 
+/** A `ProfileResponse` as the OpenAPI declares it. */
+function profileBody(email: string, extra: Record<string, unknown> = {}) {
+  return {
+    id: "user_1",
+    email,
+    display_name: "Dev",
+    onboarding_completed: true,
+    created_at: "2026-09-01T00:00:00Z",
+    updated_at: "2026-09-01T00:00:00Z",
+    ...extra,
+  };
+}
+
 const check = (input: {
   readonly apiKey: string | null;
   readonly http: ReturnType<typeof fakeHttp>;
@@ -43,7 +57,7 @@ const check = (input: {
 
 describe("Aether health check", () => {
   it("reports not configured without calling the API when no key is saved", async () => {
-    const http = fakeHttp(() => jsonResponse(200, { email: "unused@example.com" }));
+    const http = fakeHttp(() => jsonResponse(200, profileBody("unused@example.com")));
 
     const status = await check({ apiKey: null, http });
 
@@ -59,7 +73,9 @@ describe("Aether health check", () => {
   });
 
   it("calls GET /profile with the bearer key, pinned to the configured origin", async () => {
-    const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com", name: "Dev" }));
+    const http = fakeHttp(() =>
+      jsonResponse(200, profileBody("dev@example.com", { added_by_a_newer_server: true })),
+    );
 
     const status = await check({ apiKey: "aether-secret", http });
 
@@ -113,7 +129,7 @@ describe("Aether health check", () => {
   });
 
   it("rejects a 2xx profile that does not decode", async () => {
-    const http = fakeHttp(() => jsonResponse(200, { email: "" }));
+    const http = fakeHttp(() => jsonResponse(200, profileBody("")));
 
     const status = await check({ apiKey: "aether-secret", http });
 
@@ -143,7 +159,7 @@ describe("Aether health check", () => {
   });
 
   it("keeps a base path prefix from the configured URL", async () => {
-    const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
+    const http = fakeHttp(() => jsonResponse(200, profileBody("dev@example.com")));
 
     await check({
       apiKey: "k",
@@ -156,7 +172,7 @@ describe("Aether health check", () => {
   });
 
   it("reaches a local Aether API over loopback http, and only that one over http", async () => {
-    const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
+    const http = fakeHttp(() => jsonResponse(200, profileBody("dev@example.com")));
 
     await check({
       apiKey: "k",
@@ -175,7 +191,7 @@ describe("Aether health check", () => {
   });
 
   it("reports a failing secret store without calling the API", async () => {
-    const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
+    const http = fakeHttp(() => jsonResponse(200, profileBody("dev@example.com")));
     const unreadable = await Effect.runPromise(
       makeCheckAetherProviderStatus({
         apiBaseUrl: API_BASE_URL,
