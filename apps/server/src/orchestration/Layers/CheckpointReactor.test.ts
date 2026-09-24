@@ -31,7 +31,7 @@ import {
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
-import { WorktreeOwnership } from "../../git/Services/WorktreeOwnership.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointReactorLive } from "./CheckpointReactor.ts";
 import { TurnCheckpointCoordinatorLive } from "./TurnCheckpointCoordinator.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -281,7 +281,7 @@ async function waitForGitRefMissing(cwd: string, ref: string, timeoutMs = 30_000
 
 describe("CheckpointReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | CheckpointReactor | CheckpointStore | WorktreeOwnership,
+    OrchestrationEngineService | CheckpointReactor | CheckpointStore | GitCore,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -390,7 +390,7 @@ describe("CheckpointReactor", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const reactor = await runtime.runPromise(Effect.service(CheckpointReactor));
     const checkpointStore = await runtime.runPromise(Effect.service(CheckpointStore));
-    const worktreeOwnership = await runtime.runPromise(Effect.service(WorktreeOwnership));
+    const git = await runtime.runPromise(Effect.service(GitCore));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start.pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(reactor.drain);
@@ -456,7 +456,7 @@ describe("CheckpointReactor", () => {
       engine,
       provider,
       checkpointStore,
-      worktreeOwnership,
+      git,
       cwd,
       drain,
       failures,
@@ -2113,7 +2113,7 @@ describe("CheckpointReactor", () => {
     const claimScope = await Effect.runPromise(Scope.make());
     await Effect.runPromise(
       Scope.provide(
-        harness.worktreeOwnership.claim(harness.cwd, {
+        harness.git.claimWorktree(harness.cwd, {
           threadId: ThreadId.makeUnsafe("thread-owner"),
           provider: "aether",
         }),
@@ -2194,7 +2194,7 @@ describe("CheckpointReactor", () => {
     let claimed = false;
     const claiming = Effect.runPromise(
       Scope.provide(
-        harness.worktreeOwnership.claim(harness.cwd, {
+        harness.git.claimWorktree(harness.cwd, {
           threadId: ThreadId.makeUnsafe("thread-owner"),
           provider: "aether",
         }),
@@ -2263,7 +2263,7 @@ describe("CheckpointReactor", () => {
     try {
       const claim = await Effect.runPromise(
         Scope.provide(
-          harness.worktreeOwnership.claim(harness.cwd, {
+          harness.git.claimWorktree(harness.cwd, {
             threadId: ThreadId.makeUnsafe("thread-1"),
             provider: "aether",
           }),

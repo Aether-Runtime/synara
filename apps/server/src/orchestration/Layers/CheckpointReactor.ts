@@ -1145,63 +1145,59 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      // The filesystem steps run under the repository lock: a worktree a
-      // provider owns (and mirrors into) is refused before anything changes,
-      // and a claim waits for the undo instead of racing it.
-      const undoFailure = yield* git
-        .withMutation(
-          checkpointCwd,
-          Effect.gen(function* () {
-            const reversed = yield* checkpointStore.reverseCheckpointDiff({
-              cwd: checkpointCwd,
-              fromCheckpointRef,
-              toCheckpointRef: targetCheckpoint.checkpointRef,
-            });
-            if (!reversed) {
-              return `Filesystem checkpoints for turn ${event.payload.turnCount} are unavailable.`;
-            }
-
-            yield* checkpointStore.captureCheckpoint({
-              cwd: checkpointCwd,
-              checkpointRef: targetCheckpoint.checkpointRef,
-            });
-            yield* Effect.forEach(
-              thread.checkpoints.filter(
-                (checkpoint) =>
-                  checkpoint.checkpointTurnCount > targetCheckpoint.checkpointTurnCount &&
-                  isManagedCheckpointRefForThread(checkpoint.checkpointRef, event.payload.threadId),
-              ),
-              (checkpoint) => {
-                const laterTurnStartCheckpointRef =
-                  checkpointRefForThreadTurnStartInManagedFamily(
-                    checkpoint.checkpointRef,
-                    event.payload.threadId,
-                    checkpoint.turnId,
-                  ) ?? checkpointRefForThreadTurnStart(event.payload.threadId, checkpoint.turnId);
-                return Effect.all([
-                  checkpointStore.copyCheckpointRef({
-                    cwd: checkpointCwd,
-                    fromCheckpointRef: targetCheckpoint.checkpointRef,
-                    toCheckpointRef: checkpoint.checkpointRef,
-                  }),
-                  checkpointStore.copyCheckpointRef({
-                    cwd: checkpointCwd,
-                    fromCheckpointRef: targetCheckpoint.checkpointRef,
-                    toCheckpointRef: laterTurnStartCheckpointRef,
-                  }),
-                ]).pipe(Effect.asVoid);
-              },
-              { discard: true },
-            );
-            return null;
-          }),
-        )
-        .pipe(Effect.catchTag("WorktreeOwnedError", (error) => Effect.succeed(error.message)));
-      if (undoFailure !== null) {
+      // The undo's git writes run under the repository lock, which refuses a
+      // worktree a provider owns before anything changes.
+      const reversed = yield* git.withMutation(
+        checkpointCwd,
+        Effect.gen(function* () {
+          const reversed = yield* checkpointStore.reverseCheckpointDiff({
+            cwd: checkpointCwd,
+            fromCheckpointRef,
+            toCheckpointRef: targetCheckpoint.checkpointRef,
+          });
+          if (!reversed) {
+            return false;
+          }
+          yield* checkpointStore.captureCheckpoint({
+            cwd: checkpointCwd,
+            checkpointRef: targetCheckpoint.checkpointRef,
+          });
+          yield* Effect.forEach(
+            thread.checkpoints.filter(
+              (checkpoint) =>
+                checkpoint.checkpointTurnCount > targetCheckpoint.checkpointTurnCount &&
+                isManagedCheckpointRefForThread(checkpoint.checkpointRef, event.payload.threadId),
+            ),
+            (checkpoint) => {
+              const laterTurnStartCheckpointRef =
+                checkpointRefForThreadTurnStartInManagedFamily(
+                  checkpoint.checkpointRef,
+                  event.payload.threadId,
+                  checkpoint.turnId,
+                ) ?? checkpointRefForThreadTurnStart(event.payload.threadId, checkpoint.turnId);
+              return Effect.all([
+                checkpointStore.copyCheckpointRef({
+                  cwd: checkpointCwd,
+                  fromCheckpointRef: targetCheckpoint.checkpointRef,
+                  toCheckpointRef: checkpoint.checkpointRef,
+                }),
+                checkpointStore.copyCheckpointRef({
+                  cwd: checkpointCwd,
+                  fromCheckpointRef: targetCheckpoint.checkpointRef,
+                  toCheckpointRef: laterTurnStartCheckpointRef,
+                }),
+              ]).pipe(Effect.asVoid);
+            },
+            { discard: true },
+          );
+          return true;
+        }),
+      );
+      if (!reversed) {
         yield* appendRevertFailureActivity({
           threadId: event.payload.threadId,
           turnCount: event.payload.turnCount,
-          detail: undoFailure,
+          detail: `Filesystem checkpoints for turn ${event.payload.turnCount} are unavailable.`,
           createdAt: now,
         }).pipe(Effect.catch(() => Effect.void));
         return;
@@ -1314,62 +1310,53 @@ const make = Effect.gen(function* () {
         Effect.catch((error) => Effect.succeed(error.message)),
       );
 
-    // Only the filesystem steps hold the repository lock: a worktree a provider
-    // owns (and mirrors into) is refused before the rescue capture, and a claim
-    // waits until the restore and any compensation are done. The provider
-    // rollback below runs outside the lock, which must never wait on a provider
-    // session whose start may itself claim the worktree.
-    const workspaceRestore = yield* git
-      .withMutation(
-        checkpointCwd,
-        Effect.gen(function* () {
-          const rescueCaptureFailure = yield* checkpointStore
-            .captureCheckpoint({ cwd: checkpointCwd, checkpointRef: rescueCheckpointRef })
-            .pipe(
-              Effect.as(null),
-              Effect.catch((error) =>
-                Effect.succeed(
-                  `The pre-revert workspace snapshot could not be captured, so the revert was refused: ${error.message}`,
-                ),
+    // The workspace steps run under the repository lock, which refuses a
+    // worktree a provider owns before the rescue capture. The provider rollback
+    // below runs outside it: the lock never waits on a provider session, whose
+    // start may itself claim the worktree.
+    const workspaceRestore = yield* git.withMutation(
+      checkpointCwd,
+      Effect.gen(function* () {
+        const rescueCaptureFailure = yield* checkpointStore
+          .captureCheckpoint({ cwd: checkpointCwd, checkpointRef: rescueCheckpointRef })
+          .pipe(
+            Effect.as(null),
+            Effect.catch((error) =>
+              Effect.succeed(
+                `The pre-revert workspace snapshot could not be captured, so the revert was refused: ${error.message}`,
               ),
-            );
-          if (rescueCaptureFailure !== null) {
-            return { kind: "refused", detail: rescueCaptureFailure } as const;
-          }
+            ),
+          );
+        if (rescueCaptureFailure !== null) {
+          return { kind: "rescue-capture-failed", detail: rescueCaptureFailure } as const;
+        }
 
-          // Three outcomes, not two: `restoreCheckpoint` resolves the target commit
-          // with a read-only lookup before it issues a single writing command, so
-          // `false` is proof that the workspace was never touched, while a failure can
-          // land anywhere — including halfway through rewriting the tree. Collapsing
-          // them into one string made the caller discard the rescue snapshot in both
-          // cases, destroying the only copy of a workspace it had just half-rewritten.
-          const restoreOutcome = yield* checkpointStore
-            .restoreCheckpoint({
-              cwd: checkpointCwd,
-              checkpointRef: targetCheckpointRef,
-            })
-            .pipe(
-              Effect.map((restored) =>
-                restored ? ({ kind: "restored" } as const) : ({ kind: "unavailable" } as const),
-              ),
-              Effect.catch((error) =>
-                Effect.succeed({ kind: "failed", detail: error.message } as const),
-              ),
-            );
-          if (restoreOutcome.kind !== "failed") {
-            return restoreOutcome;
-          }
-          const compensationFailure = yield* restoreRescueCheckpoint(rescueCheckpointRef);
-          return { ...restoreOutcome, compensationFailure };
-        }),
-      )
-      .pipe(
-        Effect.catchTag("WorktreeOwnedError", (error) =>
-          Effect.succeed({ kind: "refused", detail: error.message } as const),
-        ),
-      );
+        // `restoreCheckpoint` resolves the target commit with a read-only lookup
+        // before it writes anything, so `false` means the workspace was never
+        // touched, while a failure can land anywhere, including halfway through
+        // rewriting the tree. Only a failure puts the rescue snapshot back.
+        const restoreOutcome = yield* checkpointStore
+          .restoreCheckpoint({
+            cwd: checkpointCwd,
+            checkpointRef: targetCheckpointRef,
+          })
+          .pipe(
+            Effect.map((restored) =>
+              restored ? ({ kind: "restored" } as const) : ({ kind: "unavailable" } as const),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed({ kind: "failed", detail: error.message } as const),
+            ),
+          );
+        if (restoreOutcome.kind !== "failed") {
+          return restoreOutcome;
+        }
+        const compensationFailure = yield* restoreRescueCheckpoint(rescueCheckpointRef);
+        return { ...restoreOutcome, compensationFailure };
+      }),
+    );
 
-    if (workspaceRestore.kind === "refused") {
+    if (workspaceRestore.kind === "rescue-capture-failed") {
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,

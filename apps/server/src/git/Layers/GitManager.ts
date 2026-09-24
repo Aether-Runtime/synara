@@ -2137,6 +2137,9 @@ The local stash entry was kept for recovery.`,
           "Cannot hand off to Local because this thread does not have a materialized worktree.",
         );
       }
+      // The saga stashes inside the worktree before `removeWorktree` would
+      // refuse it, so check ownership first.
+      yield* gitCore.assertWorktreeNotOwned(input.worktreePath);
 
       const worktreeHeadRef = yield* readHeadRef(input.worktreePath);
       const targetLocalBranch =
@@ -2841,15 +2844,7 @@ The local stash entry was kept for recovery.`,
     pullRequestSnapshot,
     preparePullRequestThread: (input) =>
       gitCore.withMutation(input.cwd, preparePullRequestThread(input)),
-    handoffThread: (input) =>
-      gitCore.withMutation(input.cwd, handoffThread(input), {
-        // A handoff stashes in, removes, or recreates the thread's worktree.
-        targets: {
-          worktreePaths: [input.worktreePath, input.associatedWorktreePath].filter(
-            (worktreePath): worktreePath is string => worktreePath !== null,
-          ),
-        },
-      }),
+    handoffThread: (input) => gitCore.withMutation(input.cwd, handoffThread(input)),
     runStackedAction: (input, options) =>
       gitCore.withMutation(input.cwd, runStackedAction(input, options)),
   } satisfies GitManagerShape;

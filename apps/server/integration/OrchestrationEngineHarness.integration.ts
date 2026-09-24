@@ -27,7 +27,6 @@ import { CheckpointStoreLive } from "../src/checkpointing/Layers/CheckpointStore
 import { CheckpointStore } from "../src/checkpointing/Services/CheckpointStore.ts";
 import { GitCoreLive } from "../src/git/Layers/GitCore.ts";
 import { GitCore, type GitCoreShape } from "../src/git/Services/GitCore.ts";
-import { WorktreeOwnership } from "../src/git/Services/WorktreeOwnership.ts";
 import { TextGeneration, type TextGenerationShape } from "../src/git/Services/TextGeneration.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
@@ -316,12 +315,8 @@ export const makeOrchestrationIntegrationHarness = (
         Effect.succeed({ branch: input.newBranch }),
       publishBranch: () => Effect.void,
       withMutation: (_cwd: string, effect: Effect.Effect<unknown, unknown, unknown>) => effect,
+      assertWorktreeNotOwned: () => Effect.void,
     } as unknown as GitCoreShape);
-    // The real registry, shared with the GitCoreLive the checkpoint layers use.
-    const worktreeOwnershipLayer = Layer.effect(
-      WorktreeOwnership,
-      Effect.service(WorktreeOwnership),
-    ).pipe(Layer.provide(GitCoreLive));
     const textGenerationLayer = Layer.succeed(TextGeneration, {
       generateBranchName: () => Effect.succeed({ branch: null }),
     } as unknown as TextGenerationShape);
@@ -339,7 +334,6 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(providerHealthLayer),
       Layer.provideMerge(studioOutputReactorLayer),
       Layer.provideMerge(gitCoreLayer),
-      Layer.provideMerge(worktreeOwnershipLayer),
       Layer.provideMerge(textGenerationLayer),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(AgentGatewayOperationRepositoryLive),

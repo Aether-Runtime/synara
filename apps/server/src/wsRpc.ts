@@ -74,10 +74,9 @@ import { ComputerService } from "./computer/Services/ComputerService";
 import { makeWsComputerHandlers } from "./computer/wsComputerHandlers";
 import { makeComputerFrameRouteLayer } from "./computer/computerFrameRoute";
 import { ComputerEventInterests } from "./computer/computerEventInterests";
-import { GitCore } from "./git/Services/GitCore";
+import { GitCore, type GitCoreShape } from "./git/Services/GitCore";
 import { GitHubCli } from "./git/Services/GitHubCli";
 import { GitManager } from "./git/Services/GitManager";
-import { WorktreeOwnership, type WorktreeOwnershipShape } from "./git/Services/WorktreeOwnership";
 import { GitHubCliError, WorktreeOwnedError } from "./git/Errors";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
@@ -352,14 +351,14 @@ export function toWsRpcError(cause: unknown, fallbackMessage: string) {
 // already in flight when a provider claims the worktree can still land.
 export const writeWorkspaceFileOutsideOwnedWorktree = (
   services: {
-    readonly worktreeOwnership: WorktreeOwnershipShape;
+    readonly git: Pick<GitCoreShape, "assertWorktreeNotOwned">;
     readonly workspaceFileSystem: WorkspaceFileSystemShape;
     readonly path: Path.Path;
   },
   input: Parameters<WorkspaceFileSystemShape["writeFile"]>[0],
 ) =>
-  services.worktreeOwnership
-    .assertNotOwned(services.path.resolve(input.cwd, input.relativePath))
+  services.git
+    .assertWorktreeNotOwned(services.path.resolve(input.cwd, input.relativePath))
     .pipe(Effect.andThen(services.workspaceFileSystem.writeFile(input)));
 
 // Process-wide so a subscriber's restart chain survives its own reconnects
@@ -425,7 +424,6 @@ const makeWsRpcHandlersLayer = () =>
       const textGeneration = yield* TextGeneration;
       const workspaceEntries = yield* WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem;
-      const worktreeOwnership = yield* WorktreeOwnership;
       const threadDiagnostics = yield* ThreadDiagnosticsQuery;
       const eventStore = yield* OrchestrationEventStore;
       const providerRuntimeEvents = yield* ProviderRuntimeEventRepository;
@@ -1300,10 +1298,7 @@ const makeWsRpcHandlersLayer = () =>
             "Failed to create local file preview grant",
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
-          writeWorkspaceFileOutsideOwnedWorktree(
-            { worktreeOwnership, workspaceFileSystem, path },
-            input,
-          ).pipe(
+          writeWorkspaceFileOutsideOwnedWorktree({ git, workspaceFileSystem, path }, input).pipe(
             Effect.mapError((cause) =>
               cause instanceof WorkspaceFileConflictError
                 ? new WsRpcError({
@@ -1621,9 +1616,7 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             refreshGitStatusAfter(
               input.cwd,
-              git.withMutation(input.cwd, git.removeWorktree(input), {
-                targets: { worktreePaths: [input.path] },
-              }),
+              git.withMutation(input.cwd, git.removeWorktree(input)),
             ),
             "Failed to remove worktree",
           ),

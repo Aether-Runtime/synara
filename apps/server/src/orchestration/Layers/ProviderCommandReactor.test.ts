@@ -99,12 +99,7 @@ import {
   ProviderHealth,
   type ProviderHealthShape,
 } from "../../provider/Services/ProviderHealth.ts";
-import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
-import {
-  type WorktreeOwner,
-  WorktreeOwnership,
-  type WorktreeOwnershipShape,
-} from "../../git/Services/WorktreeOwnership.ts";
+import { GitCore, type GitCoreShape, type WorktreeOwner } from "../../git/Services/GitCore.ts";
 import { TextGeneration, type TextGenerationShape } from "../../git/Services/TextGeneration.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { TurnCheckpointCoordinatorLive } from "./TurnCheckpointCoordinator.ts";
@@ -578,31 +573,21 @@ describe("ProviderCommandReactor", () => {
     );
     const publishBranch = vi.fn(() => Effect.void);
     const withMutation: GitCoreShape["withMutation"] = (_cwd, effect) => effect;
-    // Worktree roots a provider owns, keyed by root; checks mirror the real registry.
+    // Worktree roots a provider owns; the check mirrors GitCore's.
     const ownedWorktrees = new Map<string, WorktreeOwner>();
-    const findOwnedWorktree = (candidate: string) =>
-      [...ownedWorktrees].find(([root]) => isWorkspaceRootWithin(candidate, root)) ?? null;
-    const worktreeOwnership: WorktreeOwnershipShape = {
-      claim: () => Effect.die("claim unsupported in test"),
-      ownerOf: (candidate) =>
-        Effect.sync(() => {
-          const owned = findOwnedWorktree(candidate);
-          return owned ? { worktreePath: owned[0], owner: owned[1] } : null;
-        }),
-      assertNotOwned: (candidate) =>
-        Effect.suspend(() => {
-          const owned = findOwnedWorktree(candidate);
-          return owned
-            ? Effect.fail(
-                new WorktreeOwnedError({
-                  worktreePath: owned[0],
-                  ownerThreadId: owned[1].threadId,
-                  provider: owned[1].provider,
-                }),
-              )
-            : Effect.void;
-        }),
-    };
+    const assertWorktreeNotOwned: GitCoreShape["assertWorktreeNotOwned"] = (candidate) =>
+      Effect.suspend(() => {
+        const owned = [...ownedWorktrees].find(([root]) => isWorkspaceRootWithin(candidate, root));
+        return owned
+          ? Effect.fail(
+              new WorktreeOwnedError({
+                worktreePath: owned[0],
+                ownerThreadId: owned[1].threadId,
+                provider: owned[1].provider,
+              }),
+            )
+          : Effect.void;
+      });
     const generateBranchName = vi.fn<TextGenerationShape["generateBranchName"]>(() =>
       Effect.fail(
         new TextGenerationError({
@@ -722,9 +707,9 @@ describe("ProviderCommandReactor", () => {
           renameBranch,
           publishBranch,
           withMutation,
+          assertWorktreeNotOwned,
         } as unknown as GitCoreShape),
       ),
-      Layer.provideMerge(Layer.succeed(WorktreeOwnership, worktreeOwnership)),
       Layer.provideMerge(
         Layer.succeed(TextGeneration, {
           generateBranchName,

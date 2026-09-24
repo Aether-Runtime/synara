@@ -35,6 +35,8 @@ import type {
   GitStatusInput,
   GitStatusResult,
   GitWorkingTreeDiffStatsResult,
+  ProviderKind,
+  ThreadId,
 } from "@synara/contracts";
 
 import type {
@@ -42,7 +44,6 @@ import type {
   GitCommandError,
   WorktreeOwnedError,
 } from "../Errors.ts";
-import type { WorktreeClaim } from "./WorktreeOwnership.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -54,8 +55,8 @@ export interface ExecuteGitInput {
   readonly maxOutputBytes?: number;
   readonly outputMode?: "error" | "truncate";
   readonly progress?: ExecuteGitProgress;
-  /** Bytes written to the git process's stdin (e.g. a patch for `git apply`); closed once written. */
-  readonly stdin?: Uint8Array | string;
+  /** Written to the git process's stdin, which is then closed (e.g. a patch for `git apply`). */
+  readonly stdin?: string;
 }
 
 export interface ExecuteGitResult {
@@ -208,18 +209,20 @@ export interface GitPublishBranchInput {
   branch: string;
 }
 
-export interface GitMutationOptions {
-  /** The owning provider's claim, which lets it mutate the worktree it owns. */
-  readonly claim?: WorktreeClaim | undefined;
-  /**
-   * What the mutation changes outside `cwd`: worktrees it removes or moves, and
-   * local branches it deletes, renames or force-moves. Each is refused when it
-   * lies in (or, for a branch, is checked out in) a worktree another owner holds.
-   */
-  readonly targets?: {
-    readonly worktreePaths?: ReadonlyArray<string>;
-    readonly branches?: ReadonlyArray<string>;
-  };
+export interface WorktreeOwner {
+  readonly threadId: ThreadId;
+  readonly provider: ProviderKind;
+}
+
+/**
+ * A provider's ownership of a worktree (its canonical root). Pass it to
+ * `withMutation` to run the owner's own mutations; it stops working once the
+ * scope it was claimed in closes.
+ */
+export interface WorktreeClaim {
+  readonly _tag: "WorktreeClaim";
+  readonly worktreePath: string;
+  readonly owner: WorktreeOwner;
 }
 
 /**
@@ -228,14 +231,40 @@ export interface GitMutationOptions {
 export interface GitCoreShape {
   /**
    * Serialize one complete mutation saga by canonical repository common directory.
-   * Refuses with `WorktreeOwnedError`, before `effect` runs, when `cwd` or a
-   * declared target is in a worktree a provider owns (see WorktreeOwnership).
+   * Refuses with `WorktreeOwnedError`, before `effect` runs, when `cwd` is inside
+   * a worktree a provider owns, unless `options.claim` is that worktree's claim.
    */
   readonly withMutation: <A, E, R>(
     cwd: string,
     effect: Effect.Effect<A, E, R>,
-    options?: GitMutationOptions,
+    options?: { readonly claim?: WorktreeClaim | undefined },
   ) => Effect.Effect<A, E | GitCommandError | WorktreeOwnedError, R>;
+
+  /**
+   * Claim the worktree containing `worktreePath` for a provider that mirrors
+   * remote changes into it, until the scope closes. The claim is taken under
+   * the repository's mutation lock, so it waits for in-flight mutations. It
+   * fails with `WorktreeOwnedError` when this worktree, or one nested in it or
+   * containing it, is already claimed.
+   *
+   * Ownership is in memory by design and does not survive a server restart:
+   * the provider claims again when its session resumes. It is unrelated to the
+   * agent gateway's durable creation proof (`recordWorktreeOwnership`).
+   */
+  readonly claimWorktree: (
+    worktreePath: string,
+    owner: WorktreeOwner,
+  ) => Effect.Effect<WorktreeClaim, WorktreeOwnedError | GitCommandError, Scope.Scope>;
+
+  /**
+   * Fail with `WorktreeOwnedError` when `path` (existing or not) is inside a
+   * claimed worktree and `claim` is not that worktree's claim. For writes that
+   * do not go through `withMutation`; this check alone does not take the lock.
+   */
+  readonly assertWorktreeNotOwned: (
+    path: string,
+    claim?: WorktreeClaim,
+  ) => Effect.Effect<void, WorktreeOwnedError | GitCommandError>;
   /**
    * Execute a raw Git command.
    */
@@ -357,11 +386,12 @@ export interface GitCoreShape {
   readonly pullCurrentBranch: (cwd: string) => Effect.Effect<GitPullResult, GitCommandError>;
 
   /**
-   * Create a worktree and branch from a base branch.
+   * Create a worktree and branch from a base branch. Refused with
+   * `WorktreeOwnedError` when the new worktree's path is inside a claimed worktree.
    */
   readonly createWorktree: (
     input: GitCreateWorktreeInput,
-  ) => Effect.Effect<GitCreateWorktreeResult, GitCommandError>;
+  ) => Effect.Effect<GitCreateWorktreeResult, GitCommandError | WorktreeOwnedError>;
 
   /** Attach a non-versioned marker to a newly-created linked worktree's Git admin entry. */
   readonly recordWorktreeOwnership: (input: {
@@ -384,13 +414,14 @@ export interface GitCoreShape {
   /**
    * Create a detached worktree from a branch or ref. `onPhase` fires as each
    * setup phase (branch → worktree → copy-changes) begins, for progress UIs.
+   * Refused with `WorktreeOwnedError` when the path is inside a claimed worktree.
    */
   readonly createDetachedWorktree: (
     input: GitCreateDetachedWorktreeInput,
     options?: {
       readonly onPhase?: (phase: GitWorktreeSetupPhase) => Effect.Effect<void>;
     },
-  ) => Effect.Effect<GitCreateDetachedWorktreeResult, GitCommandError>;
+  ) => Effect.Effect<GitCreateDetachedWorktreeResult, GitCommandError | WorktreeOwnedError>;
 
   /**
    * Materialize a GitHub pull request head as a local branch without switching checkout.
@@ -424,9 +455,12 @@ export interface GitCoreShape {
   ) => Effect.Effect<void, GitCommandError>;
 
   /**
-   * Remove an existing worktree.
+   * Remove an existing worktree. Refused with `WorktreeOwnedError` when it is
+   * (or is inside) a claimed worktree.
    */
-  readonly removeWorktree: (input: GitRemoveWorktreeInput) => Effect.Effect<void, GitCommandError>;
+  readonly removeWorktree: (
+    input: GitRemoveWorktreeInput,
+  ) => Effect.Effect<void, GitCommandError | WorktreeOwnedError>;
 
   /**
    * Delete an existing local branch.

@@ -83,7 +83,6 @@ import {
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { AgentGatewayOperationRepository } from "../../agentGateway/Services/AgentGatewayOperationRepository.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
-import { WorktreeOwnership } from "../../git/Services/WorktreeOwnership.ts";
 import {
   type ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -754,7 +753,6 @@ const make = Effect.gen(function* () {
   const checkpointStore = yield* CheckpointStore;
   const studioOutputReactor = yield* StudioOutputReactor;
   const git = yield* GitCore;
-  const worktreeOwnership = yield* WorktreeOwnership;
   const gatewayOperations = yield* AgentGatewayOperationRepository;
   const acceptedCompletionContexts = new Set<number>();
   const textGeneration = yield* TextGeneration;
@@ -1615,7 +1613,7 @@ const make = Effect.gen(function* () {
     }
     // A provider that owns this worktree mirrors its changes into it; refuse
     // here, before the provider conversation is trimmed.
-    yield* worktreeOwnership.assertNotOwned(cwd);
+    yield* git.assertWorktreeNotOwned(cwd);
 
     const targetCheckpointRef =
       targetTurnCount === 0
@@ -3222,13 +3220,20 @@ const make = Effect.gen(function* () {
     if (!isTemporaryWorktreeBranch(input.branch)) {
       return;
     }
-    // The provider owns this branch (e.g. it mirrors a remote branch into the
-    // worktree), so renaming or pushing it here would fight the provider.
-    const managesWorktreeBranch = yield* providerService.getCapabilities(input.provider).pipe(
-      Effect.map((capabilities) => capabilities.managesWorktreeBranch === true),
-      Effect.catch(() => Effect.succeed(false)),
-    );
-    if (managesWorktreeBranch) {
+    // The provider may own this branch (e.g. it mirrors a remote branch into
+    // the worktree), so renaming or pushing it would fight the provider. Without
+    // its capabilities that cannot be ruled out: fail instead of renaming.
+    const capabilities = yield* providerService
+      .getCapabilities(input.provider)
+      .pipe(
+        Effect.tapError((error) =>
+          Effect.logError(
+            "provider command reactor could not read provider capabilities; not renaming the worktree branch",
+            { threadId: input.threadId, provider: input.provider, error: error.message },
+          ),
+        ),
+      );
+    if (capabilities.managesWorktreeBranch === true) {
       return;
     }
 

@@ -544,6 +544,7 @@ const gitCore = {
     Effect.sync(() => {
       removedWorktrees.push(input);
     }),
+  withMutation: <A, E, R>(_cwd: string, effect: Effect.Effect<A, E, R>) => effect,
 } as unknown as GitCoreShape;
 
 const layer = it.layer(

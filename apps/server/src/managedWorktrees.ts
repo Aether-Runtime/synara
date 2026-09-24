@@ -315,7 +315,6 @@ function removeManagedWorktreeSafely(input: {
         });
         return true;
       }),
-      { targets: { worktreePaths: [entry.path] } },
     )
     .pipe(
       Effect.catch((error) =>

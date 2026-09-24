@@ -801,12 +801,6 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                                 }),
                           ),
                         ),
-                  {
-                    targets: {
-                      worktreePaths: [worktree.path],
-                      branches: worktree.branch === null ? [] : [worktree.branch],
-                    },
-                  },
                 )
                 .pipe(
                   Effect.tap(() =>

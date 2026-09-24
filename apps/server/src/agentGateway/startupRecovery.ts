@@ -183,12 +183,6 @@ export function recoverInterruptedAgentGatewayOperations(input: {
                             });
                           }
                         }),
-                        {
-                          targets: {
-                            worktreePaths: [entry.plannedWorktreePath],
-                            branches: entry.newBranch === null ? [] : [entry.newBranch],
-                          },
-                        },
                       )
                       .pipe(
                         Effect.catch((error) =>

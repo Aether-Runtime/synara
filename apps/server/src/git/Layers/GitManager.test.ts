@@ -32,7 +32,6 @@ import {
 } from "../Services/TextGeneration.ts";
 import { GitCoreLive } from "./GitCore.ts";
 import { GitCore } from "../Services/GitCore.ts";
-import { WorktreeOwnership } from "../Services/WorktreeOwnership.ts";
 import { createGitHubCliWithFakeGh, type FakeGhScenario } from "../testing/fakeGitHubCli.ts";
 import { makeGitManager } from "./GitManager.ts";
 import { ServerConfig } from "../../config.ts";
@@ -378,9 +377,9 @@ function makeManager(input?: {
 
   return Effect.gen(function* () {
     const manager = yield* makeGitManager;
-    // The same instance the manager's GitCore enforces in withMutation.
-    const worktreeOwnership = yield* WorktreeOwnership;
-    return { manager, ghCalls, worktreeOwnership };
+    // The GitCore instance the manager uses, for claiming worktrees.
+    const gitCore = yield* GitCore;
+    return { manager, ghCalls, gitCore };
   }).pipe(Effect.provide(managerLayer));
 }
 
@@ -2873,8 +2872,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["worktree", "add", "-b", "feature/owned", worktreePath]);
       fs.writeFileSync(path.join(worktreePath, "mirrored.txt"), "mirrored\n");
 
-      const { manager, worktreeOwnership } = yield* makeManager();
-      yield* worktreeOwnership.claim(worktreePath, {
+      const { manager, gitCore } = yield* makeManager();
+      yield* gitCore.claimWorktree(worktreePath, {
         threadId: ThreadId.makeUnsafe("thread-owner"),
         provider: "aether",
       });
