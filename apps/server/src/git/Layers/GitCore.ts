@@ -3122,7 +3122,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         const sanitizedBranch = targetBranch.replace(/\//g, "-");
         const repoName = path.basename(input.cwd);
         const worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
-        yield* assertWorktreeNotOwned(worktreePath);
+        yield* assertWorktreeNotOwned(nodePath.resolve(input.cwd, worktreePath));
         const args = input.newBranch
           ? ["worktree", "add", "-b", input.newBranch, worktreePath, input.branch]
           : ["worktree", "add", worktreePath, input.branch];
@@ -3610,7 +3610,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
             ),
           ));
 
-        yield* assertWorktreeNotOwned(worktreePath);
+        yield* assertWorktreeNotOwned(nodePath.resolve(input.cwd, worktreePath));
 
         // Branch-backed managed worktrees still pin to the resolved commit, so
         // ownership proofs and pruning behave exactly like the detached form.
@@ -3766,7 +3766,8 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
 
     const removeWorktree: GitCoreShape["removeWorktree"] = (input) =>
       Effect.gen(function* () {
-        yield* assertWorktreeNotOwned(input.path);
+        // Git resolves a relative path against `cwd`, so the check must too.
+        yield* assertWorktreeNotOwned(nodePath.resolve(input.cwd, input.path));
         // Resolve the branch and its HEAD before removal: afterwards the
         // worktree checkout is gone and can no longer answer. Only temporary
         // synara/* branches qualify for reclamation; detached HEADs and

@@ -2870,7 +2870,9 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* initRepo(repoDir);
       const worktreePath = path.join(parentDir, "owned");
       yield* runGit(repoDir, ["worktree", "add", "-b", "feature/owned", worktreePath]);
-      fs.writeFileSync(path.join(worktreePath, "mirrored.txt"), "mirrored\n");
+      const mirroredFile = path.join(worktreePath, "mirrored.txt");
+      fs.writeFileSync(mirroredFile, "mirrored\n");
+      const mirroredInode = fs.statSync(mirroredFile).ino;
 
       const { manager, gitCore } = yield* makeManager();
       yield* gitCore.claimWorktree(worktreePath, {
@@ -2891,7 +2893,9 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       }).pipe(Effect.flip);
 
       expect(error).toBeInstanceOf(WorktreeOwnedError);
-      expect(fs.readFileSync(path.join(worktreePath, "mirrored.txt"), "utf8")).toBe("mirrored\n");
+      // Same inode: the file was never stashed away and restored.
+      expect(fs.statSync(mirroredFile).ino).toBe(mirroredInode);
+      expect(fs.readFileSync(mirroredFile, "utf8")).toBe("mirrored\n");
       expect((yield* runGit(repoDir, ["stash", "list"])).stdout.trim()).toBe("");
       expect((yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim()).toBe("main");
     }),

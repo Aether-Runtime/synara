@@ -31,16 +31,19 @@ const TestLayer = Layer.mergeAll(
   WorkspaceLayerLive.pipe(Layer.provide(NodeServices.layer)),
 );
 
-// Differently cased paths only name the same directory on a case-insensitive
-// filesystem (macOS, Windows); elsewhere the mixed-case test is skipped.
-const tempDirIsCaseInsensitive = (() => {
-  const probe = mkdtempSync(path.join(tmpdir(), "case-probe-"));
-  try {
-    return existsSync(path.join(path.dirname(probe), path.basename(probe).toUpperCase()));
-  } finally {
-    rmSync(probe, { recursive: true, force: true });
-  }
-})();
+// Differently cased paths name the same directory only on a case-insensitive
+// filesystem, and only macOS and Windows native realpath return the on-disk
+// case. Elsewhere (including Linux casefold mounts) the mixed-case test skips.
+const nativeRealpathFoldsCase =
+  (process.platform === "darwin" || process.platform === "win32") &&
+  (() => {
+    const probe = mkdtempSync(path.join(tmpdir(), "case-probe-"));
+    try {
+      return existsSync(path.join(path.dirname(probe), path.basename(probe).toUpperCase()));
+    } finally {
+      rmSync(probe, { recursive: true, force: true });
+    }
+  })();
 
 const aetherOwner: WorktreeOwner = {
   threadId: ThreadId.makeUnsafe("thread-aether"),
@@ -184,7 +187,7 @@ it.layer(TestLayer)("GitCore worktree ownership", (it) => {
       }),
     );
 
-    it.effect.skipIf(!tempDirIsCaseInsensitive)(
+    it.effect.skipIf(!nativeRealpathFoldsCase)(
       "refuses a differently cased path to the owned worktree on a case-insensitive filesystem",
       () =>
         Effect.gen(function* () {
@@ -300,6 +303,14 @@ it.layer(TestLayer)("GitCore worktree ownership", (it) => {
           .withMutation(repo, gitCore.removeWorktree({ cwd: repo, path: owned, force: true }))
           .pipe(Effect.flip);
         expect(removal).toBeInstanceOf(WorktreeOwnedError);
+        // A relative path is resolved against `cwd`, as git does.
+        const relativeRemoval = yield* gitCore
+          .withMutation(
+            repo,
+            gitCore.removeWorktree({ cwd: repo, path: path.relative(repo, owned), force: true }),
+          )
+          .pipe(Effect.flip);
+        expect(relativeRemoval).toBeInstanceOf(WorktreeOwnedError);
         expect(existsSync(owned)).toBe(true);
 
         // Branches need no ownership check: git will not delete or force-move a
@@ -342,7 +353,7 @@ it.layer(TestLayer)("GitCore worktree ownership", (it) => {
               cwd: repo,
               ref: "main",
               newBranch: "feature/inside-detached",
-              path: inside,
+              path: path.relative(repo, inside),
             }),
           )
           .pipe(Effect.flip);
