@@ -454,7 +454,16 @@ function issueLines(issue: SchemaIssue.Issue, path: ReadonlyArray<PropertyKey>):
     case "AnyOf": {
       const discriminator = discriminatorLine(issue, path);
       if (discriminator !== undefined) return [discriminator];
-      if (issue.issues.length > 0) return issue.issues.flatMap((inner) => issueLines(inner, path));
+      if (issue.issues.length > 0) {
+        // Report only the members the input's literal keys select (the `success: true` variant
+        // for a `success: true` frame), not every member that was tried.
+        const selected = issue.issues.filter(
+          (inner) => inner._tag === "Composite" && literalsMatch(inner.ast, issue.actual),
+        );
+        return (selected.length > 0 ? selected : issue.issues).flatMap((inner) =>
+          issueLines(inner, path),
+        );
+      }
       break;
     }
     default:
@@ -528,6 +537,20 @@ function discriminators(union: SchemaAST.Union): Map<PropertyKey, Discriminator>
     if (everyMemberHasLiteral) result.set(name, { literals, required });
   }
   return result;
+}
+
+/** Whether every literal-typed key of an object member agrees with the input. */
+function literalsMatch(member: SchemaAST.AST, input: unknown): boolean {
+  const encoded = SchemaAST.toEncoded(member);
+  if (encoded._tag !== "Objects") return false;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
+  const record = input as Record<PropertyKey, unknown>;
+  return encoded.propertySignatures.every((property) => {
+    const type = SchemaAST.toEncoded(property.type);
+    if (type._tag !== "Literal") return true;
+    if (!Object.hasOwn(record, property.name)) return SchemaAST.isOptional(property.type);
+    return record[property.name] === type.literal;
+  });
 }
 
 function flattenUnion(ast: SchemaAST.AST): ReadonlyArray<SchemaAST.AST> {

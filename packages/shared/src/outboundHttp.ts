@@ -310,6 +310,28 @@ async function resolvePinnedAddress(
 }
 
 /**
+ * Resolves `url`'s host to one address that passes the same checks `request` applies (public
+ * addresses only, or exact loopback for an allowed `http:` URL), for transports that open their
+ * own connection to an outbound origin (a WebSocket). Connect with `invokePinnedDnsLookup` so the
+ * socket uses this address and cannot be re-resolved elsewhere.
+ */
+export async function resolveOutboundPinnedAddress(
+  url: URL,
+  options: {
+    readonly requirePublicAddress?: boolean;
+    readonly allowLoopbackHttp?: boolean;
+    readonly signal?: AbortSignal;
+  } = {},
+): Promise<{ readonly address: string; readonly family: 4 | 6 }> {
+  return await resolvePinnedAddress(
+    url,
+    options.requirePublicAddress ?? true,
+    options.allowLoopbackHttp === true,
+    options.signal ?? new AbortController().signal,
+  );
+}
+
+/**
  * Custom `http`/`https` lookup that always returns the already-pinned address.
  * Modern Node/Bun Happy Eyeballs pass `{ all: true }` and expect the array
  * callback form; the legacy single-address form alone crashes those runtimes.
