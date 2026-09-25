@@ -169,7 +169,7 @@ function transition(task: Task, change: (cursor: AetherCreatedCursor) => AetherC
 
 type MirrorOutcome =
   | { readonly _tag: "Mirrored"; readonly note: string | undefined }
-  /** The workspace was not reachable: mirror when the next turn starts or settles. */
+  /** The workspace is not running: mirror when the next turn starts or settles. */
   | { readonly _tag: "Deferred"; readonly note: string }
   | { readonly _tag: "Failed"; readonly note: string };
 
@@ -183,7 +183,7 @@ interface TurnRequest {
   readonly implementsPlan: boolean;
 }
 
-/** Aether refused the send, so nothing landed; otherwise its response may just have been lost. */
+/** Aether refused the request, so nothing changed; otherwise its response may just be lost. */
 function sendRefused(error: AetherApiError): boolean {
   switch (error._tag) {
     case "AetherApiNotConfiguredError":
