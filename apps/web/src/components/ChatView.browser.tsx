@@ -8856,6 +8856,99 @@ describe("ChatView transcript geometry (full app)", () => {
     },
   );
 
+  it("refuses an Aether send from Studio, even with a git reference folder", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [STUDIO_DRAFT_THREAD_ID]: {
+          projectId: STUDIO_PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          entryPoint: "chat",
+          branch: null,
+          worktreePath: null,
+          // The fixture reports this folder as a git repository.
+          workingDirectory: "/repo/project",
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: {
+        [STUDIO_PROJECT_ID]: STUDIO_DRAFT_THREAD_ID,
+      },
+    });
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: withStudioProject(withHomeChatProject(createDraftOnlySnapshot())),
+      initialEntry: `/${STUDIO_DRAFT_THREAD_ID}`,
+      configureFixture: (nextFixture) => {
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          homeDir: "/Users/tester",
+          chatWorkspaceRoot: "/Users/tester/Documents/Synara",
+          studioWorkspaceRoot: "/Users/tester/Documents/Synara/Studio",
+        };
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+        const settings = createBrowserTestServerSettings(NOW_ISO);
+        nextFixture.serverSettings = {
+          ...settings,
+          providers: {
+            ...settings.providers,
+            aether: { ...settings.providers.aether, enabled: true },
+          },
+        };
+      },
+    });
+
+    try {
+      await waitForComposerEditor();
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(STUDIO_DRAFT_THREAD_ID, {
+          provider: "aether",
+          model: "claude-opus-5-5",
+        });
+      useComposerDraftStore.getState().setPrompt(STUDIO_DRAFT_THREAD_ID, "Ship it in the cloud");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      wsRequests.length = 0;
+      sendButton.click();
+
+      // Studio runs every chat in a local folder, so Aether is refused before any worktree.
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector('[data-slot="toast-viewport"]')?.textContent ?? "",
+          ).toContain(
+            "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(
+        wsRequests.some((request) => request._tag === WS_METHODS.gitCreateDetachedWorktree),
+      ).toBe(false);
+      expect(hasDispatchedCommandType("thread.create")).toBe(false);
+    } finally {
+      restoreNativeApi();
+      await mounted.cleanup();
+    }
+  });
+
   it("explains a cloud provider once on a new chat and hides it after dismissal", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

@@ -2293,7 +2293,8 @@ export default function ChatView({
     queriedIsRepo: branchesQuery.data?.isRepo,
   });
   // Where no worktree can exist (Studio, the chats container, a folder without git), a provider
-  // that owns its worktree cannot run: the environment slot says what it needs instead.
+  // that owns its worktree cannot run: the environment slot says why instead. Studio runs every
+  // chat in a local folder, git or not.
   const providerNeedingGit =
     isContainerLandingProject || !isGitRepo
       ? providerLackingFeature(threadGateProviders, "non-git-workspace")
@@ -2301,7 +2302,10 @@ export default function ChatView({
   const environmentUnavailableMessage =
     providerNeedingGit === null
       ? null
-      : providerFeatureUnavailableMessage(providerNeedingGit, "non-git-workspace");
+      : providerFeatureUnavailableMessage(
+          providerNeedingGit,
+          isStudioContainer ? "local-workspace" : "non-git-workspace",
+        );
   // Studio never offers "Initialize Git": its reference folder is ordinary cwd context,
   // so Git actions appear only when that selected folder is already a repository.
   const showGitActions = isStudioContainer

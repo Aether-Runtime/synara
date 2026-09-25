@@ -211,6 +211,19 @@ export async function prepareChatSendWorkspace({
     nextThreadWorktreePath === null;
   let currentActiveGitBranchForSend = currentActiveGitBranch;
 
+  // Studio runs every chat in its own folder or a reference folder, never in a worktree, even
+  // when that folder is a git repository: refuse a provider that owns its worktree up front.
+  if (
+    isStudioContainer &&
+    !providerSupportsFeature(selectedModelSelectionForSend.provider, "local-workspace")
+  ) {
+    setThreadError(
+      threadIdForSend,
+      providerFeatureUnavailableMessage(selectedModelSelectionForSend.provider, "local-workspace"),
+    );
+    return false;
+  }
+
   if (isFirstMessage && isContainerLandingProject && firstSendTarget.kind !== "current") {
     // A chat started here runs in a new chat folder (not a git repository) or in a picked
     // folder's local checkout, neither of which a provider that owns its worktree can use:
