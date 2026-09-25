@@ -433,7 +433,7 @@ function isQuietTurnLifecycleActivity(activity: OrchestrationThreadActivity): bo
   }
   // Provider lifecycle rows close internal state; assistant/result text is rendered from messages.
   // A failed or interrupted turn keeps its row: nothing else says the turn did not finish.
-  return activity.tone !== "error" && turnCompletedState(activity) !== "interrupted";
+  return activity.tone !== "error" && !turnCompletedAsStopped(activity);
 }
 
 /** The state a `turn.completed` activity recorded, from its payload. */
@@ -441,6 +441,12 @@ function turnCompletedState(activity: OrchestrationThreadActivity): string | nul
   if (activity.kind !== "turn.completed") return null;
   const state = asRecord(activity.payload)?.state;
   return typeof state === "string" ? state : null;
+}
+
+/** A stop: "interrupted" from Codex and Claude, "cancelled" from Cursor, Devin, Grok and ACP. */
+function turnCompletedAsStopped(activity: OrchestrationThreadActivity): boolean {
+  const state = turnCompletedState(activity);
+  return state === "interrupted" || state === "cancelled";
 }
 
 function isUninformativeCommandStartEntry(entry: DerivedWorkLogEntry): boolean {
@@ -640,9 +646,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const toolName = extractToolName(payload);
   const toolCallId = extractToolCallId(payload);
   const toolStatus = deriveToolLifecycleStatus(activity.kind, payload);
-  const turnState = turnCompletedState(activity);
-  const turnOutcome =
-    turnState === "interrupted" ? "interrupted" : turnState === "failed" ? "failed" : null;
+  const turnOutcome = turnCompletedAsStopped(activity)
+    ? "interrupted"
+    : turnCompletedState(activity) === "failed"
+      ? "failed"
+      : null;
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
@@ -1444,12 +1452,11 @@ function reconcileSettledLiveActivities(
         settledAt: activity.createdAt,
       });
     } else if (activity.kind === "turn.completed") {
-      const turnState = turnCompletedState(activity);
       terminalByTurnId.set(activity.turnId, {
         state:
           activity.tone === "error"
             ? "failed"
-            : turnState === "interrupted" || turnState === "cancelled"
+            : turnCompletedAsStopped(activity)
               ? "cancelled"
               : "completed",
         settledAt: activity.createdAt,
