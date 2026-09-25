@@ -9,10 +9,11 @@
  *
  * The worktree is claimed for the thread's lifetime, not the session's: `stopSession` only stops
  * following the task, which keeps running in the cloud; `releaseThread` (the thread was archived,
- * or lost its binding) releases the claim. The resume cursor (`aetherResumeCursor.ts`) carries
- * everything a restart needs: at construction the adapter claims again the worktree of every
- * Aether thread neither archived nor deleted, and startup reconciliation reattaches each turn
- * still in flight (`reattachTurn`), or fails it with the reason it cannot.
+ * or lost its binding) stops the turn in flight and releases the claim. The resume cursor
+ * (`aetherResumeCursor.ts`) carries everything a restart needs: at construction the adapter claims
+ * again the worktree of every Aether thread neither archived nor deleted, and stops again the turn
+ * an archived thread still has in flight; startup reconciliation reattaches each turn still in
+ * flight (`reattachTurn`), or fails it with the reason it cannot.
  *
  * @module AetherAdapterLive
  */
@@ -35,6 +36,7 @@ import {
   Clock,
   Effect,
   Exit,
+  Fiber,
   type FileSystem,
   Layer,
   Option,
@@ -100,6 +102,8 @@ import { PROVIDER_ADAPTER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../Services/Prov
 import {
   ProviderSessionDirectory,
   type ProviderRuntimeBinding,
+  type ProviderSessionDirectoryShape,
+  type ProviderSessionDirectoryWriteError,
 } from "../Services/ProviderSessionDirectory.ts";
 
 const PROVIDER = "aether" as const;
@@ -126,6 +130,16 @@ export interface AetherAdapterOptions {
    * thread among them with a task is claimed again.
    */
   readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
+  /**
+   * Persisted bindings of archived threads: a turn one of them still has in flight (its archive's
+   * stop failed) is stopped again.
+   */
+  readonly archivedBindings: ReadonlyArray<ProviderRuntimeBinding>;
+  /** Persists the cursor a thread's binding keeps once the turn it had in flight is stopped. */
+  readonly keepCursor: (
+    threadId: ThreadId,
+    cursor: AetherCreatedCursor,
+  ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
 }
 
 /** A session, whatever its task's state. */
@@ -374,6 +388,21 @@ export const makeAetherAdapter = (
       ThreadId,
       { readonly claim: WorktreeClaim; readonly scope: Scope.Closeable }
     >();
+    /**
+     * The stops construction sent for archived threads' turns in flight, each ending with the turn
+     * it stopped (null when the stop failed). The thread's next session or release waits for its
+     * stop, so the stop cannot reach a turn sent after it, and its cursor is kept before anything
+     * else writes it.
+     */
+    const bootStops = new Map<ThreadId, Fiber.Fiber<TurnId | null>>();
+    /**
+     * Waits for the thread's boot stop, if any, and returns the turn it ended. A cursor its caller
+     * read before that stop landed still has that turn in flight.
+     */
+    const afterBootStop = (threadId: ThreadId): Effect.Effect<TurnId | null> => {
+      const stop = bootStops.get(threadId);
+      return stop === undefined ? Effect.succeed(null) : Fiber.join(stop);
+    };
     const nowIso = Effect.map(Clock.currentTimeMillis, (millis) => new Date(millis).toISOString());
 
     const requireTask = (session: Session, operation: string) =>
@@ -783,7 +812,11 @@ export const makeAetherAdapter = (
       readonly lifecycleGeneration: string | undefined;
     }) =>
       Effect.gen(function* () {
-        const { cursor } = input;
+        const stopped = yield* afterBootStop(input.threadId);
+        const cursor: AetherResumeCursor =
+          input.cursor.status === "created" && activeTurnId(input.cursor) === stopped
+            ? { ...input.cursor, active: false }
+            : input.cursor;
         const claim = yield* claimWorktree(input.threadId, cursor.worktreePath);
         const at = yield* nowIso;
         const base: SessionBase = {
@@ -834,6 +867,29 @@ export const makeAetherAdapter = (
         sessions.delete(threadId);
         return Scope.close(session.scope, Exit.void);
       });
+
+    /**
+     * Stops the turn a released thread's cursor has in flight (as archiving or deleting a thread
+     * stops a local agent), then keeps the cursor with nothing in flight, so a stop that landed is
+     * never sent again, while one that failed is sent again at the next release or boot.
+     */
+    const stopInFlight = (threadId: ThreadId, cursor: AetherCreatedCursor) =>
+      client.stopTask(cursor.taskId, { discard_queued_messages: true }).pipe(
+        Effect.mapError(apiFailure("stopTask")),
+        Effect.andThen(
+          options.keepCursor(threadId, { ...cursor, active: false }).pipe(
+            Effect.mapError(
+              (error) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "keepCursor",
+                  detail: `Aether stopped the task, but Synara could not record it: ${error.message}`,
+                  cause: error,
+                }),
+            ),
+          ),
+        ),
+      );
 
     // -----------------------------------------------------------------------
     // Sends
@@ -1098,7 +1154,7 @@ export const makeAetherAdapter = (
       });
 
     // -----------------------------------------------------------------------
-    // Construction: claim every task's worktree again
+    // Construction: claim every task's worktree again, and stop what archiving could not
     // -----------------------------------------------------------------------
 
     // A claim that fails here fails loudly again when the thread is next used (`attach`).
@@ -1117,6 +1173,28 @@ export const makeAetherAdapter = (
           }),
         ),
       );
+    }
+
+    // An archived thread whose cursor still has a turn in flight: its archive's stop failed. The
+    // stop is sent in the background, so startup does not wait on Aether; one that fails again is
+    // sent at the next boot, or when the thread is unarchived.
+    for (const binding of options.archivedBindings) {
+      if (binding.provider !== PROVIDER) continue;
+      const failed = (cause: Cause.Cause<unknown>) =>
+        Effect.logError("aether.boot.stop-failed", {
+          threadId: binding.threadId,
+          cause: Cause.pretty(cause),
+        });
+      yield* Effect.gen(function* () {
+        const cursor = yield* parseAetherResumeCursor(binding.resumeCursor);
+        if (cursor.status === "creating" || !cursor.active) return;
+        const stop = yield* stopInFlight(binding.threadId, cursor).pipe(
+          Effect.as(activeTurnId(cursor)),
+          Effect.catchCause((cause) => failed(cause).pipe(Effect.as(null))),
+          Effect.forkIn(adapterScope),
+        );
+        bootStops.set(binding.threadId, stop);
+      }).pipe(Effect.catchCause(failed));
     }
 
     const notSupported = (method: string, detail: string) =>
@@ -1390,11 +1468,15 @@ export const makeAetherAdapter = (
       releaseThread: (input) =>
         Effect.gen(function* () {
           // Archiving or deleting a thread stops its turn in flight, as it stops a local agent:
-          // Synara could not stop the task afterwards.
+          // Synara could not stop the task afterwards. Unarchiving releases the thread again, so
+          // a stop that failed when it was archived is sent again.
+          const stopped = yield* afterBootStop(input.threadId);
           if (input.resumeCursor === undefined || input.resumeCursor === null) return;
           const cursor = yield* parseAetherResumeCursor(input.resumeCursor);
-          if (cursor.status === "creating" || !cursor.active) return;
-          yield* client.stopTask(cursor.taskId, { discard_queued_messages: true }).pipe(
+          if (cursor.status === "creating" || !cursor.active || activeTurnId(cursor) === stopped) {
+            return;
+          }
+          yield* stopInFlight(input.threadId, cursor).pipe(
             Effect.tapError((error) =>
               Effect.logError("aether.release.stop-failed", {
                 threadId: input.threadId,
@@ -1402,7 +1484,6 @@ export const makeAetherAdapter = (
                 error: error.message,
               }),
             ),
-            Effect.mapError(apiFailure("stopTask")),
           );
         }).pipe(
           // The thread is gone either way: its worktree is released even if the stop failed.
@@ -1443,6 +1524,12 @@ export const openRunningWorkspace =
       ),
     );
 
+/** Writes the cursor a thread's binding keeps into the session directory. */
+export const keepCursorIn =
+  (directory: ProviderSessionDirectoryShape): AetherAdapterOptions["keepCursor"] =>
+  (threadId, resumeCursor) =>
+    directory.upsert({ threadId, provider: PROVIDER, resumeCursor });
+
 export const AetherAdapterLive = Layer.effect(
   AetherAdapter,
   Effect.gen(function* () {
@@ -1450,23 +1537,21 @@ export const AetherAdapterLive = Layer.effect(
     const directory = yield* ProviderSessionDirectory;
     const threads = yield* ProjectionThreadRepository;
     const bindings = yield* directory.listBindings().pipe(Effect.orDie);
+    const live: ProviderRuntimeBinding[] = [];
+    const archived: ProviderRuntimeBinding[] = [];
+    for (const binding of bindings.filter((candidate) => candidate.provider === PROVIDER)) {
+      const thread = yield* threads.getById({ threadId: binding.threadId }).pipe(Effect.orDie);
+      if (Option.isNone(thread) || thread.value.deletedAt !== null) continue;
+      (thread.value.archivedAt === null ? live : archived).push(binding);
+    }
     return yield* makeAetherAdapter({
       client,
       openWorkspace: openRunningWorkspace(client),
       journal: yield* ProviderRuntimeEventRepository,
       // An archived or deleted thread's worktree is left to retention; resuming it claims it.
-      bindings: yield* Effect.filter(
-        bindings.filter((binding) => binding.provider === PROVIDER),
-        (binding) =>
-          threads
-            .getById({ threadId: binding.threadId })
-            .pipe(
-              Effect.map(
-                Option.exists((thread) => thread.archivedAt === null && thread.deletedAt === null),
-              ),
-              Effect.orDie,
-            ),
-      ),
+      bindings: live,
+      archivedBindings: archived,
+      keepCursor: keepCursorIn(directory),
     });
   }),
 );

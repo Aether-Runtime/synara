@@ -182,8 +182,13 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   reach the adapter's `releaseThread`, so retention and deletion can remove the worktree. It first
   stops (`POST /stop`, discarding queued messages) the turn the thread's persisted cursor says is
   in flight, since Synara could not stop it afterwards; a failed stop is logged with the task id
-  and fails the call, and the worktree is released anyway. The idle reaper and a shutdown only
-  detach. Startup
+  and fails the call, and the worktree is released anyway. A stop that lands keeps the cursor
+  with nothing in flight (`keepCursor`), so it is never sent again. One that failed on archive is
+  sent again when the thread is unarchived (the command reactor releases it again) and at each
+  boot while it stays archived (the adapter's construction, in the background; the thread's next
+  session or release waits for it, and no longer counts the turn it stopped as in flight). The idle reaper and a shutdown only
+  detach, and so does a desktop quit: the quit confirmation lists only chats a quit stops, and
+  quit-resume (`quitResume.ts`) neither records nor interrupts a cloud provider's thread. Startup
   reconciliation asks the provider to follow each turn in flight again
   (`ProviderService.reattachTurn` → the adapter's `reattachTurn`): a reattached turn and its
   requests are left to the adapter, and its binding is marked running with that turn again (a

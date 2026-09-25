@@ -15,6 +15,7 @@ import {
   planProviderRuntimeReconciliation,
   type ProviderRuntimeReconciliationPlan,
 } from "./providerRuntimeReconciliation.ts";
+import type { ProviderRuntimeEventPumpHealth } from "./Services/ProviderService.ts";
 import type { ProviderRuntimeBinding } from "./Services/ProviderSessionDirectory.ts";
 
 const NOW = Date.parse("2026-07-23T20:00:30.000Z");
@@ -766,6 +767,92 @@ describe("planProviderRuntimeReconciliation", () => {
       }),
     ]);
     expect(plans[0]?.reason).toContain("runtime-event pump is recovering");
+  });
+
+  describe("past the no-progress limit", () => {
+    // An hour without progress: past the default 45 minutes.
+    const quietSince = "2026-07-23T19:00:00.000Z";
+    const quietThread = (
+      provider: "aether" | "codex",
+      overrides: Partial<OrchestrationThreadShell> = {},
+    ) =>
+      threadShell({
+        modelSelection:
+          provider === "aether"
+            ? { provider, model: "claude-opus-5" }
+            : { provider, model: "gpt-5.6" },
+        updatedAt: quietSince,
+        session: { ...threadShell().session!, providerName: provider, updatedAt: quietSince },
+        ...overrides,
+      });
+    const plan = (
+      thread: OrchestrationThreadShell,
+      live: ReadonlyArray<ProviderSession>,
+      follow: {
+        readonly bound?: boolean;
+        readonly pump?: ProviderRuntimeEventPumpHealth["status"];
+      } = {},
+    ) =>
+      planProviderRuntimeReconciliation({
+        threads: [thread],
+        bindings:
+          follow.bound === false ? [] : [binding(OLD_TURN_ID, thread.modelSelection.provider)],
+        liveSessions: live,
+        pumpHealth:
+          follow.pump === undefined
+            ? []
+            : [
+                {
+                  provider: thread.modelSelection.provider,
+                  status: follow.pump,
+                  consecutiveFailures: 2,
+                  updatedAt: "2026-07-23T20:00:29.000Z",
+                },
+              ],
+        nowMs: NOW,
+      });
+    const running = (provider: "aether" | "codex") => [
+      liveSession({ status: "running", activeTurnId: OLD_TURN_ID, provider }),
+    ];
+
+    it("leaves a cloud turn that waits on the user's answer to its provider", () => {
+      expect(plan(quietThread("aether", { hasPendingUserInput: true }), running("aether"))).toEqual(
+        [],
+      );
+    });
+
+    it("settles a cloud turn that asked nothing, or whose provider no longer follows it", () => {
+      expect(plan(quietThread("aether"), running("aether"))).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      expect(plan(quietThread("aether", { hasPendingUserInput: true }), [])).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+    });
+
+    it("settles a cloud turn waiting on the user once nothing follows it: no binding, no session running it, or a blind pump", () => {
+      const waiting = quietThread("aether", { hasPendingUserInput: true });
+      expect(plan(waiting, [], { bound: false })).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      expect(plan(waiting, running("aether"), { bound: false })).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      // A session that never got past connecting runs nothing.
+      expect(plan(waiting, [liveSession({ status: "connecting", provider: "aether" })])).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      // Its adapter still runs the turn, but none of its events reach Synara.
+      expect(plan(waiting, running("aether"), { pump: "recovering" })).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+    });
+
+    it("settles a local turn that waits on the user's answer", () => {
+      expect(plan(quietThread("codex", { hasPendingUserInput: true }), running("codex"))).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+    });
   });
 
   it("does not treat an actively streaming turn as stale when only the session row is quiet", () => {

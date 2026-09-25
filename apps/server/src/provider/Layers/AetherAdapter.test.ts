@@ -16,11 +16,23 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  type OrchestrationCommand,
   type OrchestrationThreadShell,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
 } from "@synara/contracts";
-import { Effect, Exit, FileSystem, Latch, Layer, Option, Scope, Stream } from "effect";
+import {
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Latch,
+  Layer,
+  Option,
+  Scope,
+  Stream,
+} from "effect";
 import { describe, expect } from "vitest";
 
 import { CheckpointStoreLive } from "../../checkpointing/Layers/CheckpointStore.ts";
@@ -56,6 +68,7 @@ import {
   tooLarge,
 } from "../aether/testing/aetherMirrorFixtures.ts";
 import { classifyProviderAttemptOutcome } from "../../orchestration/Layers/ProviderCommandReactor.ts";
+import { claimQuitResumeRecord, prepareQuitResume } from "../../orchestration/quitResume.ts";
 import { providerAdapterConformanceIssues } from "../providerAdapterConformance.ts";
 import { planProviderRuntimeReconciliation } from "../providerRuntimeReconciliation.ts";
 import { AetherAdapter, type AetherAdapterShape } from "../Services/AetherAdapter.ts";
@@ -67,7 +80,13 @@ import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.t
 import { ProviderUnsupportedError } from "../Errors.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../../persistence/Layers/ProviderSessionRuntime.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { AetherAdapterLive, makeAetherAdapter, openRunningWorkspace } from "./AetherAdapter.ts";
+import {
+  AetherAdapterLive,
+  keepCursorIn,
+  makeAetherAdapter,
+  openRunningWorkspace,
+  type AetherAdapterOptions,
+} from "./AetherAdapter.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 
@@ -125,6 +144,12 @@ const providerServiceOver = (adapter: AetherAdapterShape) =>
         listProviders: () => Effect.succeed(["aether"] as const),
       }),
     ),
+  );
+
+/** One process's ProviderService over `adapter`, living as long as `scope`. */
+const launchProviderService = (adapter: AetherAdapterShape, scope: Scope.Scope) =>
+  Layer.buildWithScope(providerServiceOver(adapter), scope).pipe(
+    Effect.flatMap((services) => Effect.service(ProviderService).pipe(Effect.provide(services))),
   );
 
 /** The thread as the live reconciler reads it: running `turnId` since `since`. */
@@ -229,11 +254,14 @@ const makeHarness = Effect.gen(function* () {
   };
 
   /** An adapter in its own scope, its events not yet read; closing the scope ends it. */
-  const makeAdapter = (bindings: ReadonlyArray<ProviderRuntimeBinding> = []) =>
+  const makeAdapter = (
+    bindings: ReadonlyArray<ProviderRuntimeBinding> = [],
+    boot: Partial<Pick<AetherAdapterOptions, "client" | "archivedBindings" | "keepCursor">> = {},
+  ) =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
       const adapter = yield* makeAetherAdapter({
-        client: aether.client,
+        client: boot.client ?? aether.client,
         openWorkspace: () =>
           vm.failure !== undefined
             ? Effect.fail(vm.failure)
@@ -255,6 +283,9 @@ const makeHarness = Effect.gen(function* () {
             ),
         },
         bindings,
+        archivedBindings: boot.archivedBindings ?? [],
+        // A test that follows the binding passes one that writes the session directory.
+        keepCursor: boot.keepCursor ?? (() => Effect.void),
       }).pipe(Scope.provide(scope));
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
       return { adapter, scope };
@@ -904,6 +935,69 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         });
       }),
     );
+
+    it.effect(
+      "keeps a turn waiting on a question past the live reconciler's no-progress limit",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter } = yield* h.makeAdapter();
+          yield* Effect.gen(function* () {
+            const providerService = yield* ProviderService;
+            const directory = yield* ProviderSessionDirectory;
+            const accepted: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(providerService.streamEvents, (event) =>
+              Effect.sync(() => void accepted.push(event)),
+            ).pipe(Effect.forkScoped);
+            yield* providerService.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            h.aether.hooks.onTurn = (turn) =>
+              h.aether.ask(turn, "toolu_ask", ["Pay now", "Place order"]);
+            const turn = yield* providerService.sendTurn({
+              threadId: THREAD_ID,
+              input: "Build checkout",
+            });
+            yield* waitFor("the question", () =>
+              accepted.find((event) => event.type === "user-input.requested"),
+            );
+
+            // An hour on, nothing has moved on the thread: the question still waits.
+            const quietSince = new Date(Date.now() - 60 * 60_000).toISOString();
+            const bindings = yield* directory.listBindings();
+            const liveSessions = yield* providerService.listSessions();
+            const pumpHealth = yield* providerService.getRuntimeEventPumpHealth!();
+            const reconcile = (hasPendingUserInput: boolean) =>
+              planProviderRuntimeReconciliation({
+                threads: [{ ...reconcilableThread(turn.turnId, quietSince), hasPendingUserInput }],
+                bindings,
+                liveSessions,
+                pumpHealth,
+                nowMs: Date.now(),
+              });
+            expect(reconcile(true)).toEqual([]);
+            // Had it asked nothing, the same quiet turn would be settled.
+            expect(reconcile(false)).toEqual([
+              expect.objectContaining({
+                action: "settle-interrupted",
+                projectedTurnId: turn.turnId,
+              }),
+            ]);
+          }).pipe(
+            Effect.scoped,
+            Effect.provide(
+              Layer.mergeAll(
+                providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer)),
+                sessionDirectoryLayer,
+              ),
+            ),
+          );
+        }),
+    );
   });
 
   describe("plans", () => {
@@ -1535,12 +1629,6 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           const h = yield* makeHarness;
           yield* Effect.gen(function* () {
             const directory = yield* ProviderSessionDirectory;
-            const launchProviderService = (adapter: AetherAdapterShape, scope: Scope.Scope) =>
-              Layer.buildWithScope(providerServiceOver(adapter), scope).pipe(
-                Effect.flatMap((services) =>
-                  Effect.service(ProviderService).pipe(Effect.provide(services)),
-                ),
-              );
 
             // The first process sends a turn that is still running when it goes away.
             const first = yield* h.makeAdapter();
@@ -1810,6 +1898,101 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
     );
 
     it.effect(
+      "keeps a turn running through a desktop quit, and follows it again at relaunch with no continuation",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const recordPath = path.join(h.root, "quit-resume.json");
+          yield* Effect.gen(function* () {
+            const directory = yield* ProviderSessionDirectory;
+            const first = yield* h.makeAdapter();
+            const firstServices = yield* Scope.make();
+            const before = yield* launchProviderService(first.adapter, firstServices);
+            yield* before.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            h.aether.hooks.onTurn = (turn) =>
+              h.aether.say(turn, "text-live", "Working", { open: true });
+            const turn = yield* before.sendTurn({ threadId: THREAD_ID, input: "Sleep 90" });
+            yield* waitFor("the running turn", () => h.aether.turns[0]);
+
+            // The user quits with "Resume chats automatically": the renderer hands the server the
+            // running chats, which it records and interrupts.
+            const dispatched: OrchestrationCommand[] = [];
+            const prepared = yield* prepareQuitResume({
+              request: {
+                threadIds: [THREAD_ID],
+                continuationPrompt:
+                  "Synara was closed while this chat was still running. Continue where you left off.",
+              },
+              recordPath,
+              getReadModel: () =>
+                Effect.succeed({
+                  threads: [
+                    {
+                      ...reconcilableThread(turn.turnId, new Date().toISOString()),
+                      deletedAt: null,
+                    },
+                  ],
+                }),
+              dispatch: (command) => Effect.sync(() => void dispatched.push(command)),
+              abandonAfter: Duration.hours(1),
+            });
+            expect(prepared.recordedThreadIds).toEqual([]);
+            // The desktop then stops the server, which only stops following the task.
+            yield* Scope.close(firstServices, Exit.void);
+            yield* Scope.close(first.scope, Exit.void);
+            expect(dispatched).toEqual([]);
+            expect(h.aether.calls.stop).toEqual([]);
+
+            // The turn finishes in the cloud while Synara is closed.
+            h.aether.close("text-live");
+            h.workspace.serve(diffOf(h.baseCommit, added("done.txt", "done while closed\n")));
+            h.aether.settle(h.aether.turns[0]!);
+
+            // Relaunch: the record holds no chat to continue, and startup reconciliation follows
+            // the turn again, which completes once, after the mirror.
+            expect(yield* claimQuitResumeRecord(recordPath)).toMatchObject({
+              kind: "record",
+              record: { threads: [] },
+            });
+            const [binding] = yield* directory.listBindings();
+            const second = yield* h.makeAdapter([binding!]);
+            const after = yield* launchProviderService(second.adapter, yield* Scope.make());
+            const accepted: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(after.streamEvents, (event) =>
+              Effect.sync(() => void accepted.push(event)),
+            ).pipe(Effect.forkScoped);
+            expect(
+              yield* after.reattachTurn!({
+                threadId: THREAD_ID,
+                provider: "aether",
+                turnId: turn.turnId,
+                runtimeMode: "full-access",
+              }),
+            ).toBe(true);
+            const completed = yield* waitFor(
+              "the accepted turn.completed",
+              () => completions(accepted)[0],
+            );
+            expect(completed).toMatchObject({
+              turnId: turn.turnId,
+              payload: { state: "completed" },
+            });
+            expect(yield* h.read("done.txt")).toBe("done while closed\n");
+            yield* Effect.sleep("1500 millis");
+            expect(completions(accepted)).toHaveLength(1);
+            expect(h.aether.calls.stop).toEqual([]);
+            expect(h.aether.calls.respond).toEqual([]);
+          }).pipe(Effect.scoped, Effect.provide(sessionDirectoryLayer));
+        }),
+    );
+
+    it.effect(
       "fails a reattach loudly with its cause: a worktree gone, or a task never confirmed",
       () =>
         Effect.gen(function* () {
@@ -2032,6 +2215,170 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         yield* gitCore.removeWorktree({ cwd: h.repo, path: h.worktree });
         expect(yield* h.exists("app.txt")).toBe(false);
       }),
+    );
+
+    it.effect(
+      "stops an archived turn again when the thread is unarchived, until a stop lands",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          yield* Effect.gen(function* () {
+            const directory = yield* ProviderSessionDirectory;
+            const cursor = directory
+              .getBinding(THREAD_ID)
+              .pipe(Effect.map((binding) => Option.getOrUndefined(binding)?.resumeCursor));
+            const { adapter } = yield* h.makeAdapter([], { keepCursor: keepCursorIn(directory) });
+            const providerService = yield* launchProviderService(adapter, yield* Scope.make());
+            const accepted: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(providerService.streamEvents, (event) =>
+              Effect.sync(() => void accepted.push(event)),
+            ).pipe(Effect.forkScoped);
+            const start = providerService.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            yield* start;
+            h.aether.hooks.onTurn = (turn) =>
+              h.aether.say(turn, "text-live", "Working", { open: true });
+            const archived = yield* providerService.sendTurn({ threadId: THREAD_ID, input: "Go" });
+            yield* waitFor("the running turn", () => h.aether.turns[0]);
+
+            // Archiving stops the runtime, then the turn; that stop fails, so the run goes on and the
+            // cursor keeps the turn in flight.
+            yield* providerService.stopRuntimeSession!({ threadId: THREAD_ID });
+            h.aether.faults.refuseStop = new AetherApiHttpError({
+              endpoint: "POST /tasks/{taskID}/stop",
+              status: 503,
+            });
+            yield* providerService.releaseThread!({ threadId: THREAD_ID }).pipe(Effect.flip);
+            expect(h.aether.turns[0]!.state).toBe("running");
+            expect(yield* cursor).toMatchObject({ active: true });
+
+            // Unarchiving sends it again. Once it lands, the cursor has nothing in flight, so no
+            // later release sends it a third time.
+            yield* providerService.releaseThread!({ threadId: THREAD_ID });
+            expect(h.aether.turns[0]!.state).toBe("settled");
+            expect(yield* cursor).toMatchObject({ active: false });
+            yield* providerService.releaseThread!({ threadId: THREAD_ID });
+            expect(h.aether.calls.stop).toHaveLength(2);
+
+            // The thread resumes with its next message; the stopped turn, which archiving already
+            // ended, completes nothing.
+            h.finishTurns();
+            yield* start;
+            const next = yield* providerService.sendTurn({ threadId: THREAD_ID, input: "Next" });
+            yield* waitFor("the next turn's completion", () => completions(accepted)[0]);
+            yield* Effect.sleep("1500 millis");
+            expect(completions(accepted).map((event) => event.turnId)).toEqual([next.turnId]);
+            expect(next.turnId).not.toBe(archived.turnId);
+          }).pipe(Effect.scoped, Effect.provide(sessionDirectoryLayer));
+        }),
+    );
+
+    it.effect(
+      "stops at boot the turn an archived thread still has in flight, once, before its next session",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          // Synara stops while an archived thread's turn runs on: its archive's stop failed.
+          const first = yield* h.launch();
+          yield* h.start(first.adapter);
+          h.aether.hooks.onTurn = (turn) =>
+            h.aether.say(turn, "text-live", "Working", { open: true });
+          yield* first.adapter.sendTurn(h.send("Go"));
+          yield* waitFor("the running turn", () => h.aether.turns[0]);
+          const [session] = yield* first.adapter.listSessions();
+          yield* first.stop;
+
+          const thread = { archivedAt: "2026-09-25T00:00:00.000Z", deletedAt: null };
+          // Aether answers a stop only once the gate opens.
+          const gate = yield* Latch.make();
+          const boot = AetherAdapterLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(AetherApiClient, {
+                  ...h.aether.client,
+                  stopTask: (taskId, request) =>
+                    gate.await.pipe(Effect.andThen(h.aether.client.stopTask(taskId, request))),
+                }),
+                Layer.succeed(ProjectionThreadRepository, {
+                  getById: () => Effect.succeed(Option.some(thread as ProjectionThread)),
+                } as unknown as ProjectionThreadRepositoryShape),
+                ProviderRuntimeEventRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+              ),
+            ),
+          );
+          yield* Effect.gen(function* () {
+            const directory = yield* ProviderSessionDirectory;
+            yield* directory.upsert({
+              threadId: THREAD_ID,
+              provider: "aether",
+              runtimeMode: "full-access",
+              status: "stopped",
+              resumeCursor: session!.resumeCursor,
+            });
+            yield* Effect.gen(function* () {
+              const adapter = yield* AetherAdapter;
+              const events: ProviderRuntimeEvent[] = [];
+              yield* Stream.runForEach(adapter.streamEvents, (event) =>
+                Effect.sync(() => void events.push(event)),
+              ).pipe(Effect.forkScoped);
+              // Unarchived and sent to at once: its session waits for the boot's stop, and then
+              // follows no turn, though its cursor was read before the stop landed.
+              const starting = yield* adapter
+                .startSession({
+                  threadId: THREAD_ID,
+                  provider: "aether",
+                  cwd: h.worktree,
+                  modelSelection: { provider: "aether", model: MODEL },
+                  runtimeMode: "full-access",
+                  resumeCursor: session!.resumeCursor,
+                })
+                .pipe(Effect.forkScoped);
+              yield* Effect.sleep("100 millis");
+              expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
+              yield* gate.open;
+              yield* Fiber.join(starting);
+              expect(h.aether.calls.stop).toEqual([{ discard_queued_messages: true }]);
+              expect(h.aether.turns[0]!.state).toBe("settled");
+              const [binding] = yield* directory.listBindings();
+              expect(binding?.resumeCursor).toMatchObject({ active: false });
+              expect(yield* adapter.listSessions()).toMatchObject([{ status: "ready" }]);
+              yield* Effect.sleep("1500 millis");
+              expect(completions(events)).toEqual([]);
+
+              // A later turn is not the one the boot stopped.
+              h.aether.hooks.onTurn = (turn) =>
+                h.aether.say(turn, "text-next", "Working", { open: true });
+              yield* adapter.sendTurn(h.send("Next"));
+              yield* waitFor("the next running turn", () => h.aether.turns[1]);
+              const [current] = yield* adapter.listSessions();
+              // A release handed the cursor read before the boot's stop sends no second stop; one
+              // handed the cursor with the later turn in flight stops that turn.
+              yield* adapter.releaseThread!({
+                threadId: THREAD_ID,
+                resumeCursor: session!.resumeCursor,
+              });
+              expect(h.aether.calls.stop).toHaveLength(1);
+              yield* adapter.releaseThread!({
+                threadId: THREAD_ID,
+                resumeCursor: current!.resumeCursor,
+              });
+              expect(h.aether.calls.stop).toHaveLength(2);
+              expect(h.aether.turns[1]!.state).toBe("settled");
+            }).pipe(Effect.scoped, Effect.provide(boot));
+
+            // The next boot finds nothing in flight.
+            yield* Effect.gen(function* () {
+              yield* AetherAdapter;
+              yield* Effect.sleep("100 millis");
+            }).pipe(Effect.scoped, Effect.provide(boot));
+            expect(h.aether.calls.stop).toHaveLength(2);
+          }).pipe(Effect.scoped, Effect.provide(sessionDirectoryLayer));
+        }),
     );
 
     it.effect.each(["stops it as idle", "shuts down"] as const)(

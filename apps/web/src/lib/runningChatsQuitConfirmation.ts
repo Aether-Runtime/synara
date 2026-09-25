@@ -3,6 +3,9 @@
 // Layer: UI logic helper
 // Depends on: Sidebar-equivalent "working" signals (running/connecting/live tail).
 
+import type { ProviderKind } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
+
 export interface RunningChatQuitCandidate {
   readonly id: string;
   readonly title: string;
@@ -27,9 +30,17 @@ export interface RunningChatsQuitCopy {
 export const QUIT_RESUME_PREPARE_TIMEOUT_MS = 1500;
 
 export interface RunningChatsQuitStoreSlice {
-  readonly sidebarThreadSummaryById: Readonly<Record<string, RunningChatQuitCandidate>>;
+  readonly sidebarThreadSummaryById: Readonly<
+    Record<
+      string,
+      RunningChatQuitCandidate & { readonly modelSelection: { readonly provider: ProviderKind } }
+    >
+  >;
   readonly threadSessionById?: Readonly<
-    Record<string, { readonly status?: string | null } | null | undefined>
+    Record<
+      string,
+      { readonly status?: string | null; readonly provider: ProviderKind } | null | undefined
+    >
   >;
   readonly threadShellById?: Readonly<Record<string, { readonly title?: string } | undefined>>;
 }
@@ -67,14 +78,21 @@ export function listRunningChatsForQuit(
   return chats.sort(compareRunningChatSummaries);
 }
 
+/**
+ * The running chats a quit stops. A cloud provider's chat is left out: its turn runs in the
+ * cloud and keeps going while Synara is closed, and the next launch follows it again.
+ */
 export function listRunningChatsFromDesktopStore(
   state: RunningChatsQuitStoreSlice,
 ): ReadonlyArray<RunningChatQuitSummary> {
-  const candidates: RunningChatQuitCandidate[] = Object.values(state.sidebarThreadSummaryById);
-  const listedIds = new Set(candidates.map((thread) => thread.id));
+  const listed = Object.values(state.sidebarThreadSummaryById);
+  const listedIds = new Set(listed.map((thread) => thread.id));
+  const candidates: RunningChatQuitCandidate[] = listed.filter(
+    (thread) => !providerIsCloudService(thread.modelSelection.provider),
+  );
 
   for (const [id, session] of Object.entries(state.threadSessionById ?? {})) {
-    if (listedIds.has(id)) {
+    if (listedIds.has(id) || (session != null && providerIsCloudService(session.provider))) {
       continue;
     }
     candidates.push({

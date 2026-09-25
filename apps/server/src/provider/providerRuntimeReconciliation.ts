@@ -14,6 +14,7 @@ import {
   type ProviderSession,
   type ThreadId,
 } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { nonEmptyTrimmed } from "@synara/shared/text";
 
 import type { ProviderRuntimeEventPumpHealth } from "./Services/ProviderService.ts";
@@ -28,6 +29,14 @@ export const DEFAULT_RUNTIME_RECONCILIATION_STALE_AFTER_MS = 15_000;
  * can be absent when a provider wedges mid-turn. `thread.updatedAt` advances on
  * every appended message, so a legitimately long-running turn keeps resetting
  * this clock and is never affected.
+ *
+ * A cloud provider's turn that waits on the user's answer is exempt while its
+ * provider still follows it (a binding, a live session running that turn, and
+ * a healthy runtime-event pump): the question is held by the provider, not by a
+ * local process that could wedge holding it, and its adapter keeps reading it
+ * (a loop that stops fails the turn), so it can wait for hours at no cost. Once
+ * nothing follows it, the clock applies again. A local provider's question
+ * lives in its process, so the clock always applies.
  */
 export const RUNTIME_RECONCILIATION_MAX_TURN_AGE_MS = 45 * 60_000;
 
@@ -223,17 +232,29 @@ export function planProviderRuntimeReconciliation(input: {
     // provider instead of dropping the candidate.
     const provider = binding?.provider ?? thread.modelSelection.provider;
     const detail = pumpDetail(provider, healthByProvider);
+    const projectedTurnId = projectedInFlightTurnId(thread);
+    const liveTurnId = turnIdOrNull(liveSession?.activeTurnId);
+    const pumpHealth = healthByProvider.get(provider);
+    const pumpHealthy = pumpHealth === undefined || pumpHealth.status === "healthy";
+    // Exempt from the clock only while its provider follows it (RUNTIME_RECONCILIATION_MAX_TURN_AGE_MS).
+    const waitsOnUserInCloud =
+      providerIsCloudService(provider) &&
+      thread.hasPendingUserInput === true &&
+      binding !== undefined &&
+      liveSession?.status === "running" &&
+      liveTurnId !== null &&
+      liveTurnId === projectedTurnId &&
+      pumpHealthy;
     const abandoned =
-      lifecycleAgeMs >= maxTurnAgeMs && threadActivityAgeMs(thread, input.nowMs) >= maxTurnAgeMs;
+      !waitsOnUserInCloud &&
+      lifecycleAgeMs >= maxTurnAgeMs &&
+      threadActivityAgeMs(thread, input.nowMs) >= maxTurnAgeMs;
     const abandonedDetail = ` Nothing has progressed on this thread for over ${Math.round(maxTurnAgeMs / 60_000)} minutes.${detail}`;
 
     // Native child threads share a parent session and intentionally have no
     // directory binding of their own; their parent's terminal events settle
     // them. Only step in once the turn is abandoned outright.
     if (!binding && !abandoned) continue;
-
-    const projectedTurnId = projectedInFlightTurnId(thread);
-    const liveTurnId = turnIdOrNull(liveSession?.activeTurnId);
 
     if (liveSession?.status === "running" && liveTurnId !== null && !abandoned) {
       if (liveTurnId === projectedTurnId) continue;
@@ -256,8 +277,7 @@ export function planProviderRuntimeReconciliation(input: {
     // stalled event stream produces for a turn that is in fact progressing.
     // Never settle on evidence the process admits it cannot observe; the
     // abandoned clock remains the escape hatch for a pump that never recovers.
-    const pumpHealth = healthByProvider.get(provider);
-    if (pumpHealth !== undefined && pumpHealth.status !== "healthy" && !abandoned) continue;
+    if (!pumpHealthy && !abandoned) continue;
     // The same blindness applies one stage later: rows persisted to the
     // runtime journal but not yet ingested mean the projection's staleness is
     // manufactured, not evidence. A completed turn whose terminal events are

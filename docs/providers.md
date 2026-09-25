@@ -46,13 +46,16 @@ none, or more than one.
   turn. Local changes in the worktree pause the mirror until they are discarded or moved; nothing
   is overwritten.
 - Questions and plans can be answered in Synara or in Aether's own app; Synara picks up an answer
-  given there within about 15 seconds. **Implement** approves a plan, and any other message is
-  feedback on it.
+  given there within about 15 seconds. A question keeps its turn open however long it waits.
+  **Implement** approves a plan, and any other message is feedback on it.
 - **Stop** stops the Aether turn and discards messages queued behind it, and so do archiving or
-  deleting the thread and quitting the desktop app while the chat runs, as for every provider.
-  Otherwise, when Synara stops following the task (an idle session, or the server restarting), it
-  keeps running in the cloud, and Synara follows it again: at startup for a turn in flight, or at
-  the next message.
+  deleting the thread. If Aether cannot be reached then, the turn keeps running and the thread
+  shows the failure: Synara sends the stop again when the thread is unarchived and at every start
+  while it stays archived, and retries a deleted thread's stop with its cleanup. Otherwise, when
+  Synara stops following the task (an idle session, quitting
+  the desktop app, or the server restarting), it keeps running in the cloud, and Synara follows it
+  again: at startup for a turn in flight, or at the next message. Quitting never asks about
+  Aether chats, and **Resume chats automatically** sends them no message.
 
 ## What Synara manages
 

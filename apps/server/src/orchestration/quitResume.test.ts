@@ -14,6 +14,7 @@ import {
   prepareQuitResume,
   readQuitResumeRecord,
   type QuitResumeRecord,
+  type QuitResumeRecordableThread,
   type QuitResumeThread,
 } from "./quitResume.ts";
 
@@ -55,20 +56,23 @@ const makeSession = (
   ...overrides,
 });
 
-const makeThread = (id: string, overrides: Partial<QuitResumeThread> = {}): QuitResumeThread => ({
+type TestThread = QuitResumeThread & QuitResumeRecordableThread;
+
+const makeThread = (id: string, overrides: Partial<TestThread> = {}): TestThread => ({
   id: threadId(id),
   projectId: PROJECT,
   deletedAt: null,
   archivedAt: null,
   latestTurn: makeLatestTurn(`${id}-turn`),
   session: null,
+  modelSelection: { provider: "codex", model: "gpt-5.5" },
   runtimeMode: "full-access",
   interactionMode: "default",
   ...overrides,
 });
 
 /** A thread whose latest turn is genuinely running right now. */
-const makeRunningThread = (id: string, overrides: Partial<QuitResumeThread> = {}) =>
+const makeRunningThread = (id: string, overrides: Partial<TestThread> = {}) =>
   makeThread(id, {
     latestTurn: makeLatestTurn(`${id}-turn`, "running"),
     session: makeSession(id),
@@ -142,6 +146,23 @@ describe("buildQuitResumeRecord", () => {
         { threadId: threadId("b"), turnId: turnId("b-turn") },
       ],
     });
+  });
+
+  it("never snapshots a cloud provider's thread: a quit does not stop its turn", () => {
+    const record = buildQuitResumeRecord({
+      request: { threadIds: [threadId("cloud"), threadId("local")], continuationPrompt: PROMPT },
+      threads: [
+        makeRunningThread("cloud", {
+          modelSelection: { provider: "aether", model: "claude-opus-5" },
+          session: makeSession("cloud", { providerName: "aether" }),
+        }),
+        makeRunningThread("local"),
+      ],
+      recordId: RECORD_ID,
+      now: RECORDED_AT,
+    });
+
+    expect(record.threads).toEqual([{ threadId: threadId("local"), turnId: turnId("local-turn") }]);
   });
 });
 
@@ -438,6 +459,51 @@ describe("quit resume record file", () => {
     ]);
     expect(dispatched[1]).not.toHaveProperty("turnId");
     expect(result.abandoned).toEqual({ kind: "absent" });
+  });
+
+  it("prepareQuitResume neither records nor interrupts a cloud provider's thread", async () => {
+    const dispatched: OrchestrationCommand[] = [];
+    const result = await run(
+      Effect.gen(function* () {
+        const config = yield* ServerConfig;
+        const prepared = yield* prepareQuitResume({
+          request: {
+            threadIds: [threadId("cloud"), threadId("local")],
+            continuationPrompt: PROMPT,
+          },
+          recordPath: config.quitResumeStatePath,
+          getReadModel: () =>
+            Effect.succeed({
+              threads: [
+                makeRunningThread("cloud", {
+                  modelSelection: { provider: "aether", model: "claude-opus-5" },
+                  session: makeSession("cloud", { providerName: "aether" }),
+                }),
+                makeRunningThread("local"),
+              ],
+            }),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatched.push(command);
+            }),
+          abandonAfter: Duration.hours(1),
+        });
+        const persisted = yield* readQuitResumeRecord(config.quitResumeStatePath);
+        yield* clearQuitResumeRecord(config.quitResumeStatePath);
+        // The interrupts run detached; give them the chance to land.
+        yield* Effect.sleep(Duration.millis(50));
+        return { prepared, persisted };
+      }),
+    );
+
+    expect(result.prepared.recordedThreadIds).toEqual([threadId("local")]);
+    expect(result.persisted).toMatchObject({
+      kind: "record",
+      record: { threads: [{ threadId: threadId("local"), turnId: turnId("local-turn") }] },
+    });
+    expect(dispatched).toEqual([
+      expect.objectContaining({ type: "thread.turn.interrupt", threadId: threadId("local") }),
+    ]);
   });
 
   it("acknowledges the durable record without waiting for best-effort interrupts", async () => {
