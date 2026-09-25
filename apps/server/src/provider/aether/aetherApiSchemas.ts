@@ -14,6 +14,8 @@
 //   `reason`, a pull request's `state` and `ci_status`, a review's `run_status` and `verdict`,
 //   the status line's source) is open: an unknown value decodes to `{ _tag: "Unknown", raw }`, so
 //   one new tool type cannot fail a whole activity page. Enums nobody reads are not decoded at all.
+// - The task's display-only parts (base branch, pull request, review) are decoded on their own
+//   (`aetherPullRequest.ts`), so they can never fail the task every poll reads.
 // - IDs are branded here, once; every client method takes the branded type.
 // - Nothing is defaulted.
 //
@@ -142,14 +144,17 @@ export type AetherPullRequestReview = typeof AetherPullRequestReview.Type;
 
 /**
  * What every status carries: the branch the task works on (`head_branch`, named when the task
- * is created), its pull request and review, and the latest status line. While the workspace
- * boots, the line comes from `infra` ("Booting workspace"); once the agent runs, from `agent`.
+ * is created), its base branch, pull request and review, and the latest status line. While the
+ * workspace boots, the line comes from `infra` ("Booting workspace"); once the agent runs, from
+ * `agent`. The base branch, pull request and review are display-only: they stay as sent here,
+ * and `aetherThreadPullRequest` decodes them into the thread's pull request or an explicit
+ * unreadable one, so data Synara cannot read never fails the task, which every poll reads.
  */
 const taskFields = {
-  base_branch: NonEmptyString,
+  base_branch: Schema.optionalKey(Schema.Unknown),
   head_branch: Schema.optionalKey(NonEmptyString),
-  primary_pull_request: Schema.NullOr(AetherTaskPullRequest),
-  pr_review_summary: Schema.NullOr(AetherPullRequestReview),
+  primary_pull_request: Schema.optionalKey(Schema.Unknown),
+  pr_review_summary: Schema.optionalKey(Schema.Unknown),
   latest_status_message: Schema.optionalKey(Schema.NullOr(Schema.String)),
   latest_status_source: Schema.optionalKey(Schema.NullOr(openVocabulary(["infra", "agent"]))),
 } as const;

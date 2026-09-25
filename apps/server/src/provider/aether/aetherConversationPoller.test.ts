@@ -26,6 +26,7 @@ import {
   type AetherConversationReader,
   type AetherPollerOutput,
 } from "./aetherConversationPoller.ts";
+import { aetherThreadPullRequest } from "./aetherPullRequest.ts";
 import {
   pullRequestBody,
   TASK_ID,
@@ -494,9 +495,11 @@ describe("makeAetherConversationPoller", () => {
     ]);
     expect(settledAt).toBe(AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_PULL_REQUEST_INTERVAL_MS);
     expect(liveCallTimes(calls).at(-1)).toBe(settledAt);
-    const ci = outputs.flatMap((output) =>
-      output._tag === "TaskUpdated" ? [output.task.primary_pull_request?.ci_status] : [],
-    );
+    const ci = outputs.flatMap((output) => {
+      if (output._tag !== "TaskUpdated") return [];
+      const report = aetherThreadPullRequest(output.task);
+      return [report._tag === "Reported" ? report.pullRequest?.checks?.status : report.detail];
+    });
     expect(ci).toEqual(["pending", "passed"]);
   });
 

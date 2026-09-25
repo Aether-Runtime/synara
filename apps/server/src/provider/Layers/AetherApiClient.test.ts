@@ -314,33 +314,42 @@ describe("AetherApiClient", () => {
     });
   });
 
-  it("decodes a pull request state, CI status, review verdict or status source it does not know as Unknown", async () => {
+  it("decodes a status source it does not know as Unknown", async () => {
     const page = await succeed(
       clientWith(
         json(
           200,
-          turnsPageBody({
-            task: taskBody("processing", {
-              primary_pull_request: pullRequestBody({ state: "draft", ci_status: "skipped" }),
-              pr_review_summary: reviewSummaryBody({ run_status: "queued", verdict: "BLOCK" }),
-              latest_status_source: "scheduler",
-            }),
-          }),
+          turnsPageBody({ task: taskBody("processing", { latest_status_source: "scheduler" }) }),
         ),
       ).client.getConversationTurns(TASK_ID),
     );
 
     expect(page.task).toMatchObject({
-      primary_pull_request: {
-        state: { _tag: "Unknown", raw: "draft" },
-        ci_status: { _tag: "Unknown", raw: "skipped" },
-      },
-      pr_review_summary: {
-        run_status: { _tag: "Unknown", raw: "queued" },
-        verdict: { _tag: "Unknown", raw: "BLOCK" },
-      },
       latest_status_source: { _tag: "Unknown", raw: "scheduler" },
     });
+  });
+
+  it("decodes the task whatever its pull request, review or base branch hold: they are display-only", async () => {
+    for (const extra of [
+      { primary_pull_request: pullRequestBody({ additions: null }) },
+      { primary_pull_request: withoutKey(pullRequestBody(), ["checks_total"]) },
+      { pr_review_summary: reviewSummaryBody({ run_status: 5 }) },
+      { base_branch: "" },
+    ]) {
+      const page = await succeed(
+        clientWith(
+          json(200, turnsPageBody({ task: taskBody("processing", extra) })),
+        ).client.getConversationTurns(TASK_ID),
+      );
+      expect(page.task.status).toBe("processing");
+    }
+    // The page's core fields stay strict.
+    const missing = await fail(
+      clientWith(
+        json(200, withoutKey(turnsPageBody(), ["task", "run_context"])),
+      ).client.getConversationTurns(TASK_ID),
+    );
+    expect(missing._tag === "AetherApiDecodeError" && missing.detail).toContain('["task"]');
   });
 
   it("decodes activity rows, with exitCode and durationMs on tool rows", async () => {
@@ -378,11 +387,7 @@ describe("AetherApiClient", () => {
         withoutKey(turnsPageBody(), ["turns", 0, "revision_sequence"]),
         '["turns"][0]["revision_sequence"]',
       ],
-      [
-        (client) => client.getConversationTurns(TASK_ID),
-        withoutKey(turnsPageBody(), ["task", "primary_pull_request"]),
-        '["task"]["primary_pull_request"]',
-      ],
+
       [(client) => client.createTask(createRequest), { id: "not-a-uuid" }, '["id"]'],
     ];
     for (const [call, body, named] of cases) {

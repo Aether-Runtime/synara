@@ -47,6 +47,7 @@ import type {
   AetherUnknownValue,
   AetherUserMessage,
 } from "./aetherApiSchemas.ts";
+import { aetherThreadPullRequest } from "./aetherPullRequest.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -518,14 +519,14 @@ export class AetherConversationIngest {
   /** Whether the task's open pull request has CI or an Aether Review still running. */
   watchesPullRequest(): boolean {
     const task = this.state.task;
-    const pr = task?.primary_pull_request;
-    if (task === undefined || pr === undefined || pr === null || pr.state !== "open") return false;
-    const review = task.pr_review_summary;
+    if (task === undefined) return false;
+    const report = aetherThreadPullRequest(task);
+    const pr = report._tag === "Reported" ? report.pullRequest : null;
+    if (pr === null || pr.state !== "open") return false;
     return (
-      pr.ci_status === "pending" ||
-      (review !== null &&
-        review.pull_request_id === pr.pull_request_id &&
-        (review.run_status === "reviewing" || review.run_status === "awaiting_input"))
+      pr.checks?.status === "pending" ||
+      pr.review?.status === "reviewing" ||
+      pr.review?.status === "awaiting-input"
     );
   }
 

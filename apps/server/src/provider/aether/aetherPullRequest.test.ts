@@ -79,6 +79,30 @@ describe("aetherThreadPullRequest", () => {
     expect(reported._tag === "Reported" && reported.pullRequest).not.toHaveProperty("review");
   });
 
+  it("cannot show a pull request, review or base branch it cannot read, and the task still decodes", () => {
+    const unreadable = [
+      { primary_pull_request: pullRequestBody({ additions: null }) },
+      { primary_pull_request: without(pullRequestBody(), "checks_total") },
+      { primary_pull_request: pullRequestBody({ pr_number: "18" }) },
+      {
+        primary_pull_request: pullRequestBody(),
+        pr_review_summary: reviewSummaryBody({ run_status: 5 }),
+      },
+      { primary_pull_request: pullRequestBody(), base_branch: "" },
+    ];
+    for (const extra of unreadable) {
+      const report = aetherThreadPullRequest(task(extra));
+      expect(report._tag).toBe("Unreadable");
+      expect(report._tag === "Unreadable" && report.detail).toContain(
+        "Aether sent pull request data Synara cannot read",
+      );
+    }
+    // Without a pull request, a malformed review or base branch is nothing to show.
+    expect(
+      aetherThreadPullRequest(task({ pr_review_summary: { verdict: 1 }, base_branch: 7 })),
+    ).toEqual({ _tag: "Reported", pullRequest: null });
+  });
+
   it("cannot show a pull request in a state it does not know, or with none", () => {
     expect(
       aetherThreadPullRequest(task({ primary_pull_request: pullRequestBody({ state: "draft" }) })),

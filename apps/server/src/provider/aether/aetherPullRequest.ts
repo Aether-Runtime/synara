@@ -10,12 +10,16 @@ import type {
   OrchestrationThreadPullRequestReview,
 } from "@synara/contracts";
 
-import type {
+import { Cause, Exit, Result, Schema } from "effect";
+
+import {
   AetherPullRequestReview,
-  AetherTask,
   AetherTaskPullRequest,
-  AetherUnknownValue,
+  type AetherTask,
+  type AetherUnknownValue,
 } from "./aetherApiSchemas.ts";
+
+const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
 
 export type AetherPullRequestReport =
   /** The task's pull request, or null while it has none. */
@@ -63,10 +67,43 @@ function reviewOf(review: AetherPullRequestReview): OrchestrationThreadPullReque
   };
 }
 
-/** The thread's pull request as the task reports it. */
+/** Decodes one display-only part of the task; what it cannot read, it says. */
+function decodePart<S extends Schema.Top & { readonly DecodingServices: never }>(
+  schema: S,
+  field: string,
+  raw: unknown,
+): Result.Result<S["Type"], string> {
+  const decoded = Schema.decodeUnknownExit(schema)(raw);
+  return Exit.isSuccess(decoded)
+    ? Result.succeed(decoded.value)
+    : Result.fail(
+        `Aether sent pull request data Synara cannot read (${field}): ${Cause.pretty(decoded.cause)}`,
+      );
+}
+
+/**
+ * The thread's pull request as the task reports it. The task's display-only parts are decoded
+ * here, not with the task: one Synara cannot read is `Unreadable`, and the task goes on.
+ */
 export function aetherThreadPullRequest(task: AetherTask): AetherPullRequestReport {
-  const pr = task.primary_pull_request;
+  const decodedPr = decodePart(
+    Schema.NullOr(AetherTaskPullRequest),
+    "primary_pull_request",
+    task.primary_pull_request,
+  );
+  if (Result.isFailure(decodedPr)) return { _tag: "Unreadable", detail: decodedPr.failure };
+  const pr = decodedPr.success;
   if (pr === null) return { _tag: "Reported", pullRequest: null };
+  const baseBranch = decodePart(NonEmptyString, "base_branch", task.base_branch);
+  if (Result.isFailure(baseBranch)) return { _tag: "Unreadable", detail: baseBranch.failure };
+  const decodedReview = decodePart(
+    Schema.NullOr(AetherPullRequestReview),
+    "pr_review_summary",
+    task.pr_review_summary,
+  );
+  if (Result.isFailure(decodedReview)) {
+    return { _tag: "Unreadable", detail: decodedReview.failure };
+  }
   const name = `Aether reported pull request #${pr.pr_number}`;
   if (pr.state === undefined) return { _tag: "Unreadable", detail: `${name} without its state.` };
   if (isUnknown(pr.state)) {
@@ -83,14 +120,14 @@ export function aetherThreadPullRequest(task: AetherTask): AetherPullRequestRepo
   const title = pr.title.trim();
   if (title.length === 0) return { _tag: "Unreadable", detail: `${name} with a blank title.` };
   const checks = checksOf(pr);
-  const review = task.pr_review_summary;
+  const review = decodedReview.success;
   return {
     _tag: "Reported",
     pullRequest: {
       number: pr.pr_number,
       title,
       url: pr.html_url,
-      baseBranch: task.base_branch,
+      baseBranch: baseBranch.success,
       headBranch,
       state: pr.state,
       additions: pr.additions,

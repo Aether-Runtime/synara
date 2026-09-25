@@ -854,6 +854,38 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         }),
     );
 
+    it.effect("keeps following the task when its pull request data cannot be read", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        // GitHub has not computed the diff stat yet, say, and a count is missing.
+        const { checks_total: _missing, ...partial } = pullRequestBody({ additions: null });
+        h.aether.remote.primary_pull_request = partial;
+        h.finishTurns();
+        yield* adapter.sendTurn(h.send("One"));
+        const first = yield* waitFor("the first turn", () => completions(events)[0]);
+        yield* adapter.sendTurn(h.send("Two"));
+        const second = yield* waitFor("the second turn", () => completions(events)[1]);
+
+        expect([first, second]).toMatchObject([
+          { payload: { state: "completed" } },
+          { payload: { state: "completed" } },
+        ]);
+        const warnings = events.flatMap((event) =>
+          event.type === "runtime.warning" ? [event.payload.message] : [],
+        );
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain("Aether sent pull request data Synara cannot read");
+        expect(
+          events.some(
+            (event) =>
+              event.type === "vcs.state.changed" && event.payload.pullRequest !== undefined,
+          ),
+        ).toBe(false);
+      }),
+    );
+
     it.effect(
       "warns once, and reports no pull request, for one in a state Synara does not know",
       () =>
