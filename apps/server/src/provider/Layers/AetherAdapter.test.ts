@@ -12,7 +12,10 @@ import {
   ApprovalRequestId,
   CheckpointRef,
   OrchestrationProposedPlanId,
+  ProjectId,
   ThreadId,
+  TurnId,
+  type OrchestrationThreadShell,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
 } from "@synara/contracts";
@@ -47,6 +50,7 @@ import {
 } from "../aether/testing/aetherMirrorFixtures.ts";
 import { classifyProviderAttemptOutcome } from "../../orchestration/Layers/ProviderCommandReactor.ts";
 import { providerAdapterConformanceIssues } from "../providerAdapterConformance.ts";
+import { planProviderRuntimeReconciliation } from "../providerRuntimeReconciliation.ts";
 import type { AetherAdapterShape } from "../Services/AetherAdapter.ts";
 import type { ProviderRuntimeBinding } from "../Services/ProviderSessionDirectory.ts";
 import { makeAetherAdapter, openRunningWorkspace } from "./AetherAdapter.ts";
@@ -87,6 +91,56 @@ const waitFor = <A>(what: string, read: () => A | undefined) =>
 
 const completions = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   events.filter((event) => event.type === "turn.completed");
+
+/** The thread as the live reconciler reads it: running `turnId` since `since`. */
+const reconcilableThread = (turnId: TurnId, since: string): OrchestrationThreadShell => ({
+  id: THREAD_ID,
+  projectId: ProjectId.makeUnsafe("project-aether"),
+  title: "Aether thread",
+  modelSelection: { provider: "aether", model: MODEL },
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  branch: null,
+  worktreePath: null,
+  associatedWorktreePath: null,
+  associatedWorktreeBranch: null,
+  associatedWorktreeRef: null,
+  createBranchFlowCompleted: false,
+  isPinned: false,
+  parentThreadId: null,
+  creationSource: null,
+  sourceThreadId: null,
+  sourceTurnId: null,
+  gatewayOperationId: null,
+  gatewayOperationIndex: null,
+  subagentAgentId: null,
+  subagentNickname: null,
+  subagentRole: null,
+  forkSourceThreadId: null,
+  sidechatSourceThreadId: null,
+  lastKnownPr: null,
+  latestTurn: {
+    turnId,
+    state: "running",
+    requestedAt: since,
+    startedAt: since,
+    completedAt: null,
+    assistantMessageId: null,
+  },
+  createdAt: since,
+  updatedAt: since,
+  archivedAt: null,
+  handoff: null,
+  session: {
+    threadId: THREAD_ID,
+    status: "running",
+    providerName: "aether",
+    runtimeMode: "full-access",
+    activeTurnId: turnId,
+    lastError: null,
+    updatedAt: since,
+  },
+});
 
 /**
  * A repository whose origin is `FAKE_REPO_URL`, rewritten to a local bare repository, with a
@@ -886,6 +940,57 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         yield* Effect.sleep("1500 millis");
         expect(completions(events)).toHaveLength(1);
       }),
+    );
+
+    it.effect(
+      "keeps the turn live through ProviderService's stop, then completes it after the mirror",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          h.aether.hooks.onTurn = (turn) =>
+            h.aether.say(turn, "text-live", "Working", { open: true });
+          const turn = yield* adapter.sendTurn(h.send("Sleep 90"));
+          yield* waitFor("streamed text", () =>
+            events.find((event) => event.type === "content.delta"),
+          );
+          h.workspace.serve(diffOf(h.baseCommit, added("partial.txt", "made before stop\n")));
+
+          // ProviderService's interrupt: the adapter's interrupt, then a runtime session stop.
+          yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
+          yield* adapter.stopSession(THREAD_ID);
+
+          // The live reconciler runs in the gap, on the binding the stop left behind.
+          const runningSince = new Date(Date.now() - 60_000).toISOString();
+          const plans = planProviderRuntimeReconciliation({
+            threads: [reconcilableThread(turn.turnId, runningSince)],
+            bindings: [
+              {
+                threadId: THREAD_ID,
+                provider: "aether",
+                status: "stopped",
+                runtimePayload: { activeTurnId: null },
+              },
+            ],
+            liveSessions: yield* adapter.listSessions(),
+            pumpHealth: [],
+            nowMs: Date.now(),
+          });
+          expect(plans).toEqual([]);
+
+          const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+          expect(completed).toMatchObject({
+            turnId: turn.turnId,
+            payload: { state: "interrupted" },
+          });
+          // Mirrored before the turn completed.
+          expect(yield* h.read("partial.txt")).toBe("made before stop\n");
+          yield* Effect.sleep("1500 millis");
+          expect(completions(events)).toHaveLength(1);
+          // The stop takes effect once the turn has completed.
+          expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
+        }),
     );
   });
 
