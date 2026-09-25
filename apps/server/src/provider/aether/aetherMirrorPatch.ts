@@ -1,56 +1,36 @@
 // FILE: aetherMirrorPatch.ts
-// Purpose: Turns Aether's structured cumulative diff into a mirror plan: one unified patch for
-// `git apply`, the paths to remove and the binary paths to write directly, and the mode-only
-// changes the wire cannot carry.
+// Purpose: Turns Aether's structured cumulative diff into the steps that build the mirror's target
+// tree: a unified patch for `git apply --cached`, the paths to remove from the index, and the
+// binary files whose bytes come over the files channel.
 // Layer: Server provider boundary (Aether). Pure: no I/O.
-//
-// The wire has no file modes, so new files are written 100644 and a text entry whose only change
-// is its mode is reported rather than applied. `binary` entries are never patched: their bytes
-// come over the files channel. A `too_large` entry fails the plan unless it is a deletion, which
-// needs no content. Every path is checked lexically here, and the sync has Git check `paths` again
-// (Git also refuses the names Windows and macOS resolve to `.git`) before touching the worktree.
 
 import { isWorkspaceRelativePathSafe } from "@synara/shared/path";
 import { Result } from "effect";
 
-import {
-  MirrorDiffRebuildError,
-  MirrorPathEscapeError,
-  MirrorTooLargeError,
-} from "./aetherMirrorErrors.ts";
+import { type AetherMirrorError, mirrorError } from "./aetherMirrorErrors.ts";
 import type { AetherGitDiffFile, AetherGitDiffResult } from "./aetherWorkspaceProtocol.ts";
 
 export interface AetherMirrorWrite {
   readonly path: string;
-  /** The entry adds the file (an addition or a rename target), so nothing may be there yet. */
-  readonly create: boolean;
+  /** The base path whose executable bit the file keeps (a modification or a rename source). */
+  readonly modeOf?: string;
 }
 
 export interface AetherMirrorPlan {
-  /** Every worktree path the plan reads, writes or removes. */
-  readonly paths: ReadonlyArray<string>;
-  /** One unified patch covering every text entry; empty when there is none. */
+  /** Text additions, modifications and renames. Git keeps the mode of what it modifies. */
   readonly patch: string;
-  /** Files the patch adds: text additions and rename targets. */
-  readonly patchCreates: ReadonlyArray<string>;
-  /** Removed directly, after the patch and before any write: binary deletions and rename sources. */
+  /** Removed from the index: every deletion (which needs no content or mode), binary rename sources. */
   readonly removals: ReadonlyArray<string>;
-  /** Written directly, last, with bytes read over the files channel. */
   readonly writes: ReadonlyArray<AetherMirrorWrite>;
-  /** Text entries whose only change is the file mode. Not applied. */
+  /** Text entries whose only change is the file mode, which the wire does not carry. Not applied. */
   readonly modeOnly: ReadonlyArray<string>;
   /** Entries the plan applies: every entry except the mode-only ones. */
   readonly fileCount: number;
 }
 
-export type AetherMirrorPlanError =
-  | MirrorDiffRebuildError
-  | MirrorPathEscapeError
-  | MirrorTooLargeError;
-
 type TextEntry = Extract<AetherGitDiffFile, { readonly kind: "text" | "binary" }>;
 
-/** The worktree paths an entry reads or writes: `/dev/null` sides are not paths. */
+/** The worktree paths an entry names: `/dev/null` sides are not paths. */
 const entryPaths = (file: AetherGitDiffFile): ReadonlyArray<string> => {
   switch (file.status) {
     case "added":
@@ -121,15 +101,14 @@ const LINE_PREFIX = { add: "+", del: "-", context: " " } as const;
 const renderHunks = (
   path: string,
   hunks: TextEntry["hunks"],
-): Result.Result<ReadonlyArray<string>, MirrorDiffRebuildError> => {
+): Result.Result<ReadonlyArray<string>, AetherMirrorError> => {
   const rendered: Array<string> = [];
   for (const hunk of hunks) {
     const range = HUNK_RANGE.exec(hunk.header);
     if (range === null) {
       return Result.fail(
-        new MirrorDiffRebuildError({
-          path,
-          detail: `hunk header '${hunk.header}' is not a unified diff range`,
+        mirrorError("diff-rebuild", `Hunk header '${hunk.header}' is not a unified diff range.`, {
+          paths: [path],
         }),
       );
     }
@@ -139,7 +118,7 @@ const renderHunks = (
     for (const line of hunk.lines) {
       if (line.text.includes("\n")) {
         return Result.fail(
-          new MirrorDiffRebuildError({ path, detail: "a diff line contains a line break" }),
+          mirrorError("diff-rebuild", "A diff line contains a line break.", { paths: [path] }),
         );
       }
       if (line.kind !== "add") oldCount += 1;
@@ -153,10 +132,11 @@ const renderHunks = (
     const declaredNew = range[4] === undefined ? 1 : Number(range[4]);
     if (declaredOld !== oldCount || declaredNew !== newCount) {
       return Result.fail(
-        new MirrorDiffRebuildError({
-          path,
-          detail: `hunk '${hunk.header}' carries ${oldCount} old and ${newCount} new lines`,
-        }),
+        mirrorError(
+          "diff-rebuild",
+          `Hunk '${hunk.header}' carries ${oldCount} old and ${newCount} new lines.`,
+          { paths: [path] },
+        ),
       );
     }
     rendered.push(`@@ -${range[1]},${oldCount} +${range[3]},${newCount} @@`, ...body);
@@ -164,73 +144,79 @@ const renderHunks = (
   return Result.succeed(rendered);
 };
 
-const renderTextEntry = (file: TextEntry): Result.Result<string, MirrorDiffRebuildError> => {
+/** Additions, modifications and renames only: deletions are index removals. */
+const renderTextEntry = (file: TextEntry): Result.Result<string, AetherMirrorError> => {
   const oldPath = file.status === "added" ? file.newPath : file.oldPath;
-  const newPath = file.status === "deleted" ? file.oldPath : file.newPath;
   const oldName = quoteGitPath(`a/${oldPath}`);
-  const newName = quoteGitPath(`b/${newPath}`);
+  const newName = quoteGitPath(`b/${file.newPath}`);
   const lines = [`diff --git ${oldName} ${newName}`];
   if (file.status === "added") lines.push("new file mode 100644");
-  if (file.status === "deleted") lines.push("deleted file mode 100644");
   if (file.status === "renamed") {
-    lines.push(`rename from ${quoteGitPath(oldPath)}`, `rename to ${quoteGitPath(newPath)}`);
+    lines.push(`rename from ${quoteGitPath(oldPath)}`, `rename to ${quoteGitPath(file.newPath)}`);
   }
   if (file.hunks.length > 0) {
-    const hunks = renderHunks(newPath, file.hunks);
+    const hunks = renderHunks(file.newPath, file.hunks);
     if (Result.isFailure(hunks)) return Result.fail(hunks.failure);
     lines.push(
       file.status === "added" ? "--- /dev/null" : `--- ${oldName}`,
-      file.status === "deleted" ? "+++ /dev/null" : `+++ ${newName}`,
+      `+++ ${newName}`,
       ...hunks.success,
     );
   }
   return Result.succeed(`${lines.join("\n")}\n`);
 };
 
-/** Plan one mirror sync, or say why the diff cannot be mirrored. */
+/** Plan the target tree, or say why the diff cannot be mirrored. */
 export const planAetherMirror = (
   diff: AetherGitDiffResult,
-): Result.Result<AetherMirrorPlan, AetherMirrorPlanError> => {
+): Result.Result<AetherMirrorPlan, AetherMirrorError> => {
   for (const file of diff.files) {
     if (file.status === "modified" && file.oldPath !== file.newPath) {
       return Result.fail(
-        new MirrorDiffRebuildError({
-          path: file.newPath,
-          detail: `a modified entry names two paths ('${file.oldPath}' and '${file.newPath}')`,
-        }),
+        mirrorError(
+          "diff-rebuild",
+          `A modified entry names two paths ('${file.oldPath}' and '${file.newPath}').`,
+          { paths: [file.oldPath, file.newPath] },
+        ),
       );
     }
     for (const path of entryPaths(file)) {
       const escape = mirrorPathEscape(path);
       if (escape !== undefined) {
-        return Result.fail(new MirrorPathEscapeError({ path, detail: escape }));
+        return Result.fail(
+          mirrorError("path-escape", `Refused '${path}': ${escape}.`, { paths: [path] }),
+        );
       }
     }
   }
 
-  const tooLarge = diff.files.flatMap((file) =>
-    file.kind === "too_large" && file.status !== "deleted"
-      ? [{ path: file.newPath, maxBytes: file.maxBytes }]
-      : [],
-  );
-  if (tooLarge.length > 0) return Result.fail(new MirrorTooLargeError({ files: tooLarge }));
+  // The workspace sends `too_large` only for untracked additions, whose content it withholds.
+  const tooLarge = diff.files.flatMap((file) => (file.kind === "too_large" ? [file] : []));
+  if (tooLarge.length > 0) {
+    return Result.fail(
+      mirrorError(
+        "too-large",
+        tooLarge.map((file) => `${file.newPath} exceeds ${file.maxBytes} bytes`).join("; "),
+        { paths: tooLarge.map((file) => file.newPath) },
+      ),
+    );
+  }
 
   const patches: Array<string> = [];
-  const patchCreates: Array<string> = [];
   const removals: Array<string> = [];
   const writes: Array<AetherMirrorWrite> = [];
   const modeOnly: Array<string> = [];
   for (const file of diff.files) {
-    if (file.kind === "too_large") {
+    if (file.kind === "too_large") continue;
+    if (file.status === "deleted") {
       removals.push(file.oldPath);
     } else if (file.kind === "binary") {
-      if (file.status === "deleted" || file.status === "renamed") removals.push(file.oldPath);
-      if (file.status !== "deleted") {
-        writes.push({
-          path: file.newPath,
-          create: file.status === "added" || file.status === "renamed",
-        });
-      }
+      if (file.status === "renamed") removals.push(file.oldPath);
+      writes.push(
+        file.status === "added"
+          ? { path: file.newPath }
+          : { path: file.newPath, modeOf: file.oldPath },
+      );
     } else if (file.status === "modified" && file.hunks.length === 0) {
       // A bare `diff --git` header makes `git apply` reject the whole patch.
       modeOnly.push(file.newPath);
@@ -238,13 +224,10 @@ export const planAetherMirror = (
       const rendered = renderTextEntry(file);
       if (Result.isFailure(rendered)) return Result.fail(rendered.failure);
       patches.push(rendered.success);
-      if (file.status === "added" || file.status === "renamed") patchCreates.push(file.newPath);
     }
   }
   return Result.succeed({
-    paths: diff.files.flatMap(entryPaths),
     patch: patches.join(""),
-    patchCreates,
     removals,
     writes,
     modeOnly,

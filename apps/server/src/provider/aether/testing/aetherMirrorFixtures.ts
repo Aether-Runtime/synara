@@ -16,7 +16,7 @@ import type { AetherMirrorWorkspace } from "../aetherMirrorSync.ts";
 type Hunk = Extract<AetherGitDiffFile, { readonly kind: "text" | "binary" }>["hunks"][number];
 type Line = Hunk["lines"][number];
 
-const NO_NEWLINE = "\\ No newline at end of file";
+export const NO_NEWLINE = "\\ No newline at end of file";
 
 /**
  * One hunk from unified-diff lines: `" ctx"`, `"-old"`, `"+new"`, and `NO_NEWLINE` after a line
@@ -25,8 +25,9 @@ const NO_NEWLINE = "\\ No newline at end of file";
 export const hunk = (oldStart: number, newStart: number, ...lines: ReadonlyArray<string>): Hunk => {
   const parsed: Array<Line> = [];
   for (const line of lines) {
-    if (line === NO_NEWLINE) {
-      parsed[parsed.length - 1] = { ...parsed[parsed.length - 1]!, noTrailingNewline: true };
+    const previous = parsed.at(-1);
+    if (line === NO_NEWLINE && previous !== undefined) {
+      parsed[parsed.length - 1] = { ...previous, noTrailingNewline: true };
       continue;
     }
     const kind = line[0] === "+" ? "add" : line[0] === "-" ? "del" : "context";
@@ -85,22 +86,20 @@ export const binary = (
   newPath: string,
 ): AetherGitDiffFile => ({ oldPath, newPath, status, kind: "binary", hunks: [] });
 
-export const tooLarge = (
-  status: AetherGitDiffFile["status"],
-  path: string,
-  maxBytes: number,
-): AetherGitDiffFile => ({
-  oldPath: status === "added" ? "/dev/null" : path,
-  newPath: status === "deleted" ? "/dev/null" : path,
-  status,
+/** The workspace withholds an untracked addition over its size limit. */
+export const tooLarge = (path: string, maxBytes: number): AetherGitDiffFile => ({
+  oldPath: "/dev/null",
+  newPath: path,
+  status: "added",
   kind: "too_large",
   maxBytes,
 });
 
-export const diffOf = (...files: ReadonlyArray<AetherGitDiffFile>): AetherGitDiffResult => ({
-  baseRef: "origin/main",
-  files,
-});
+/** `baseRef` is the merge-base commit the workspace diffed from. */
+export const diffOf = (
+  baseRef: string,
+  ...files: ReadonlyArray<AetherGitDiffFile>
+): AetherGitDiffResult => ({ baseRef, files });
 
 const WORKSPACE_ID = "0b0e4f7e-5c1a-4d2b-9e3f-6a7b8c9d0e1f";
 
@@ -110,7 +109,7 @@ const WORKSPACE_ID = "0b0e4f7e-5c1a-4d2b-9e3f-6a7b8c9d0e1f";
  * or a timeout would.
  */
 export const makeFakeWorkspace = () => {
-  let diff: AetherGitDiffResult = diffOf();
+  let diff: AetherGitDiffResult = diffOf("");
   let files = new Map<string, Uint8Array>();
   let diffFailure: string | undefined;
   let readFailure: string | undefined;

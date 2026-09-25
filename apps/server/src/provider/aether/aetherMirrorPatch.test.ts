@@ -1,12 +1,12 @@
 // FILE: aetherMirrorPatch.test.ts
 // Purpose: The mirror planner on its own: the patch it writes for each entry shape, path quoting,
-// and every diff it refuses before anything touches a worktree.
-// Layer: Server provider tests (Aether). Applying the patches is covered with real Git in
+// and every diff it refuses. Building and checking out the target is covered with real Git in
 // aetherMirrorSync.test.ts.
+// Layer: Server provider tests (Aether).
 import { Result } from "effect";
 import { describe, expect, it } from "vitest";
 
-import type { AetherMirrorPlanError } from "./aetherMirrorPatch.ts";
+import type { AetherMirrorError } from "./aetherMirrorErrors.ts";
 import { mirrorPathEscape, planAetherMirror, quoteGitPath } from "./aetherMirrorPatch.ts";
 import type { AetherGitDiffFile } from "./aetherWorkspaceProtocol.ts";
 import {
@@ -21,28 +21,31 @@ import {
   tooLarge,
 } from "./testing/aetherMirrorFixtures.ts";
 
+const BASE = "0".repeat(40);
+
 const plan = (...files: ReadonlyArray<AetherGitDiffFile>) => {
-  const result = planAetherMirror(diffOf(...files));
-  if (Result.isFailure(result)) throw new Error(`unexpected refusal: ${result.failure.message}`);
+  const result = planAetherMirror(diffOf(BASE, ...files));
+  if (Result.isFailure(result)) throw new Error(`unexpected refusal: ${result.failure.detail}`);
   return result.success;
 };
 
-const refusal = (...files: ReadonlyArray<AetherGitDiffFile>): AetherMirrorPlanError => {
-  const result = planAetherMirror(diffOf(...files));
+const refusal = (...files: ReadonlyArray<AetherGitDiffFile>): AetherMirrorError => {
+  const result = planAetherMirror(diffOf(BASE, ...files));
   if (Result.isSuccess(result)) throw new Error("expected the plan to be refused");
   return result.failure;
 };
 
 describe("planAetherMirror", () => {
-  it("writes git headers for added, modified, deleted and renamed text files", () => {
-    const { patch, fileCount } = plan(
+  it("patches additions, modifications and renames, and removes deletions from the index", () => {
+    const result = plan(
       added("notes.md", "hello"),
       modified("app.txt", hunk(1, 1, " one", "-two", "+2")),
       deleted("gone.txt", "bye\n"),
       renamed("lib.txt", "src/lib.txt", hunk(1, 1, " lib", "+more")),
     );
-    expect(fileCount).toBe(4);
-    expect(patch).toBe(
+    expect(result.fileCount).toBe(4);
+    expect(result.removals).toEqual(["gone.txt"]);
+    expect(result.patch).toBe(
       [
         "diff --git a/notes.md b/notes.md",
         "new file mode 100644",
@@ -58,12 +61,6 @@ describe("planAetherMirror", () => {
         " one",
         "-two",
         "+2",
-        "diff --git a/gone.txt b/gone.txt",
-        "deleted file mode 100644",
-        "--- a/gone.txt",
-        "+++ /dev/null",
-        "@@ -1,1 +0,0 @@",
-        "-bye",
         "diff --git a/lib.txt b/src/lib.txt",
         "rename from lib.txt",
         "rename to src/lib.txt",
@@ -106,59 +103,33 @@ describe("planAetherMirror", () => {
     expect(result.fileCount).toBe(1);
   });
 
-  it("removes and writes binary files directly, and removes a too-large deletion", () => {
+  it("writes binaries with the mode of the base file they replace", () => {
     const result = plan(
       binary("added", "/dev/null", "img/new.png"),
       binary("modified", "img/logo.png", "img/logo.png"),
       binary("deleted", "img/old.png", "/dev/null"),
       binary("renamed", "img/a.png", "img/b.png"),
-      tooLarge("deleted", "data/huge.json", 1_048_576),
     );
     expect(result.patch).toBe("");
-    expect(result.removals).toEqual(["img/old.png", "img/a.png", "data/huge.json"]);
-    // Additions and rename targets must not exist yet; a modification overwrites.
+    expect(result.removals).toEqual(["img/old.png", "img/a.png"]);
     expect(result.writes).toEqual([
-      { path: "img/new.png", create: true },
-      { path: "img/logo.png", create: false },
-      { path: "img/b.png", create: true },
+      { path: "img/new.png" },
+      { path: "img/logo.png", modeOf: "img/logo.png" },
+      { path: "img/b.png", modeOf: "img/a.png" },
     ]);
   });
 
-  it("lists the files the patch creates and every path Git must check", () => {
-    const result = plan(
-      added("notes.md", "hi\n"),
-      modified("app.txt", hunk(1, 1, "-a", "+b")),
-      deleted("gone.txt", "bye\n"),
-      renamed("lib.txt", "src/lib.txt"),
-      binary("added", "/dev/null", "img/new.png"),
-      tooLarge("deleted", "data/huge.json", 1_048_576),
-    );
-    expect(result.patchCreates).toEqual(["notes.md", "src/lib.txt"]);
-    expect(result.paths).toEqual([
-      "notes.md",
-      "app.txt",
-      "gone.txt",
-      "lib.txt",
-      "src/lib.txt",
-      "img/new.png",
-      "data/huge.json",
-    ]);
-  });
-
-  it("refuses every too-large file it would have to write, with its limit", () => {
+  it("refuses every too-large file, with its limit", () => {
     const error = refusal(
       added("notes.md", "hi\n"),
-      tooLarge("modified", "data/big.json", 1_048_576),
-      tooLarge("added", "data/new.bin", 2_000),
+      tooLarge("data/big.json", 1_048_576),
+      tooLarge("data/new.bin", 2_000),
     );
     expect(error).toMatchObject({
-      _tag: "MirrorTooLargeError",
-      files: [
-        { path: "data/big.json", maxBytes: 1_048_576 },
-        { path: "data/new.bin", maxBytes: 2_000 },
-      ],
+      reason: "too-large",
+      paths: ["data/big.json", "data/new.bin"],
     });
-    expect(error.message).toContain("data/big.json (over 1048576 bytes)");
+    expect(error.detail).toContain("data/big.json exceeds 1048576 bytes");
   });
 
   it.each([
@@ -173,12 +144,12 @@ describe("planAetherMirror", () => {
     ["an escaping rename target", renamed("lib.txt", "../lib.txt")],
     ["an escaping binary rename source", binary("renamed", "../x.bin", "x.bin")],
   ])("refuses %s", (_name, file) => {
-    expect(refusal(added("fine.txt", "x\n"), file)._tag).toBe("MirrorPathEscapeError");
+    expect(refusal(added("fine.txt", "x\n"), file).reason).toBe("path-escape");
   });
 
   it("ignores the /dev/null side of added and deleted entries", () => {
     expect(mirrorPathEscape("/dev/null")).toBeDefined();
-    expect(() => plan(added("a.txt", "x\n"), deleted("b.txt", "y\n"))).not.toThrow();
+    expect(plan(added("a.txt", "x\n"), deleted("b.txt", "y\n")).removals).toEqual(["b.txt"]);
   });
 
   it("refuses a hunk it cannot trust", () => {
@@ -186,17 +157,14 @@ describe("planAetherMirror", () => {
       header: "@@ -1,3 +1,3 @@",
       lines: [{ kind: "context", text: "one" }],
     });
-    expect(refusal(truncated)).toMatchObject({
-      _tag: "MirrorDiffRebuildError",
-      path: "app.txt",
-    });
+    expect(refusal(truncated)).toMatchObject({ reason: "diff-rebuild", paths: ["app.txt"] });
     const unranged = modified("app.txt", { header: "@@", lines: [] });
-    expect(refusal(unranged).message).toContain("not a unified diff range");
+    expect(refusal(unranged).detail).toContain("not a unified diff range");
     const split = modified("app.txt", {
       header: "@@ -1 +1 @@",
       lines: [{ kind: "context", text: "a\nb" }],
     });
-    expect(refusal(split).message).toContain("line break");
+    expect(refusal(split).detail).toContain("line break");
   });
 
   it("accepts a range without counts, which means one line", () => {
@@ -211,6 +179,6 @@ describe("planAetherMirror", () => {
   });
 
   it("refuses a modified entry that names two paths", () => {
-    expect(refusal({ ...modified("a.txt"), newPath: "b.txt" })._tag).toBe("MirrorDiffRebuildError");
+    expect(refusal({ ...modified("a.txt"), newPath: "b.txt" }).reason).toBe("diff-rebuild");
   });
 });

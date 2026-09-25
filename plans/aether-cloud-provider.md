@@ -134,27 +134,21 @@ diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same me
 Built in P5b as `syncAetherMirror` (`apps/server/src/provider/aether/aetherMirrorSync.ts`); P4
 wires it into the adapter:
 
-- Network reads (the diff and every binary file), a Git check of every path (with the NTFS and
-  HFS `.git` protections forced on), and a `git apply --cached --check` against the base happen
-  before the repository lock, so a transport failure, a hostile path or a stale diff changes
-  nothing. The removal of the last sync's files, the reset, apply, binary writes and fingerprint
-  then run inside `GitCore.withMutation` with the provider's claim.
-- No `git clean`: after the reset it would apply the base's ignore rules and delete files only the
-  mirrored `.gitignore` protects. The record lists the files each sync created, and the next sync
-  removes exactly those. A file the diff adds must not already exist locally.
-- Result: `synced {fingerprint, filesChanged, modeOnlyPaths}` or `unchanged {fingerprint}` (the
-  worktree holds the same tree as before; usually nothing was rewritten). Failures are tagged errors:
-  `MirrorDiffRebuildError`, `MirrorApplyFailedError`, `MirrorTooLargeError` (path and `maxBytes`),
-  `MirrorPathEscapeError`, `MirrorLocalEditsError`, `MirrorTransportError`, and P5a's
-  `WorktreeOwnedError` if the claim is gone.
-- Local edits: each sync records the tree it produced (HEAD plus the worktree's content tree) in
-  the worktree's Git directory, keyed by task. A worktree that matches neither that record nor a
-  clean checkout of the base fails with `MirrorLocalEditsError` naming the changed paths, and
-  nothing is touched. Resetting the worktree to the base is always accepted; that is how a user
-  resumes.
-- The wire has no file modes: new files are written 100644, and mode-only changes are reported in
-  `modeOnlyPaths`, not applied. A `too_large` deletion is mirrored (it needs no content); any other
-  `too_large` entry fails the sync.
+- The diff's `baseRef` is the merge-base the VM computed; it must equal the task base commit.
+- Before the lock, the diff becomes a target tree in a scratch index built from the base: text via
+  `git apply --cached`, deletions via `update-index --force-remove`, binaries via
+  `hash-object -w` + `update-index --cacheinfo` (Git checks paths with its NTFS and HFS `.git`
+  protections on).
+- Inside `GitCore.withMutation`, with the claim: the worktree and index must hold the tree the
+  last sync wrote (or a clean base checkout), with no untracked files; then
+  `git read-tree -m -u <previous> <target>` moves them. HEAD stays on the base.
+- The record in the worktree's Git directory stores the target tree OID, never a fingerprint of
+  the disk, plus the tree being written until the move is recorded, so a crash in between is safe.
+- Result: `synced {tree, filesChanged, modeOnlyPaths}` or `unchanged {tree}`. Failures are one
+  `AetherMirrorError` with a `reason` (`diff-rebuild`, `apply-failed`, `too-large`, `path-escape`,
+  `local-edits`, `base-mismatch`, `record`, `transport`), or P5a's `WorktreeOwnedError`.
+- Known gap: the wire has no modes or blob ids, so new symlinks and executables, type changes and
+  mode changes land as regular files locally. The pull request pushed from the VM is exact.
 
 ### Worktree ownership and the mirror guard
 
