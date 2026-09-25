@@ -469,15 +469,25 @@ export class AetherConversationIngest {
 
   /**
    * Whether the task still has work to watch: an executing run, a busy task, a question or plan
-   * waiting on an answer, a turn still running, a run not signalled yet, or data not read yet.
+   * not surfaced yet, a turn still running, a run not signalled yet, or data not read yet.
+   *
+   * A surfaced question or plan with nothing executing is not watched: nothing changes on the
+   * server until someone answers, so the loop idles until the adapter's `wake` (it answered, or
+   * reattached). An answer given in Aether's own UI is picked up at that next wake.
    */
   shouldKeepPolling(): boolean {
-    const { executing, open, turnsRefreshPending, task, turnOrder, turns } = this.state;
+    const { executing, open, turnsRefreshPending, task, turnOrder, turns, pending } = this.state;
     if (executing || open.length > 0 || turnsRefreshPending) return true;
-    if (this.turnsNeedingActivity().length > 0 || this.awaitingAnswer() !== undefined) return true;
+    if (this.turnsNeedingActivity().length > 0) return true;
+    const awaiting = this.awaitingAnswer();
+    if (awaiting !== undefined && pending?.toolId !== awaiting.tool_id) return true;
     if (task === undefined || task.status === "queued" || task.status === "processing") return true;
     return turnOrder.some((id) => {
       const turn = turns.get(id)!;
+      if (awaiting !== undefined && turn.id === pending?.turnId && turn.state === "awaiting_input") {
+        // Waits on the user; a proposed plan's run settles (and is signalled) first.
+        return awaiting.kind === "plan" && !this.isSignalled(turn);
+      }
       return (turn.state !== "settled" && turn.state !== "errored") || !this.isSignalled(turn);
     });
   }

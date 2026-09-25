@@ -918,6 +918,31 @@ describe("AetherConversationIngest: polling state", () => {
     expect(ingest.shouldKeepPolling()).toBe(false);
   });
 
+  it("idles once a question or plan waiting on the user is surfaced, not before", () => {
+    const waiting = turn({ state: "awaiting_input", revision_sequence: 2 });
+    const question = makeIngest();
+    live(question, liveBody());
+    refresh(question, turnsBody(askingTask("q1"), [waiting]), { [TURN_ID]: activityBody([], 1) });
+    // No turn has been seen making the call yet: keep reading.
+    expect(question.shouldKeepPolling()).toBe(true);
+    refresh(question, turnsBody(askingTask("q1"), [waiting]), {
+      [TURN_ID]: activityBody([toolRow("q1", { name: "ask_user" })], 2),
+    });
+    expect(question.shouldKeepPolling()).toBe(false);
+
+    const plan = makeIngest();
+    live(plan, liveBody());
+    const planTask = taskBody("processing", {
+      status: "awaiting_input",
+      awaiting_input: { kind: "plan", tool_id: "toolu_plan", input: { plan: "1. Edit" } },
+    });
+    const proposed = refresh(plan, turnsBody(planTask, [waiting]), {
+      [TURN_ID]: activityBody([toolRow("toolu_plan", { name: "propose_plan" })], 2),
+    });
+    expect(tags(proposed).at(-1)).toBe("TurnSettled");
+    expect(plan.shouldKeepPolling()).toBe(false);
+  });
+
   it("pages back through a turn it never read, and only as far as needed afterwards", () => {
     const ingest = makeIngest();
     ingest.applyTurns(

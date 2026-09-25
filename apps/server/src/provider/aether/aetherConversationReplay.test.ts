@@ -49,7 +49,11 @@ interface Replay {
   readonly outputs: ReadonlyArray<AetherPollerOutput>;
 }
 
-/** Wakes the poller once, then advances the clock a tick at a time for `seconds`. */
+/**
+ * Wakes the poller, then advances the clock a tick at a time for `seconds`. The loop idles once
+ * the question surfaces; the recorded user answered at once, so the replay wakes it again then,
+ * as the adapter does when it sends an answer.
+ */
 async function replayThroughPoller(seconds = 120) {
   const transport = replayTransport(loadRecording("claude-question-edit-shell"));
   const outputs: AetherPollerOutput[] = [];
@@ -69,9 +73,15 @@ async function replayThroughPoller(seconds = 120) {
       resume: { after: null, emittedText: new Map() },
       emit: (output) => Effect.sync(() => void outputs.push(output)),
     });
+    let answered = false;
     yield* poller.wake;
     yield* settle(transport);
     for (let second = 0; second < seconds; second += 1) {
+      if (!answered && outputs.some((output) => output._tag === "PendingInput")) {
+        answered = true;
+        yield* poller.wake;
+        yield* settle(transport);
+      }
       yield* TestClock.adjust(AETHER_POLL_INTERVAL_MS);
       yield* settle(transport);
     }
