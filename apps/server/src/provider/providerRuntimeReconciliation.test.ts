@@ -15,6 +15,7 @@ import {
   planProviderRuntimeReconciliation,
   type ProviderRuntimeReconciliationPlan,
 } from "./providerRuntimeReconciliation.ts";
+import type { ProviderRuntimeEventPumpHealth } from "./Services/ProviderService.ts";
 import type { ProviderRuntimeBinding } from "./Services/ProviderSessionDirectory.ts";
 
 const NOW = Date.parse("2026-07-23T20:00:30.000Z");
@@ -784,12 +785,30 @@ describe("planProviderRuntimeReconciliation", () => {
         session: { ...threadShell().session!, providerName: provider, updatedAt: quietSince },
         ...overrides,
       });
-    const plan = (thread: OrchestrationThreadShell, live: ReadonlyArray<ProviderSession>) =>
+    const plan = (
+      thread: OrchestrationThreadShell,
+      live: ReadonlyArray<ProviderSession>,
+      follow: {
+        readonly bound?: boolean;
+        readonly pump?: ProviderRuntimeEventPumpHealth["status"];
+      } = {},
+    ) =>
       planProviderRuntimeReconciliation({
         threads: [thread],
-        bindings: [binding(OLD_TURN_ID, thread.modelSelection.provider)],
+        bindings:
+          follow.bound === false ? [] : [binding(OLD_TURN_ID, thread.modelSelection.provider)],
         liveSessions: live,
-        pumpHealth: [],
+        pumpHealth:
+          follow.pump === undefined
+            ? []
+            : [
+                {
+                  provider: thread.modelSelection.provider,
+                  status: follow.pump,
+                  consecutiveFailures: 2,
+                  updatedAt: "2026-07-23T20:00:29.000Z",
+                },
+              ],
         nowMs: NOW,
       });
     const running = (provider: "aether" | "codex") => [
@@ -807,6 +826,24 @@ describe("planProviderRuntimeReconciliation", () => {
         expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
       ]);
       expect(plan(quietThread("aether", { hasPendingUserInput: true }), [])).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+    });
+
+    it("settles a cloud turn waiting on the user once nothing follows it: no binding, no session running it, or a blind pump", () => {
+      const waiting = quietThread("aether", { hasPendingUserInput: true });
+      expect(plan(waiting, [], { bound: false })).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      expect(plan(waiting, running("aether"), { bound: false })).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      // A session that never got past connecting runs nothing.
+      expect(plan(waiting, [liveSession({ status: "connecting", provider: "aether" })])).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      // Its adapter still runs the turn, but none of its events reach Synara.
+      expect(plan(waiting, running("aether"), { pump: "recovering" })).toEqual([
         expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
       ]);
     });
