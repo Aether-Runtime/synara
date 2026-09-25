@@ -8512,6 +8512,103 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  it.each([
+    ["codex", "gpt-5", true],
+    ["claudeAgent", "claude-opus-4-6", true],
+    ["aether", "claude-opus-5-5", false],
+  ] as const)(
+    "shows provider-gated thread controls for %s: %s",
+    async (provider, model, expectsGatedControls) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: `msg-user-gated-controls-${provider}` as MessageId,
+        targetText: "gated controls test",
+      });
+      const thread = snapshot.threads[0]!;
+      // Give the tail exchange a settled turn so its user message is editable.
+      const tailTurnId = TurnId.makeUnsafe(`turn-gated-controls-${provider}`);
+      const messages = thread.messages.map((message, index) =>
+        index >= thread.messages.length - 2 ? { ...message, turnId: tailTurnId } : message,
+      );
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            {
+              ...thread,
+              messages,
+              modelSelection: { provider, model },
+              session: { ...thread.session!, providerName: provider },
+              goal: "Keep the tests green",
+            },
+          ],
+        },
+      });
+
+      try {
+        await waitForComposerEditor();
+        // Edit and resend (conversation rollback) and the goal strip (agent gateway).
+        const editButton = page.getByRole("button", { name: "Edit message" });
+        const goalStrip = page.getByRole("button", { name: "Edit goal" });
+        if (expectsGatedControls) {
+          await expect.element(editButton.first()).toBeInTheDocument();
+          await expect.element(goalStrip).toBeInTheDocument();
+        } else {
+          await expect.element(editButton).not.toBeInTheDocument();
+          await expect.element(goalStrip).not.toBeInTheDocument();
+        }
+        await page.getByLabelText("Composer extras").click();
+        const goalRow = page.getByText("Set a goal to keep pursuing");
+        if (expectsGatedControls) {
+          await expect.element(goalRow).toBeInTheDocument();
+        } else {
+          await expect.element(goalRow).not.toBeInTheDocument();
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("explains a cloud provider once on a new chat and hides it after dismissal", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-hint-test" as MessageId,
+        targetText: "cloud hint test",
+      }),
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForComposerEditor();
+      const hint = page.getByTestId("composer-cloud-provider-hint");
+      await expect.element(hint).not.toBeInTheDocument();
+
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+      await expect.element(hint).toBeInTheDocument();
+      expect(hint.element().textContent).toContain(
+        "Aether runs this chat in the cloud. The repo must be on GitHub and imported as a project in Aether.",
+      );
+      expect(
+        page.getByRole("link", { name: "Get an API key" }).element().getAttribute("href"),
+      ).toBe("https://runaether.dev");
+
+      await page.getByRole("button", { name: "Dismiss tip" }).click();
+      await expect.element(hint).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps worktree setup resolvable while attachments upload", async () => {
     const restoreNativeApi = installDeterministicSendNativeApi();
     let releaseAttachmentUpload = () => {};

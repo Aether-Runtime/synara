@@ -289,6 +289,8 @@ import {
   shouldShowComputerControlEffortHint,
 } from "./chat/composerComputerControlHint";
 import { ComposerComputerControlEffortHint } from "./chat/ComposerComputerControlEffortHint";
+import { ComposerCloudProviderHint } from "./chat/ComposerCloudProviderHint";
+import { shouldShowCloudProviderHint } from "./chat/composerCloudProviderHint";
 import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachments";
 import { ComposerSlashStatusDialog } from "./chat/ComposerSlashStatusDialog";
 import { ComposerSubagentStrip } from "./chat/ComposerSubagentStrip";
@@ -4772,6 +4774,10 @@ export default function ChatView({
     updateSettings({ dismissedComputerControlEffortHint: true });
     scheduleComposerFocus();
   }, [scheduleComposerFocus, updateSettings]);
+  const dismissCloudProviderHint = useCallback(() => {
+    updateSettings({ dismissedCloudProviderHint: true });
+    scheduleComposerFocus();
+  }, [scheduleComposerFocus, updateSettings]);
 
   // Empty state: no active thread
   if (!activeThread) {
@@ -5154,6 +5160,11 @@ export default function ChatView({
     provider: selectedProvider,
     traits: composerTraitSelection,
   });
+  const showComposerCloudProviderHint = shouldShowCloudProviderHint({
+    provider: selectedProvider,
+    dismissed: settings.dismissedCloudProviderHint,
+    threadHasMessages: hasNativeUserMessages,
+  });
   const startReplacementSidechat = () => {
     const sourceThreadId = activeThread?.sidechatSourceThreadId;
     if (!sourceThreadId) return;
@@ -5307,6 +5318,21 @@ export default function ChatView({
                     showComposerSubagentStrip ||
                     queuedComposerTurns.length > 0 ||
                     showComposerGoalHeader
+                  }
+                />
+              ) : null}
+              {showComposerCloudProviderHint ? (
+                <ComposerCloudProviderHint
+                  provider={selectedProvider}
+                  onDismiss={dismissCloudProviderHint}
+                  attachedToPrevious={
+                    showComposerLiveChangesHeader ||
+                    showComposerActiveTaskListCard ||
+                    showComposerWorkflowRunCard ||
+                    showComposerSubagentStrip ||
+                    queuedComposerTurns.length > 0 ||
+                    showComposerGoalHeader ||
+                    showComposerComputerControlEffortHint
                   }
                 />
               ) : null}
