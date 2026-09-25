@@ -585,6 +585,34 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(h.aether.calls.respond).toHaveLength(2);
       }),
     );
+    it.effect("answers Aether's question shape: options by index, free text as custom", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        // A Codex task's questions, as Aether sends them: no header, no descriptions.
+        h.aether.hooks.onTurn = (turn) =>
+          h.aether.ask(turn, "exec-1", [], {
+            questions: [
+              { question: "Which color should I use?", options: [{ label: "Red" }, { label: "Blue" }] },
+              { question: "What should it be called?", options: [] },
+            ],
+          });
+        yield* adapter.sendTurn(h.send("Paint it"));
+        yield* waitFor("the question", () =>
+          events.find((event) => event.type === "user-input.requested"),
+        );
+        yield* adapter.respondToUserInput(THREAD_ID, ApprovalRequestId.makeUnsafe("exec-1"), {
+          "0": "Blue",
+          "1": "Sky",
+        });
+        expect(h.aether.calls.respond[0]?.tool_response).toEqual({
+          tool_name: "ask_user",
+          data: { answers: { "0": [1], "1": [-1] }, customAnswers: { "1": "Sky" } },
+          expected_tool_id: "exec-1",
+        });
+      }),
+    );
   });
 
   describe("plans", () => {

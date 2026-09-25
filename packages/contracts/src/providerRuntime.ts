@@ -485,13 +485,13 @@ export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
 const UserInputQuestionOption = Schema.Struct({
   label: TrimmedNonEmptyStringSchema,
-  description: TrimmedNonEmptyStringSchema,
+  description: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type UserInputQuestionOption = typeof UserInputQuestionOption.Type;
 
 export const UserInputQuestion = Schema.Struct({
   id: TrimmedNonEmptyStringSchema,
-  header: TrimmedNonEmptyStringSchema,
+  header: Schema.optional(TrimmedNonEmptyStringSchema),
   question: TrimmedNonEmptyStringSchema,
   options: Schema.Array(UserInputQuestionOption),
   multiSelect: Schema.optional(Schema.Boolean).pipe(

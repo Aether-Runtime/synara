@@ -776,17 +776,62 @@ describe("AetherConversationIngest: pending input", () => {
   const waitingTurn = (revision = 1) =>
     turn({ state: "awaiting_input", revision_sequence: revision });
 
+  const questionTask = (input: Json) =>
+    taskBody("processing", {
+      status: "awaiting_input",
+      awaiting_input: { kind: "questions", tool_id: TOOL_ID, input },
+    });
+  const asked = (input: Json) =>
+    refresh(ingest0(), turnsBody(questionTask(input), [turn({ state: "awaiting_input" })]), {
+      [TURN_ID]: activityBody([askRow(TOOL_ID)]),
+    });
+  const ingest0 = () => makeIngest();
+
+  it("shows Aether's question shape: no header, options without descriptions", () => {
+    // A Codex task's question, as Aether sent it.
+    const outputs = asked({
+      questions: [
+        { question: "Which color should I use?", options: [{ label: "Red" }, { label: "Blue" }] },
+      ],
+    });
+    expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "user-input.requested"]);
+    expect(events(outputs)[0]?.payload).toEqual({
+      questions: [
+        {
+          id: "0",
+          question: "Which color should I use?",
+          options: [{ label: "Red" }, { label: "Blue" }],
+          multiSelect: false,
+        },
+      ],
+    });
+    expectValidEvents(outputs);
+  });
+
+  it("shows a question with no options as free text only", () => {
+    const outputs = asked({
+      questions: [{ id: "q", header: "Name", question: "What should it be called?", options: [] }],
+    });
+    expect(events(outputs)[0]?.payload).toEqual({
+      questions: [
+        {
+          id: "0",
+          header: "Name",
+          question: "What should it be called?",
+          options: [],
+          multiSelect: false,
+        },
+      ],
+    });
+    expectValidEvents(outputs);
+  });
+
   it("warns when a question cannot be shown, and still hands over the pending input", () => {
-    const ingest = makeIngest();
-    const outputs = refresh(
-      ingest,
-      turnsBody(taskBody("awaiting_input"), [turn({ state: "awaiting_input" })]),
-      { [TURN_ID]: activityBody([askRow(TOOL_ID)]) },
-    );
+    const outputs = asked({ questions: [{ question: "Which one?", options: [{ label: " " }] }] });
     expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "runtime.warning"]);
     expect(events(outputs)[0]?.payload).toMatchObject({
       message: "Aether is waiting on a question that Synara cannot display.",
-      detail: { toolId: TOOL_ID, error: expect.stringContaining("header") },
+      detail: { toolId: TOOL_ID, error: expect.stringContaining("question 0") },
     });
   });
 

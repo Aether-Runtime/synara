@@ -339,8 +339,11 @@ export function makeFakeAetherTask() {
       task = { status: "errored", awaiting: {}, error };
       bump(turn);
     },
-    ask: (turn: FakeTurn, toolId: string, labels: ReadonlyArray<string>) => {
-      const input = {
+    ask: (
+      turn: FakeTurn,
+      toolId: string,
+      labels: ReadonlyArray<string>,
+      input: Json = {
         questions: [
           {
             header: "Label",
@@ -348,7 +351,8 @@ export function makeFakeAetherTask() {
             options: labels.map((label) => ({ label, description: `Use "${label}".` })),
           },
         ],
-      };
+      },
+    ) => {
       turn.items.push({
         id: `row-${toolId}`,
         role: "assistant",

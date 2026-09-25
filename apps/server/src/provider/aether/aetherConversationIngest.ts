@@ -233,15 +233,28 @@ function toolStatus(status: AetherToolStatus): ToolStatus {
 // Input decoding
 // ---------------------------------------------------------------------------
 
-/** An `ask_user` call's input: the adapter maps answers back onto its option indexes. */
+const Strict = { parseOptions: { onExcessProperty: "error" } } as const;
+
+/**
+ * An `ask_user` call's input, in Aether's canonical shape (every agent's questions arrive in it):
+ * only the question text is required, and a question with no options takes free text. The
+ * adapter maps answers back onto its option indexes.
+ */
 export const AskUserInput = Schema.Struct({
   questions: Schema.Array(
     Schema.Struct({
+      id: Schema.optionalKey(Schema.String),
       question: Schema.String,
-      header: Schema.String,
-      options: Schema.Array(Schema.Struct({ label: Schema.String, description: Schema.String })),
+      header: Schema.optionalKey(Schema.String),
+      options: Schema.Array(
+        Schema.Struct({
+          label: Schema.String,
+          description: Schema.optionalKey(Schema.String),
+          preview: Schema.optionalKey(Schema.String),
+        }).annotate(Strict),
+      ),
       multiSelect: Schema.optionalKey(Schema.Boolean),
-    }),
+    }).annotate(Strict),
   ),
 });
 
@@ -255,7 +268,10 @@ const ProposePlanInput = Schema.Struct({ plan: Schema.String });
 type Answers = Record<string, string | ReadonlyArray<string> | null>;
 type ToolResponse = NonNullable<AetherUserMessage["toolResponse"]>;
 
-/** Synara's question cards need every text field non-empty after trimming. */
+/**
+ * Synara's question cards need the question and every option label non-blank; a header or an
+ * option description, when sent, must not be blank either. Absent ones stay absent.
+ */
 function questionsFromInput(
   input: unknown,
 ): Result.Result<ReadonlyArray<UserInputQuestion>, string> {
@@ -265,10 +281,10 @@ function questionsFromInput(
   const questions: UserInputQuestion[] = [];
   for (const [index, question] of decoded.value.questions.entries()) {
     const text = question.question.trim();
-    const header = question.header.trim();
+    const header = question.header?.trim();
     const options = question.options.map((option) => ({
       label: option.label.trim(),
-      description: option.description.trim(),
+      description: option.description?.trim(),
     }));
     if (
       text === "" ||
@@ -280,9 +296,11 @@ function questionsFromInput(
     // Aether keys answers by question index, so the index is the question id.
     questions.push({
       id: String(index),
-      header,
+      ...(header === undefined ? {} : { header }),
       question: text,
-      options,
+      options: options.map(({ label, description }) =>
+        description === undefined ? { label } : { label, description },
+      ),
       multiSelect: question.multiSelect ?? false,
     });
   }
