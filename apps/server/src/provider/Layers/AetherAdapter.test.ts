@@ -25,6 +25,12 @@ import { GitCoreLive } from "../../git/Layers/GitCore.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import type { PersistedProviderRuntimeEvent } from "../../persistence/Services/ProviderRuntimeEvents.ts";
 import {
+  AetherApiConflictError,
+  AetherApiHttpError,
+  type AetherApiError,
+} from "../aether/aetherApiErrors.ts";
+import type { AetherWorkspaceId } from "../aether/aetherApiSchemas.ts";
+import {
   makeFakeAetherTask,
   FAKE_REPO_URL,
   type FakeTurn,
@@ -36,11 +42,12 @@ import {
   hunk,
   makeFakeWorkspace,
   modified,
+  tooLarge,
 } from "../aether/testing/aetherMirrorFixtures.ts";
 import { providerAdapterConformanceIssues } from "../providerAdapterConformance.ts";
 import type { AetherAdapterShape } from "../Services/AetherAdapter.ts";
 import type { ProviderRuntimeBinding } from "../Services/ProviderSessionDirectory.ts";
-import { makeAetherAdapter } from "./AetherAdapter.ts";
+import { makeAetherAdapter, openRunningWorkspace } from "./AetherAdapter.ts";
 
 const GitLayer = GitCoreLive.pipe(
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "synara-aether-adapter-test-" })),
@@ -107,7 +114,10 @@ const makeHarness = Effect.gen(function* () {
   const aether = makeFakeAetherTask();
   const workspace = makeFakeWorkspace();
   workspace.serve(diffOf(baseCommit));
-  const vm = { running: true };
+  const vm: { running: boolean; failure: AetherApiError | undefined } = {
+    running: true,
+    failure: undefined,
+  };
   const journal: PersistedProviderRuntimeEvent[] = [];
 
   /** Starts an adapter in its own scope; closing the scope is the process going away. */
@@ -117,7 +127,9 @@ const makeHarness = Effect.gen(function* () {
       const adapter = yield* makeAetherAdapter({
         client: aether.client,
         openWorkspace: () =>
-          Effect.succeed(vm.running ? Option.some(workspace.workspace) : Option.none()),
+          vm.failure !== undefined
+            ? Effect.fail(vm.failure)
+            : Effect.succeed(vm.running ? Option.some(workspace.workspace) : Option.none()),
         journal: {
           getHighWaterSequence: Effect.sync(() => journal.length),
           readThreadEvents: (input) =>
@@ -189,6 +201,8 @@ const makeHarness = Effect.gen(function* () {
       ),
   };
 });
+
+type Harness = Effect.Success<typeof makeHarness>;
 
 it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
   describe("a turn", () => {
@@ -559,6 +573,56 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         }),
     );
 
+    it.effect.each([
+      [
+        "an API error opening the workspace",
+        (h: Harness) => {
+          h.vm.failure = new AetherApiHttpError({
+            endpoint: "POST /workspaces/{workspaceID}/connect",
+            status: 401,
+            serverMessage: "Invalid API key.",
+          });
+        },
+        "HTTP 401",
+      ],
+      [
+        "a dropped workspace socket",
+        (h: Harness) => h.workspace.failDiff("socket closed"),
+        "(transport): git.diff: socket closed",
+      ],
+      [
+        "a file too large to mirror",
+        (h: Harness) => h.workspace.serve(diffOf(h.baseCommit, tooLarge("video.mp4", 100))),
+        "(too-large): video.mp4 exceeds 100 bytes",
+      ],
+      [
+        "a path Git refuses",
+        (h: Harness) => h.workspace.serve(diffOf(h.baseCommit, added(".git/hooks/x", "boom\n"))),
+        "(path-escape)",
+      ],
+      [
+        "a task moved off its base",
+        (h: Harness) => h.workspace.serve(diffOf("0".repeat(40), added("feature.txt", "hi\n"))),
+        "(base-mismatch): The workspace diff is from 0000000000000000000000000000000000000000",
+      ],
+    ] as const)("fails the turn loudly on %s", ([, arrange, expected]) =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        arrange(h);
+        const turn = yield* adapter.sendTurn(h.send("Edit"));
+        const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+        expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "failed" } });
+        expect(completed.type === "turn.completed" && completed.payload.errorMessage).toContain(
+          expected,
+        );
+        const [session] = yield* adapter.listSessions();
+        expect(session?.resumeCursor).toMatchObject({ mirrorPending: false });
+      }),
+    );
+
     it.effect("settles while the VM is suspended, and mirrors when the next turn starts", () =>
       Effect.gen(function* () {
         const h = yield* makeHarness;
@@ -583,6 +647,42 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(yield* h.read("feature.txt")).toBe("hello\n");
         expect(next.resumeCursor).toMatchObject({ mirrorPending: false });
         yield* waitFor("the next turn", () => completions(events)[1]);
+      }),
+    );
+  });
+
+  describe("openRunningWorkspace", () => {
+    const workspaceId = "0b0e4f7e-5c1a-4d2b-9e3f-6a7b8c9d0e1f" as AetherWorkspaceId;
+    const connectRefused = (error: AetherApiError) =>
+      openRunningWorkspace({
+        ...makeFakeAetherTask().client,
+        connectWorkspace: () => Effect.fail(error),
+      })(workspaceId).pipe(Effect.scoped);
+    const conflict = (body: AetherApiConflictError["body"]) =>
+      new AetherApiConflictError({ endpoint: "POST /workspaces/{workspaceID}/connect", body });
+
+    it.effect("treats a workspace that is not running as absent", () =>
+      Effect.gen(function* () {
+        for (const body of [
+          { kind: "transitional", error: "Stopping.", retry_after_ms: 1000 },
+          { kind: "startable", error: "Workspace is stopped." },
+          { kind: "not_connectable", error: "Workspace is suspended." },
+        ] as const) {
+          expect(Option.isNone(yield* connectRefused(conflict(body)))).toBe(true);
+        }
+      }),
+    );
+
+    it.effect("fails on any other API error", () =>
+      Effect.gen(function* () {
+        for (const error of [
+          conflict({ error: "The task's creator was deleted.", code: "task_creator_deleted" }),
+          new AetherApiHttpError({ endpoint: "POST /workspaces/{id}/connect", status: 401 }),
+          new AetherApiHttpError({ endpoint: "POST /workspaces/{id}/connect", status: 404 }),
+          new AetherApiHttpError({ endpoint: "POST /workspaces/{id}/connect", status: 500 }),
+        ]) {
+          expect(yield* connectRefused(error).pipe(Effect.flip)).toBe(error);
+        }
       }),
     );
   });

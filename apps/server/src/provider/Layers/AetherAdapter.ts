@@ -231,44 +231,23 @@ function taskErrorMessage(message: string | undefined): string {
   return message ?? "Aether reported the turn as failed.";
 }
 
+/** Why a mirror failed; only a workspace that is not running defers it (`openWorkspace`). */
 function mirrorFailure(
   error: AetherMirrorError | WorktreeOwnedError | AetherApiError | AetherWorkspaceSocketError,
 ): MirrorOutcome {
   if (error._tag !== "AetherMirrorError") {
-    return error._tag === "WorktreeOwnedError"
-      ? { _tag: "Failed", note: error.message }
-      : deferred(`the workspace could not be reached: ${error.message}`);
+    return { _tag: "Failed", note: `Synara could not mirror Aether's changes: ${error.message}` };
   }
-  const paths = error.paths.length > 0 ? error.paths.join(", ") : error.detail;
-  switch (error.reason) {
-    case "transport":
-      return deferred(`the workspace could not be reached: ${error.detail}`);
-    case "local-edits":
-      return {
-        _tag: "Failed",
-        note: `Synara paused mirroring Aether's changes: the worktree has local changes (${paths}). Discard or move them; the next turn mirrors again. Nothing was overwritten.`,
-      };
-    case "too-large":
-      return {
-        _tag: "Failed",
-        note: `Aether changed files too large to mirror (${paths}), so the worktree does not show this turn's changes.`,
-      };
-    case "path-escape":
-      return {
-        _tag: "Failed",
-        note: `Aether changed paths Git refuses to write (${paths}), so the worktree does not show this turn's changes.`,
-      };
-    case "base-mismatch":
-      return {
-        _tag: "Failed",
-        note: `The agent moved the task off its base commit, so Synara cannot mirror its changes any more: ${error.detail}`,
-      };
-    default:
-      return {
-        _tag: "Failed",
-        note: `Synara could not mirror Aether's changes (${error.reason}): ${error.detail}`,
-      };
+  if (error.reason === "local-edits") {
+    return {
+      _tag: "Failed",
+      note: `Synara paused mirroring Aether's changes: the worktree has local changes (${error.paths.join(", ") || error.detail}). Discard or move them; the next turn mirrors again. Nothing was overwritten.`,
+    };
   }
+  return {
+    _tag: "Failed",
+    note: `Synara could not mirror Aether's changes (${error.reason}): ${error.detail}`,
+  };
 }
 
 const deferred = (reason: string): MirrorOutcome => ({
@@ -1155,15 +1134,21 @@ export const makeAetherAdapter = (
     } satisfies AetherAdapterShape;
   });
 
-/** Connects to the task's workspace only if it is running; a stopped one is not booted. */
-const openRunningWorkspace =
+/**
+ * Connects to the task's workspace only if it is running; a stopped one is not booted. `None`
+ * while it is starting, or its connect is refused for its state (stopping, stopped, suspended);
+ * any other failure is an error.
+ */
+export const openRunningWorkspace =
   (client: AetherApiClientShape): AetherWorkspaceOpener =>
   (workspaceId) =>
     connectAetherWorkspace({ client, workspaceId, start: false }).pipe(
       Effect.map((attach) =>
         attach._tag === "Connected" ? Option.some(attach.socket) : Option.none(),
       ),
-      Effect.catchTag("AetherApiConflictError", () => Effect.succeed(Option.none())),
+      Effect.catchTag("AetherApiConflictError", (error) =>
+        "kind" in error.body ? Effect.succeed(Option.none()) : Effect.fail(error),
+      ),
     );
 
 export const AetherAdapterLive = Layer.effect(
