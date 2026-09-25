@@ -69,6 +69,8 @@ export function makeFakeAetherTask() {
     /** The next create, or respond, fails with this and changes nothing. */
     refuseCreate: AetherApiError | undefined;
     refuseRespond: AetherApiError | undefined;
+    /** Every live read fails with this while it is set. */
+    live: AetherApiError | undefined;
   } = {
     loseCreate: false,
     loseRespond: false,
@@ -76,6 +78,7 @@ export function makeFakeAetherTask() {
     payment: false,
     refuseCreate: undefined,
     refuseRespond: undefined,
+    live: undefined,
   };
   /** Called when a turn starts running: the test scripts what the VM does. */
   const hooks: { onTurn: (turn: FakeTurn) => void } = { onTurn: () => {} };
@@ -246,25 +249,28 @@ export function makeFakeAetherTask() {
         });
       }),
     getLiveConversation: (_taskId, messageIds) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        if (faults.live !== undefined) return Effect.fail(faults.live);
         const current = turns.find((turn) => turn.state === "running");
-        return decode(AetherLiveConversationSnapshot, {
-          ...(current === undefined
-            ? {}
-            : {
-                activeExecution: {
-                  conversationTurnId: current.id,
-                  processingMessageId: current.root.id,
-                },
-              }),
-          headRevision: head,
-          resetSequence: 0,
-          open: [...open.values()],
-          replacements: messageIds.flatMap((id) => {
-            const message = closed.get(id);
-            return message === undefined ? [] : [message];
+        return Effect.succeed(
+          decode(AetherLiveConversationSnapshot, {
+            ...(current === undefined
+              ? {}
+              : {
+                  activeExecution: {
+                    conversationTurnId: current.id,
+                    processingMessageId: current.root.id,
+                  },
+                }),
+            headRevision: head,
+            resetSequence: 0,
+            open: [...open.values()],
+            replacements: messageIds.flatMap((id) => {
+              const message = closed.get(id);
+              return message === undefined ? [] : [message];
+            }),
           }),
-        });
+        );
       }),
     connectWorkspace: () => Effect.die("the adapter test opens the workspace itself"),
   };

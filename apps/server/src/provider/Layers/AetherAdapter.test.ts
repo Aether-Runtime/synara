@@ -956,6 +956,37 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
+    it.effect("completes a queued turn at once when a stop discards it", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        yield* adapter.sendTurn(h.send("First"));
+        yield* waitFor("the first turn", () => completions(events)[0]);
+        // A message sent from Aether's own UI keeps the task busy, so the next one queues.
+        h.aether.hooks.onTurn = (turn) => h.aether.say(turn, "text-remote", "Busy", { open: true });
+        h.aether.remoteTurn("Remote work", false);
+        const queued = yield* adapter.sendTurn(h.send("Queued behind it"));
+        expect(h.aether.turns.at(-1)?.state).toBe("queued");
+
+        yield* adapter.interruptTurn(THREAD_ID, queued.turnId);
+        const completed = yield* waitFor("turn.completed", () => completions(events)[1]);
+        expect(completed).toMatchObject({
+          turnId: queued.turnId,
+          payload: { state: "interrupted" },
+        });
+        expect(
+          events.find(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.startsWith("Stopping"),
+          ),
+        ).toMatchObject({ payload: { detail: ["Queued behind it"] } });
+        yield* Effect.sleep("1500 millis");
+        expect(completions(events)).toHaveLength(2);
+      }),
+    );
+
     it.effect(
       "keeps the turn live through ProviderService's stop, then completes it after the mirror",
       () =>
@@ -1005,6 +1036,37 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           // The stop takes effect once the turn has completed.
           expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
         }),
+    );
+  });
+
+  describe("polling", () => {
+    it.effect("fails the turn in flight when the poll loop stops, and polls again on wake", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.aether.hooks.onTurn = (turn) =>
+          h.aether.say(turn, "text-live", "Working", { open: true });
+        h.aether.faults.live = new AetherApiHttpError({
+          endpoint: "GET /tasks/{taskID}/conversation/live",
+          status: 404,
+        });
+        const turn = yield* adapter.sendTurn(h.send("Go"));
+        const failed = yield* waitFor("turn.completed", () => completions(events)[0]);
+        expect(failed).toMatchObject({ turnId: turn.turnId, payload: { state: "failed" } });
+        expect(failed.type === "turn.completed" && failed.payload.errorMessage).toContain(
+          "Synara stopped following the Aether task: Aether API returned HTTP 404",
+        );
+
+        // The next message wakes the loop, which follows the task again.
+        h.aether.faults.live = undefined;
+        h.aether.close("text-live");
+        h.aether.settle(h.aether.turns[0]!);
+        h.finishTurns();
+        const next = yield* adapter.sendTurn(h.send("Again"));
+        const completed = yield* waitFor("the next turn", () => completions(events)[1]);
+        expect(completed).toMatchObject({ turnId: next.turnId, payload: { state: "completed" } });
+      }),
     );
   });
 
