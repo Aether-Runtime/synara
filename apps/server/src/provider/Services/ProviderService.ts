@@ -226,6 +226,27 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * The thread was archived: its provider stops the turn in flight and releases what it holds
+   * for the thread's lifetime (the adapter's `releaseThread`). The binding stays, so the thread
+   * can resume.
+   */
+  readonly releaseThread?: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Follow the thread's turn in flight again after a restart, when its provider runs turns
+   * remotely (the adapter implements `reattachTurn`). False, with nothing read, when the
+   * provider cannot; true when it reattached; a failure when it could not.
+   */
+  readonly reattachTurn?: (input: {
+    readonly threadId: ThreadId;
+    readonly provider: ProviderKind;
+    readonly turnId: TurnId;
+    readonly runtimeMode: RuntimeMode;
+  }) => Effect.Effect<boolean, ProviderServiceError>;
+
+  /**
    * List active provider sessions.
    *
    * Aggregates runtime session lists from all registered adapters.

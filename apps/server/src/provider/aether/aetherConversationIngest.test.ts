@@ -734,6 +734,64 @@ describe("AetherConversationIngest: settlement", () => {
     expect(tags(caughtUp)).toEqual(["item.completed", "TurnSettled"]);
   });
 
+  it("emits nothing for the history the resume watermark covers", () => {
+    const first = turn({ state: "settled", revision_sequence: 7 });
+    const second = turn({
+      id: OTHER_TURN_ID,
+      root_message: userMessageBody({ id: "root-2" }),
+      state: "settled",
+      revision_sequence: 2,
+    });
+    const outputs = refresh(
+      makeIngest({ after: { turnId: OTHER_TURN_ID, runMessageId: "root-2" } }),
+      turnsBody(idleTask(), [first, second]),
+      {
+        [TURN_ID]: activityBody([toolRow("t1", { status: "output-available" })], 7),
+        [OTHER_TURN_ID]: activityBody([textRow("m2", "Done."), toolRow("t2")], 2),
+      },
+    );
+    // Synara emitted these before; its journal may no longer hold them.
+    expect(outputs).toEqual([]);
+  });
+
+  it("emits a watermark turn's rows only from the run after the watermark's", () => {
+    const planTask = taskBody("processing", {
+      status: "awaiting_input",
+      awaiting_input: { kind: "plan", tool_id: "plan-1", input: { plan: "1. Edit" } },
+    });
+    const planRow = toolRow("plan-1", { name: "propose_plan", status: "approval-requested" });
+    const ingest = makeIngest({ after: { turnId: TURN_ID, runMessageId: "root-1" } });
+    const waiting = refresh(
+      ingest,
+      turnsBody(planTask, [turn({ state: "awaiting_input", revision_sequence: 1 })]),
+      {
+        // As on real tasks, a turn's activity never holds its root message.
+        [TURN_ID]: activityBody([textRow("m1", "Here is a plan."), planRow], 1),
+      },
+    );
+    // The plan was shown before the restart, and is not shown again.
+    expect(waiting).toEqual([]);
+    expect(ingest.waitsOnUser()).toBe(true);
+
+    const approved = refresh(
+      ingest,
+      turnsBody(idleTask(), [turn({ state: "settled", revision_sequence: 2 })]),
+      {
+        [TURN_ID]: activityBody(
+          [
+            textRow("m1", "Here is a plan."),
+            planRow,
+            userMessageBody({ id: "approval-1" }),
+            textRow("m2", "Implemented."),
+          ],
+          2,
+        ),
+      },
+    );
+    expect(tags(approved)).toEqual(["item.completed", "TurnSettled"]);
+    expect(events(approved)[0]).toMatchObject({ itemId: "m2" });
+  });
+
   it("signals only the runs after the resume watermark, by page order, not revision", () => {
     // As on real tasks: turns are listed oldest first, and revisions are not monotonic across them.
     const first = turn({ state: "settled", revision_sequence: 7 });
@@ -776,17 +834,91 @@ describe("AetherConversationIngest: pending input", () => {
   const waitingTurn = (revision = 1) =>
     turn({ state: "awaiting_input", revision_sequence: revision });
 
+  const questionTask = (input: Json) =>
+    taskBody("processing", {
+      status: "awaiting_input",
+      awaiting_input: { kind: "questions", tool_id: TOOL_ID, input },
+    });
+  const asked = (input: Json) =>
+    refresh(ingest0(), turnsBody(questionTask(input), [turn({ state: "awaiting_input" })]), {
+      [TURN_ID]: activityBody([askRow(TOOL_ID)]),
+    });
+  const ingest0 = () => makeIngest();
+
+  it("shows Aether's question shape: no header, options without descriptions", () => {
+    // A Codex task's question, as Aether sent it.
+    const outputs = asked({
+      questions: [
+        { question: "Which color should I use?", options: [{ label: "Red" }, { label: "Blue" }] },
+      ],
+    });
+    expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "user-input.requested"]);
+    expect(events(outputs)[0]?.payload).toEqual({
+      questions: [
+        {
+          id: "0",
+          question: "Which color should I use?",
+          options: [{ label: "Red" }, { label: "Blue" }],
+          multiSelect: false,
+        },
+      ],
+    });
+    expectValidEvents(outputs);
+  });
+
+  it("shows a question with no options as free text only", () => {
+    const outputs = asked({
+      questions: [{ id: "q", header: "Name", question: "What should it be called?", options: [] }],
+    });
+    expect(events(outputs)[0]?.payload).toEqual({
+      questions: [
+        {
+          id: "0",
+          header: "Name",
+          question: "What should it be called?",
+          options: [],
+          multiSelect: false,
+        },
+      ],
+    });
+    expectValidEvents(outputs);
+  });
+
+  it("shows a question with a blank header or description as if they were absent, and ignores fields it does not read", () => {
+    const outputs = asked({
+      questions: [
+        {
+          header: " ",
+          question: "Which color should I use?",
+          options: [
+            { label: "Red", description: "", recommended: true },
+            { label: "Blue", description: "The calm one." },
+          ],
+          allowOther: true,
+        },
+      ],
+      title: "Colors",
+    });
+    expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "user-input.requested"]);
+    expect(events(outputs)[0]?.payload).toEqual({
+      questions: [
+        {
+          id: "0",
+          question: "Which color should I use?",
+          options: [{ label: "Red" }, { label: "Blue", description: "The calm one." }],
+          multiSelect: false,
+        },
+      ],
+    });
+    expectValidEvents(outputs);
+  });
+
   it("warns when a question cannot be shown, and still hands over the pending input", () => {
-    const ingest = makeIngest();
-    const outputs = refresh(
-      ingest,
-      turnsBody(taskBody("awaiting_input"), [turn({ state: "awaiting_input" })]),
-      { [TURN_ID]: activityBody([askRow(TOOL_ID)]) },
-    );
+    const outputs = asked({ questions: [{ question: "Which one?", options: [{ label: " " }] }] });
     expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "runtime.warning"]);
     expect(events(outputs)[0]?.payload).toMatchObject({
       message: "Aether is waiting on a question that Synara cannot display.",
-      detail: { toolId: TOOL_ID, error: expect.stringContaining("header") },
+      detail: { toolId: TOOL_ID, error: expect.stringContaining("question 0") },
     });
   });
 
@@ -916,6 +1048,29 @@ describe("AetherConversationIngest: polling state", () => {
       [TURN_ID]: activityBody([], 2),
     });
     expect(ingest.shouldKeepPolling()).toBe(false);
+  });
+
+  it("goes idle while a surfaced question or plan waits on the user, not before", () => {
+    const asking = makeIngest();
+    live(asking, liveBody());
+    const question = turnsBody(askingTask("q1"), [turn({ state: "awaiting_input" })]);
+    asking.applyTurns(Schema.decodeUnknownSync(AetherConversationTurnsPage)(question));
+    // Not surfaced yet: the turn that asked it has not been read.
+    expect(asking.shouldKeepPolling()).toBe(true);
+    refresh(asking, question, { [TURN_ID]: activityBody([askRow("q1")]) });
+    expect(asking.shouldKeepPolling()).toBe(false);
+
+    const planning = makeIngest();
+    live(planning, liveBody());
+    const planTask = taskBody("processing", {
+      status: "awaiting_input",
+      awaiting_input: { kind: "plan", tool_id: "toolu_plan", input: { plan: "1. Edit" } },
+    });
+    const outputs = refresh(planning, turnsBody(planTask, [turn({ state: "awaiting_input" })]), {
+      [TURN_ID]: activityBody([toolRow("toolu_plan", { name: "propose_plan" })]),
+    });
+    expect(tags(outputs)).toContain("TurnSettled");
+    expect(planning.shouldKeepPolling()).toBe(false);
   });
 
   it("pages back through a turn it never read, and only as far as needed afterwards", () => {

@@ -16,6 +16,7 @@ import {
 } from "./aetherApiSchemas.ts";
 import {
   AETHER_ACTIVITY_MAX_PAGES,
+  AETHER_POLL_AWAITING_INTERVAL_MS,
   AETHER_POLL_INTERVAL_MS,
   AETHER_POLL_OUTAGE_LIMIT_MS,
   AETHER_POLL_WAKE_GRACE_MS,
@@ -34,8 +35,9 @@ interface Call {
 }
 
 interface Script {
-  readonly live: (call: number) => Json | AetherApiError;
-  readonly turns?: (call: number) => Json | AetherApiError;
+  /** `at` is the test clock when the read is made. */
+  readonly live: (call: number, at: number) => Json | AetherApiError;
+  readonly turns?: (call: number, at: number) => Json | AetherApiError;
   readonly activity?: (call: number, before: number | undefined) => Json | AetherApiError;
 }
 
@@ -97,13 +99,15 @@ function scriptedReader(script: Script, calls: Call[]): AetherConversationReader
   return {
     getLiveConversation: (_task, messageIds) =>
       Effect.gen(function* () {
-        calls.push({ at: yield* Clock.currentTimeMillis, kind: "live", detail: messageIds });
-        return yield* answer(AetherLiveConversationSnapshot, script.live(counts.live++));
+        const at = yield* Clock.currentTimeMillis;
+        calls.push({ at, kind: "live", detail: messageIds });
+        return yield* answer(AetherLiveConversationSnapshot, script.live(counts.live++, at));
       }),
     getConversationTurns: () =>
       Effect.gen(function* () {
-        calls.push({ at: yield* Clock.currentTimeMillis, kind: "turns" });
-        const reply = script.turns?.(counts.turns++) ?? turnsBody(taskBody("processing"));
+        const at = yield* Clock.currentTimeMillis;
+        calls.push({ at, kind: "turns" });
+        const reply = script.turns?.(counts.turns++, at) ?? turnsBody(taskBody("processing"));
         return yield* answer(AetherConversationTurnsPage, reply);
       }),
     getTurnActivity: (_task, _turn, page) =>
@@ -311,6 +315,68 @@ describe("makeAetherConversationPoller", () => {
     expect(times[0]).toBe(0);
     expect(times.at(-1)).toBe(AETHER_POLL_WAKE_GRACE_MS);
     expect(times).toHaveLength(AETHER_POLL_WAKE_GRACE_MS / AETHER_POLL_INTERVAL_MS + 1);
+  });
+
+  it("while a question waits, reads every 15 s and notices an answer given elsewhere", async () => {
+    // Answered in Aether's own UI at 50 s, after the wake's grace period ended.
+    const answeredAt = 50_000;
+    const askRow = {
+      ...toolRow("q1"),
+      tool: {
+        id: "q1",
+        name: "ask_user",
+        input: {},
+        status: "input-available",
+        display: { label: "Ask" },
+      },
+    };
+    const question = { questions: [{ question: "Which color?", options: [{ label: "Blue" }] }] };
+    const { calls, outputs } = await run(
+      {
+        live: (_call, at) => liveBody({ headRevision: at >= answeredAt ? 2 : 1 }),
+        turns: (_call, at) =>
+          at >= answeredAt
+            ? turnsBody(idleTask(), "settled", 2)
+            : turnsBody(
+                taskBody("processing", {
+                  status: "awaiting_input",
+                  awaiting_input: { kind: "questions", tool_id: "q1", input: question },
+                }),
+                "awaiting_input",
+                1,
+              ),
+        activity: (call) =>
+          call === 0
+            ? activityBody([askRow])
+            : activityBody(
+                [
+                  askRow,
+                  userMessageBody({
+                    id: "answer-1",
+                    toolResponse: { tool_name: "ask_user", data: { answers: { "0": [0] } } },
+                  }),
+                ],
+                { turn_revision_sequence: 2 },
+              ),
+      },
+      { seconds: 120 },
+    );
+    const times = liveCallTimes(calls);
+    // Every second through the wake's grace period, then every 15 s until the answer shows.
+    expect(times.slice(-3)).toEqual([
+      AETHER_POLL_WAKE_GRACE_MS,
+      AETHER_POLL_WAKE_GRACE_MS + AETHER_POLL_AWAITING_INTERVAL_MS,
+      AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_AWAITING_INTERVAL_MS,
+    ]);
+    expect(times.at(-1)! - answeredAt).toBeLessThanOrEqual(AETHER_POLL_AWAITING_INTERVAL_MS);
+    expect(outputs.map(summary)).toEqual([
+      "TurnOrigin",
+      "PendingInput",
+      "user-input.requested",
+      "user-input.resolved",
+      "PendingInputResolved",
+      "TurnSettled",
+    ]);
   });
 
   it("reads a turn's older activity pages and applies the rows oldest first", async () => {

@@ -985,4 +985,34 @@ describe("derivePendingUserInputs", () => {
 
     expect(derivePendingUserInputs(activities)[0]?.questions[0]?.options).toEqual([]);
   });
+
+  it("keeps a question with no header and options with no description", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-open-bare",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-bare-1",
+          questions: [
+            {
+              id: "0",
+              question: "Which color should I use?",
+              options: [{ label: "Red" }, { label: "Blue" }],
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)[0]?.questions).toEqual([
+      {
+        id: "0",
+        question: "Which color should I use?",
+        options: [{ label: "Red" }, { label: "Blue" }],
+      },
+    ]);
+  });
 });

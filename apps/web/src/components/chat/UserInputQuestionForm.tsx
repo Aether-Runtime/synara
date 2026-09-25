@@ -170,7 +170,7 @@ export function UserInputQuestionForm({
                 key={`${activeQuestion.id}:${option.label}`}
                 shortcut={shortcutKey}
                 label={option.label}
-                description={option.description}
+                description={option.description ?? null}
                 selected={isSelected}
                 disabled={isResponding}
                 onSelect={() => handleOptionSelection(activeQuestion.id, option.label)}

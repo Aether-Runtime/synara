@@ -81,9 +81,9 @@ export const DevinServerProviderSettings = Schema.Struct({
 });
 export type DevinServerProviderSettings = typeof DevinServerProviderSettings.Type;
 
-// Aether runs in the cloud, so it has no executable path. Disabled by default: the
-// adapter is a skeleton until sessions land. The API key is patch-only (`apiKey`) and
-// lives in the server secret store; clients only see `apiKeyConfigured`.
+// Aether runs in the cloud, so it has no executable path. Disabled by default. The API
+// key is patch-only (`apiKey`) and lives in the server secret store; clients only see
+// `apiKeyConfigured`.
 export const AetherServerProviderSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   // Validated once here (see aetherApi.ts); a blank or invalid stored value fails to decode.

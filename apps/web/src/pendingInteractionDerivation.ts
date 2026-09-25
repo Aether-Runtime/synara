@@ -264,7 +264,7 @@ function parseUserInputQuestions(
       const question = entry as Record<string, unknown>;
       if (
         typeof question.id !== "string" ||
-        typeof question.header !== "string" ||
+        (question.header !== undefined && typeof question.header !== "string") ||
         typeof question.question !== "string" ||
         !Array.isArray(question.options)
       ) {
@@ -276,19 +276,21 @@ function parseUserInputQuestions(
           const optionRecord = option as Record<string, unknown>;
           if (
             typeof optionRecord.label !== "string" ||
-            typeof optionRecord.description !== "string"
+            (optionRecord.description !== undefined && typeof optionRecord.description !== "string")
           ) {
             return null;
           }
           return {
             label: optionRecord.label,
-            description: optionRecord.description,
+            ...(optionRecord.description === undefined
+              ? {}
+              : { description: optionRecord.description }),
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
       return {
         id: question.id,
-        header: question.header,
+        ...(question.header === undefined ? {} : { header: question.header }),
         question: question.question,
         options,
         ...(question.multiSelect === true ? { multiSelect: true } : {}),

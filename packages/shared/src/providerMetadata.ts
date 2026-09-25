@@ -199,7 +199,8 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     runtime: "cloud",
     setupDocsHref: "https://runaether.dev",
-    supportsNativeTurnSteering: false,
+    // `POST /tasks/{id}/respond` steers the running agent.
+    supportsNativeTurnSteering: true,
     reachesAgentGateway: false,
     managesWorktreeBranch: true,
     supportsConversationRollback: false,

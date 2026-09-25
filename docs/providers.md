@@ -21,10 +21,10 @@ consistent workspace.
 Provider availability can differ between the current stable release and development builds. Use the
 provider settings in your installed Synara version as the authoritative list for that build.
 
-Development builds also list **Aether**, a cloud provider that is still being built. It is disabled by
-default and cannot run tasks yet. It has no executable: enable it and save an Aether API key under
-**Settings → Providers**, and Synara checks the key against Aether's API. The key stays in the
-server's secret store and is never sent back to the app.
+Development builds also list **Aether**, a cloud provider. It is disabled by default. It has no
+executable: enable it and save an Aether API key under **Settings → Providers**, and Synara checks
+the key against Aether's API. The key stays in the server's secret store and is never sent back to
+the app.
 
 Aether runs the agent in a cloud VM, so the repository must be on GitHub and imported as a project
 in Aether. Its threads always run in a new worktree that Aether owns and, once a turn has started,
@@ -35,6 +35,24 @@ Aether thread), reverting or editing earlier messages, branch picks, and handing
 Local or to or from Aether. The app hides these controls and the server refuses them. Local changes
 are never copied into an Aether worktree: neither the app nor the agent gateway copies them, so an
 Aether worktree starts from its base commit alone.
+
+The VM clones from origin, so the first message needs a clean worktree whose HEAD is the tip of a
+branch on origin. The task is based on the project's default branch when that branch's tip is HEAD,
+otherwise on the one branch on origin whose tip is HEAD; Synara refuses the message if there is
+none, or more than one.
+
+- When a run settles, Synara mirrors the VM's changes into the worktree before the turn completes,
+  so its checkpoint and diff include them. If the VM is suspended, the mirror waits for the next
+  turn. Local changes in the worktree pause the mirror until they are discarded or moved; nothing
+  is overwritten.
+- Questions and plans can be answered in Synara or in Aether's own app; Synara picks up an answer
+  given there within about 15 seconds. **Implement** approves a plan, and any other message is
+  feedback on it.
+- **Stop** stops the Aether turn and discards messages queued behind it, and so do archiving or
+  deleting the thread and quitting the desktop app while the chat runs, as for every provider.
+  Otherwise, when Synara stops following the task (an idle session, or the server restarting), it
+  keeps running in the cloud, and Synara follows it again: at startup for a turn in flight, or at
+  the next message.
 
 ## What Synara manages
 

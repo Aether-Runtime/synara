@@ -23,6 +23,7 @@ import {
   ProviderStartOptions,
   ProviderUserInputAnswers,
   RuntimeMode,
+  SourceProposedPlanReference,
 } from "./orchestration";
 import { ProviderMentionReference, ProviderSkillReference } from "./providerDiscovery";
 
@@ -78,6 +79,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   mentions: Schema.optional(Schema.Array(ProviderMentionReference)),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /** The proposed plan this turn implements: Synara's Implement action on that plan. */
+  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 export const ProviderSteerTurnInput = ProviderSendTurnInput;

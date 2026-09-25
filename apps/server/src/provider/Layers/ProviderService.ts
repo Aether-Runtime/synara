@@ -54,6 +54,7 @@ import {
   Scope,
   Stream,
 } from "effect";
+import { PROVIDER_DESCRIPTOR_BY_KIND } from "@synara/shared/providerMetadata";
 import { nonEmptyTrimmed } from "@synara/shared/text";
 import { computerApprovalGate } from "../../computer/ComputerApprovalGate.ts";
 
@@ -2724,7 +2725,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               }
             }
 
-            rotationStarted = input.providerThreadId === undefined;
+            // A CLI runtime is stopped after the interrupt and its gateway credential rotated. A
+            // cloud provider's session has neither a local process nor a gateway credential: it
+            // only follows the turn, so it stays and delivers the stopped turn's completion
+            // under the current generation.
+            const rotatesRuntime =
+              input.providerThreadId === undefined &&
+              PROVIDER_DESCRIPTOR_BY_KIND[routed.adapter.provider].runtime === "cli";
+            rotationStarted = rotatesRuntime;
             yield* routed.adapter.interruptTurn(
               input.threadId,
               TurnId.makeUnsafe(providerTurnId),
@@ -2736,6 +2744,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 state: "confirmed",
               });
             }
+            return rotatesRuntime;
           }),
         );
         return yield* Effect.uninterruptible(
@@ -2745,15 +2754,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             // is blocked, deferred interruption must not skip resolve/delete.
             const fence = yield* acquireProviderInterruptionFence(input.threadId);
             const rotationExit = yield* Effect.exit(
-              input.providerThreadId === undefined
-                ? interruptActiveTurn.pipe(
-                    Effect.andThen(
-                      stopRuntimeSessionInternal({ threadId: input.threadId }, undefined, {
+              interruptActiveTurn.pipe(
+                Effect.flatMap((rotatesRuntime) =>
+                  rotatesRuntime
+                    ? stopRuntimeSessionInternal({ threadId: input.threadId }, undefined, {
                         requireAgentGatewayCredentialRotation: true,
-                      }),
-                    ),
-                  )
-                : interruptActiveTurn,
+                      })
+                    : Effect.void,
+                ),
+              ),
             );
             if (Exit.isFailure(rotationExit)) {
               if (rotationStarted) {
@@ -2992,10 +3001,27 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             yield* routed.adapter.stopSession(input.threadId);
             clearLiveRuntimeTasks(input.threadId);
             yield* waitForRuntimeIdleStop(input.threadId);
-            yield* withBindingWriteLock(input.threadId, directory.remove(input.threadId));
-            providerInterruptionFences.delete(input.threadId);
-            lease.retire();
-            retireRuntimeIdleGeneration(input.threadId);
+            yield* Effect.gen(function* () {
+              // Unbound, the thread keeps nothing it held beyond a session. Released first: a
+              // release that fails keeps the binding, whose cursor a retry needs.
+              if (routed.adapter.releaseThread !== undefined) {
+                const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+                yield* routed.adapter.releaseThread({
+                  threadId: input.threadId,
+                  resumeCursor: binding?.resumeCursor,
+                });
+              }
+              yield* withBindingWriteLock(input.threadId, directory.remove(input.threadId));
+            }).pipe(
+              // The session is stopped whether or not its binding could go.
+              Effect.ensuring(
+                Effect.sync(() => {
+                  providerInterruptionFences.delete(input.threadId);
+                  lease.retire();
+                  retireRuntimeIdleGeneration(input.threadId);
+                }),
+              ),
+            );
           }),
         );
       });
@@ -3323,6 +3349,57 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const getCapabilities: ProviderServiceShape["getCapabilities"] = (provider) =>
       registry.getByProvider(provider).pipe(Effect.map((adapter) => adapter.capabilities));
 
+    const reattachTurn: NonNullable<ProviderServiceShape["reattachTurn"]> = (input) =>
+      Effect.gen(function* () {
+        const adapter = yield* registry.getByProvider(input.provider);
+        // A provider that cannot reattach is left to the usual restart path: nothing is read.
+        const reattach = adapter.reattachTurn;
+        if (reattach === undefined) return false;
+        // Under the binding lock, so an event from the reattached turn (even its completion)
+        // updates the binding only after the turn is bound again.
+        yield* withBindingWriteLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+            if (binding?.provider !== input.provider) {
+              return yield* toValidationError(
+                "ProviderService.reattachTurn",
+                `Cannot reattach thread '${input.threadId}' without its ${input.provider} provider binding.`,
+              );
+            }
+            yield* reattach({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              resumeCursor: binding.resumeCursor,
+              runtimeMode: input.runtimeMode,
+              lifecycleGeneration: binding.lifecycleGeneration,
+            });
+            // A graceful shutdown left the binding stopped with no active turn; the turn is live
+            // again, so an interrupt can find it.
+            yield* directory.upsert({
+              threadId: input.threadId,
+              provider: input.provider,
+              status: "running",
+              runtimePayload: { activeTurnId: input.turnId },
+            });
+          }),
+        );
+        return true;
+      });
+
+    const releaseThread: NonNullable<ProviderServiceShape["releaseThread"]> = (input) =>
+      Effect.gen(function* () {
+        const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+        if (binding === undefined) return;
+        const adapter = yield* registry.getByProvider(binding.provider);
+        if (adapter.releaseThread !== undefined) {
+          yield* adapter.releaseThread({
+            threadId: input.threadId,
+            resumeCursor: binding.resumeCursor,
+          });
+        }
+      });
+
     const rollbackConversation: ProviderServiceShape["rollbackConversation"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -3549,6 +3626,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       hasLiveRuntimeTasks,
       clearSessionResumeCursor,
       listSessions,
+      reattachTurn,
+      releaseThread,
       getCapabilities,
       getClaudeCacheObservation,
       startClaudeCompaction,

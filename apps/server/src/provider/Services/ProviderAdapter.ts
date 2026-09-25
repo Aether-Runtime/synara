@@ -35,6 +35,7 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStartOptions,
+  RuntimeMode,
   ServerVoicePrewarmInput,
   ServerVoicePrewarmResult,
   ServerVoiceTranscriptionInput,
@@ -192,6 +193,21 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<void, TError>;
 
   /**
+   * Follow a turn again that kept running while Synara was stopped, because the provider runs
+   * it remotely, from the thread's persisted resume cursor. Startup reconciliation calls it for
+   * each thread whose turn was in flight: success leaves the turn and its requests to the
+   * adapter; a failure fails the turn with the error's message.
+   */
+  readonly reattachTurn?: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly resumeCursor: unknown;
+    readonly runtimeMode: RuntimeMode;
+    /** The binding's lifecycle generation, which the reattached turn's events carry. */
+    readonly lifecycleGeneration: string | undefined;
+  }) => Effect.Effect<void, TError>;
+
+  /**
    * Stop one provider session.
    */
   /**
@@ -202,6 +218,17 @@ export interface ProviderAdapterShape<TError> {
    * the persisted binding can outlive the adapter's in-memory session.
    */
   readonly stopSession: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
+   * The thread was archived, or lost its binding: stop the turn its persisted resume cursor says
+   * is in flight (as archiving or deleting stops a local agent), stop its session, and release
+   * what the adapter holds for the thread's lifetime rather than a session's (a cloud provider's
+   * worktree claim), even when stopping the turn fails. Idempotent.
+   */
+  readonly releaseThread?: (input: {
+    readonly threadId: ThreadId;
+    readonly resumeCursor: unknown;
+  }) => Effect.Effect<void, TError>;
 
   /** Validate and retire before generation rotation; the returned start retains per-attempt preflight. */
   readonly prepareSessionReplacement?: (input: ProviderSessionStartInput) => Effect.Effect<

@@ -233,12 +233,23 @@ function toolStatus(status: AetherToolStatus): ToolStatus {
 // Input decoding
 // ---------------------------------------------------------------------------
 
-const AskUserInput = Schema.Struct({
+/**
+ * An `ask_user` call's input, in Aether's canonical shape (every agent's questions arrive in it):
+ * each question needs its text and its options, each option its label; a question with no
+ * options takes free text. Fields Synara does not read are ignored, as elsewhere in Aether's
+ * responses. The adapter maps answers back onto its option indexes.
+ */
+export const AskUserInput = Schema.Struct({
   questions: Schema.Array(
     Schema.Struct({
       question: Schema.String,
-      header: Schema.String,
-      options: Schema.Array(Schema.Struct({ label: Schema.String, description: Schema.String })),
+      header: Schema.optionalKey(Schema.String),
+      options: Schema.Array(
+        Schema.Struct({
+          label: Schema.String,
+          description: Schema.optionalKey(Schema.String),
+        }),
+      ),
       multiSelect: Schema.optionalKey(Schema.Boolean),
     }),
   ),
@@ -254,7 +265,10 @@ const ProposePlanInput = Schema.Struct({ plan: Schema.String });
 type Answers = Record<string, string | ReadonlyArray<string> | null>;
 type ToolResponse = NonNullable<AetherUserMessage["toolResponse"]>;
 
-/** Synara's question cards need every text field non-empty after trimming. */
+/**
+ * Synara's question cards need the question and every option label non-blank. A blank header or
+ * option description is shown as absent.
+ */
 function questionsFromInput(
   input: unknown,
 ): Result.Result<ReadonlyArray<UserInputQuestion>, string> {
@@ -264,24 +278,22 @@ function questionsFromInput(
   const questions: UserInputQuestion[] = [];
   for (const [index, question] of decoded.value.questions.entries()) {
     const text = question.question.trim();
-    const header = question.header.trim();
+    const header = nonEmpty(question.header);
     const options = question.options.map((option) => ({
       label: option.label.trim(),
-      description: option.description.trim(),
+      description: nonEmpty(option.description),
     }));
-    if (
-      text === "" ||
-      header === "" ||
-      options.some((o) => o.label === "" || o.description === "")
-    ) {
-      return Result.fail(`question ${index} has a blank question, header or option`);
+    if (text === "" || options.some((option) => option.label === "")) {
+      return Result.fail(`question ${index} has a blank question or option label`);
     }
     // Aether keys answers by question index, so the index is the question id.
     questions.push({
       id: String(index),
-      header,
+      ...(header === undefined ? {} : { header }),
       question: text,
-      options,
+      options: options.map(({ label, description }) =>
+        description === undefined ? { label } : { label, description },
+      ),
       multiSelect: question.multiSelect ?? false,
     });
   }
@@ -350,9 +362,19 @@ type RowRecord =
   | { readonly kind: "tasks"; readonly key: string | undefined; readonly terminal: boolean }
   | { readonly kind: "done" };
 
+/**
+ * How much of a turn `resume.after` covers, row by row: Synara already emitted those rows, and
+ * its journal may have pruned them, so they are read for their state but emit nothing. A turn
+ * listed before the mark's is covered whole; the mark's turn up to its run's message and the
+ * rows of that run (`to-mark`, then `at-mark`), and no longer from the next new user message. A
+ * turn's activity never holds its root message, so a mark on the root starts at `at-mark`.
+ */
+type Coverage = "whole" | "to-mark" | "at-mark" | "none";
+
 interface TurnRecord {
   readonly id: AetherTurnId;
   state: TurnState;
+  coverage: Coverage;
   /** `revision_sequence` from the latest turns page. */
   revision: number;
   /** The activity revision last applied; the activity is re-read while it trails `revision`. */
@@ -468,18 +490,30 @@ export class AetherConversationIngest {
   }
 
   /**
-   * Whether the task still has work to watch: an executing run, a busy task, a question or plan
-   * waiting on an answer, a turn still running, a run not signalled yet, or data not read yet.
+   * Whether the task still has work to watch: an executing run, a busy task, a turn still
+   * running, a run not signalled yet, or data not read yet. A question or plan already surfaced
+   * is not: nothing changes on the server until someone answers (`waitsOnUser`).
    */
   shouldKeepPolling(): boolean {
     const { executing, open, turnsRefreshPending, task, turnOrder, turns } = this.state;
     if (executing || open.length > 0 || turnsRefreshPending) return true;
-    if (this.turnsNeedingActivity().length > 0 || this.awaitingAnswer() !== undefined) return true;
+    if (this.turnsNeedingActivity().length > 0) return true;
+    const awaiting = this.awaitingAnswer();
+    if (awaiting !== undefined && !this.state.surfacedToolIds.has(awaiting.tool_id)) return true;
     if (task === undefined || task.status === "queued" || task.status === "processing") return true;
     return turnOrder.some((id) => {
       const turn = turns.get(id)!;
+      if (turn.state === "awaiting_input" && awaiting !== undefined) {
+        return awaiting.kind === "plan" && !this.isSignalled(turn);
+      }
       return (turn.state !== "settled" && turn.state !== "errored") || !this.isSignalled(turn);
     });
+  }
+
+  /** Whether a surfaced question or plan waits on the user. */
+  waitsOnUser(): boolean {
+    const awaiting = this.awaitingAnswer();
+    return awaiting !== undefined && this.state.surfacedToolIds.has(awaiting.tool_id);
   }
 
   applyLive(
@@ -536,6 +570,7 @@ export class AetherConversationIngest {
       const covered = mark === null ? 0 : markAt === -1 ? page.turns.length : markAt + 1;
       state.resumed = new Set(page.turns.slice(0, covered).map((turn) => turn.id));
     }
+    const resumed = state.resumed;
     for (const turn of page.turns) {
       const known = state.turns.get(turn.id);
       if (known !== undefined) {
@@ -543,9 +578,18 @@ export class AetherConversationIngest {
         known.revision = turn.revision_sequence;
         continue;
       }
+      const mark = this.resume.after;
+      const coverage: Coverage = !resumed.has(turn.id)
+        ? "none"
+        : turn.id !== mark?.turnId
+          ? "whole"
+          : mark.runMessageId === turn.root_message.id
+            ? "at-mark"
+            : "to-mark";
       state.turns.set(turn.id, {
         id: turn.id,
         state: turn.state,
+        coverage,
         revision: turn.revision_sequence,
         revisionRead: undefined,
         lastUserMessageId: turn.root_message.id,
@@ -553,6 +597,8 @@ export class AetherConversationIngest {
         lastInputId: undefined,
         rows: new Map(),
       });
+      // A covered turn was bound, or found to be from outside Synara, before.
+      if (coverage !== "none") continue;
       outputs.push({
         _tag: "TurnOrigin",
         turnId: turn.id,
@@ -609,6 +655,11 @@ export class AetherConversationIngest {
     const outputs: AetherIngestOutput[] = [];
     for (const item of items) {
       if (item.role === "user") {
+        if (turn.coverage === "to-mark" && item.id === this.resume.after?.runMessageId) {
+          turn.coverage = "at-mark";
+        } else if (turn.coverage === "at-mark" && !turn.rows.has(item.id)) {
+          turn.coverage = "none";
+        }
         turn.lastUserMessageId = item.id;
         const answered = turn.lastInputId;
         if (
@@ -622,6 +673,7 @@ export class AetherConversationIngest {
         turn.rows.set(item.id, { kind: "done" });
         continue;
       }
+      const rowOutputs: AetherIngestOutput[] = [];
       switch (item.variant) {
         case "text":
         case "thinking": {
@@ -630,16 +682,17 @@ export class AetherConversationIngest {
           if (this.state.open.some((message) => message.id === item.id)) break;
           const text = this.advanceText(item, turnId, true, "activity", observedAt);
           if (Result.isFailure(text)) return text;
-          outputs.push(...text.success);
+          rowOutputs.push(...text.success);
           break;
         }
         case "tool":
-          outputs.push(...this.applyTool(turn, item.id, item.tool, observedAt));
+          rowOutputs.push(...this.applyTool(turn, item.id, item.tool, observedAt));
           break;
         case "seam":
-          outputs.push(...this.applySeam(turn, item.id, item.seam.reason, observedAt));
+          rowOutputs.push(...this.applySeam(turn, item.id, item.seam.reason, observedAt));
           break;
       }
+      if (turn.coverage === "none") outputs.push(...rowOutputs);
     }
     // A read that trails the turns page is applied, and the turn is read again next tick.
     turn.revisionRead = revision;
@@ -869,6 +922,8 @@ export class AetherConversationIngest {
         turn.inputs.set(tool.id, undefined);
         turn.lastInputId = tool.id;
       }
+      // Synara showed a covered call's question or plan before; it is not shown again.
+      if (turn.coverage !== "none") this.state.surfacedToolIds.add(tool.id);
       turn.rows.set(rowId, { kind: "done" });
       return [];
     }

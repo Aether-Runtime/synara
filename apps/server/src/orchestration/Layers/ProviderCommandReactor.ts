@@ -25,6 +25,7 @@ import {
   type ProviderRuntimeEvent,
   ProviderKind,
   type ProviderReviewTarget,
+  type ProviderSendTurnInput,
   type ProviderStartOptions,
   type ProviderSkillReference,
   type ProviderTurnStartResult,
@@ -2224,6 +2225,7 @@ const make = Effect.gen(function* () {
     readonly computerControlGeneration?: number;
     readonly runtimeMode?: RuntimeMode;
     readonly interactionMode?: ProviderInteractionMode;
+    readonly sourceProposedPlan?: ProviderSendTurnInput["sourceProposedPlan"];
     readonly dispatchMode?: "queue" | "steer";
     readonly turnKind?: "user" | "goal-continuation";
     readonly createdAt: string;
@@ -2787,6 +2789,9 @@ const make = Effect.gen(function* () {
       ...(providerMentions !== undefined ? { mentions: providerMentions } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.sourceProposedPlan !== undefined
+        ? { sourceProposedPlan: input.sourceProposedPlan }
+        : {}),
     };
     const sendQueuedProviderTurn = (messageText: string | undefined) =>
       Effect.gen(function* () {
@@ -3644,6 +3649,9 @@ const make = Effect.gen(function* () {
           ? { reviewTarget: event.payload.reviewTarget }
           : {}),
         interactionMode: event.payload.interactionMode,
+        ...(event.payload.sourceProposedPlan !== undefined
+          ? { sourceProposedPlan: event.payload.sourceProposedPlan }
+          : {}),
         dispatchMode: immediateDispatchMode,
         createdAt: event.payload.createdAt,
       }).pipe(
@@ -3651,7 +3659,17 @@ const make = Effect.gen(function* () {
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
             : Effect.gen(function* () {
-                const detail = Cause.pretty(cause);
+                const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
+                // A lone typed failure shows as its message; anything else (a defect, or a
+                // failure with a failed finalizer) shows in full. The log keeps the full cause.
+                const detail =
+                  failure instanceof Error && cause.reasons.length === 1
+                    ? failure.message
+                    : Cause.pretty(cause);
+                yield* Effect.logWarning("provider turn start failed", {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(cause),
+                });
                 yield* appendProviderFailureActivity({
                   threadId: event.payload.threadId,
                   kind: "provider.turn.start.failed",
@@ -3660,7 +3678,6 @@ const make = Effect.gen(function* () {
                   turnId: null,
                   createdAt: event.payload.createdAt,
                 });
-                const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
                 // A refused configuration change leaves the existing runtime and
                 // its live turn intact. Do not project a false terminal state.
                 if (
@@ -5682,20 +5699,42 @@ const make = Effect.gen(function* () {
           });
           yield* clearThreadRuntimeCaches(event.payload.threadId);
           return;
-        case "thread.archived":
+        case "thread.archived": {
           if (Option.isSome(computerService))
             yield* Effect.promise(() =>
               computerService.value.manager.handleThreadRemoved(event.payload.threadId),
             );
+          // Legacy thread.archived events may omit archivedAt; fall back like the projector.
+          const archivedAt =
+            event.payload.archivedAt ?? event.payload.updatedAt ?? event.occurredAt;
           // Archive cleanup shares this durable, sequence-ordered provider
           // source with later turn-start intents. An immediate unarchive/send
           // therefore cannot race an older archive stop against the new turn.
           yield* processThreadSessionStop({
             threadId: event.payload.threadId,
-            // Legacy thread.archived events may omit archivedAt; fall back like the projector.
-            createdAt: event.payload.archivedAt ?? event.payload.updatedAt ?? event.occurredAt,
+            createdAt: archivedAt,
           });
+          // The binding stays, so the thread can resume; what it held beyond a session (an
+          // Aether worktree claim) does not, so retention can prune its worktree. The release
+          // lets go of that even when stopping the turn in flight fails, so the failure is only
+          // shown: failing the archive would block the thread's later messages.
+          if (providerService.releaseThread) {
+            yield* providerService.releaseThread({ threadId: event.payload.threadId }).pipe(
+              Effect.catch((error) =>
+                appendProviderFailureActivity({
+                  threadId: event.payload.threadId,
+                  kind: "provider.session.stop.failed",
+                  summary: "Provider session stop failed",
+                  detail: error.message,
+                  turnId: null,
+                  createdAt: archivedAt,
+                  settlementStatus: "uncertain",
+                }),
+              ),
+            );
+          }
           return;
+        }
         case "thread.unarchived":
           if (Option.isSome(computerService))
             yield* Effect.promise(() =>

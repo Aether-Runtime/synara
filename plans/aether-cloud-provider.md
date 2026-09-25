@@ -105,6 +105,102 @@ auto_fix_*: false}` → `{id}`. Persist the resume cursor `{schemaVersion, taskI
 - Interrupt: `POST /tasks/{id}/stop {discard_queued_messages: true}`; discarded text is surfaced
   as a warning.
 
+As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResumeCursor.ts`,
+`aetherTaskBase.ts`):
+
+- The resume cursor is `creating` (worktree path, idempotency key) until `POST /tasks` succeeds,
+  then `created`: worktree path, task, project, base branch and commit, model, the Synara turns
+  (`turns`: the task's own first, then the ones sent with a respond, never empty), the accepted
+  respond count (`sends`), the last settled run (`after`), whether the last turn is in flight
+  (`active`, so the turn in flight cannot name a turn outside `turns`) and `mirrorPending`. It is
+  parsed strictly: unknown keys are refused. The idempotency key is made at `startSession`,
+  so it is persisted before the first send. A respond's `client_message_id` is derived from the
+  task, `sends` and the request: a retry of the same request, even after a restart, reuses it; any
+  other request gets a new one. A Synara turn's id is its send's id (the idempotency key for the
+  first turn), so a retry after a lost response is the same turn. A lost send's ledger entry is
+  never persisted, so the retry finds the Aether turn it started on the turns page by its
+  `client_message_id` and binds to it. It completes at once only if the poll loop already settled
+  (and mirrored) that run; otherwise the loop settles it and the turn completes after its mirror.
+- Synara's worktree creation keeps only the commit, not the branch it came from. The base branch
+  is the Aether project's default branch when its tip on origin is the worktree's HEAD (Aether's
+  own task branches often sit at a past tip of it), otherwise the one branch on origin at HEAD.
+  None (unpushed or behind) or several is a loud error. The project is matched by host, owner
+  and repository.
+- Answers are fenced by `expected_tool_id` only: `expected_input_digest` would need Go
+  `encoding/json` bytes reproduced exactly. A plan is answered by the next message. Synara's
+  Implement action (a turn carrying `sourceProposedPlan`, which the command reactor hands to the
+  provider) approves it with `interaction_mode: "default"`, since Aether keeps the current mode
+  when a plan answer omits it; any other message is feedback (`approved: false` with the text),
+  and the task stays in plan mode. A plan answer whose response was lost is retried as the same
+  answer (its entry is still in `turns`), though the plan no longer waits: Aether returns the
+  original message for the same `client_message_id` before it checks the fence, so the agent is
+  not asked twice. The run it started is named by that message, which completes the turn at once
+  only if the loop already settled it. Which plan was answered is kept in memory, so a retry after
+  a restart is sent as a new message.
+- `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident.
+  `steerTurn` sends without it while the steered turn's Aether run is running, and Aether hands it
+  to the running agent; when that run has already settled (Synara has not seen it yet) or has not
+  started, it sends it queued. Either way Aether gives the steer a turn of its own (a turns-page
+  root: since Aether #5637 a message is never bundled into another turn, and a steered one keeps
+  its own conversation turn), bound by its `client_message_id` to the Synara turn, which then
+  completes only when that turn settles and is mirrored. When the agent reads a steer, the turn it
+  steered reads `settled` while the steer's turn runs, so it is mirrored without completing
+  anything. A stop discards a steer the agent has not read; the Synara turn then waits on its run
+  that is executing, if any. A steer whose response was lost is forgotten, so the turn goes on
+  waiting on its own run; if it did land, its turn is from outside Synara until the steer is sent
+  again, which binds it.
+- An Aether turn is Synara's if and only if it is the task's own first turn, or its root message
+  carries a `client_message_id` the adapter derived for this task (a message, a plan answer or a
+  steer, each recorded in `turns`); any other turn is from outside Synara.
+- While a surfaced question or plan waits and nothing runs, the poll loop reads `/live` every
+  15 s instead of every second, so an answer given in Aether's own UI shows within 15 s; sending
+  an answer wakes it at once. A message sent while a question waits is refused, pointing to Aether
+  when Synara no longer shows the question (its turn failed when the loop stopped), and wakes the
+  loop, which picks up an answer given there.
+- A turn completes exactly once: when its run settles, after the mirror; when the poll loop stops
+  (failed); or on a stop that discards it before it ran (interrupted). ProviderService stops a
+  local runtime after every interrupt (and rotates its gateway credential); for a provider whose
+  descriptor says `runtime: "cloud"` it keeps the session and its lifecycle generation instead: the
+  session goes on reporting the stopped turn as running, so the live reconciler leaves it alone,
+  and the turn's `turn.completed(interrupted)` arrives after its mirror under the current
+  generation. The settle records `after`
+  and clears `active` in the cursor first. If the workspace is not running (starting, or its
+  connect refused for its state) the turn completes and `mirrorPending` mirrors at the next turn
+  start, from inside `sendTurn`, after the reactor's start checkpoint; any other mirror failure
+  (an API or socket error, local edits, a file too large, a refused path, a moved base) fails the
+  turn with its reason.
+- A request Aether refused (not configured, 402, 409, a 4xx other than 408 and 429) changed
+  nothing, so it fails as a validation error, which the command reactor rejects without
+  quarantining the thread; a 5xx, timeout or transport error may have landed and stays
+  uncertain. A refused create also replaces the creating cursor's idempotency key. Aether's own
+  error messages are shown as they are.
+- At construction the adapter claims again the worktree of every Aether thread neither archived
+  nor deleted. A claim lasts until the thread is archived (the command reactor calls
+  `ProviderService.releaseThread`, which keeps the binding so the thread can resume and claim it
+  again) or loses its binding (`ProviderService.stopSession`, as deleting a thread does, releases it
+  before it removes the binding, so a failed release keeps the cursor for a retry); both
+  reach the adapter's `releaseThread`, so retention and deletion can remove the worktree. It first
+  stops (`POST /stop`, discarding queued messages) the turn the thread's persisted cursor says is
+  in flight, since Synara could not stop it afterwards; a failed stop is logged with the task id
+  and fails the call, and the worktree is released anyway. The idle reaper and a shutdown only
+  detach. Startup
+  reconciliation asks the provider to follow each turn in flight again
+  (`ProviderService.reattachTurn` → the adapter's `reattachTurn`): a reattached turn and its
+  requests are left to the adapter, and its binding is marked running with that turn again (a
+  graceful shutdown cleared it), so it can still be stopped; a turn that cannot be reattached (the worktree is gone, the
+  cursor is unreadable) fails with the reason. A thread the adapter already follows keeps its
+  session when that session's turn in flight is the one asked for; otherwise the reattach is
+  refused, since a second session would follow the task twice. A cursor still `creating` fails the turn too,
+  asking for the message again: the create's request is not persisted, so it cannot be retried,
+  but the idempotency key is, so the same message continues any task the lost create made.
+  Revert cleanup and the dangling-turn repair apply to every thread.
+- A resumed loop emits nothing for the history `after` covers (every turn before its turn, and
+  its turn up to the run it names, which starts right away when it names the root message, since
+  a turn's activity never holds its root): Synara emitted it before, and the runtime event journal
+  prunes the rows of completed turns. It reads those rows only for their state. The journal holds
+  every row of the turn in flight, so the adapter reads that turn's events only: their ids, which
+  it drops when the loop derives them again, and the text already streamed (`emittedText`).
+
 ### Ingestion and settlement
 
 - While a turn is active, one single-flight poll loop per task: read `/conversation/live` for open
@@ -200,7 +296,8 @@ wires it into the adapter:
   restore, and the first-turn branch rename, which also pushes. Guard the first two; skip the
   rename+push for Aether threads.
 - Synara's idle reaper stops sessions after 30 minutes. For Aether, `stopSession` detaches (the
-  cloud task keeps running) and must be idempotent; the ownership marker must outlive the session.
+  cloud task keeps running) and must be idempotent; the ownership marker must outlive the session,
+  until the thread is archived or unbound.
 - `startupTurnReconciliation` marks every running turn interrupted at boot. Aether turns must be
   exempt and reconciled from REST instead.
 
@@ -236,7 +333,7 @@ there — acceptable, documented.
 | Conversation, tools, reasoning, questions, plans | Works                                                                                                                                              |
 | Diffs, checkpoints, file viewer                  | Works via mirror sync                                                                                                                              |
 | Revert / rollback                                | Refused before touching files — add `"unsupported"` to the rollback capability                                                                     |
-| Model switch                                     | `restart-session` or `unsupported` (decide in P4)                                                                                                  |
+| Model switch                                     | `unsupported`: a task's agent and model are fixed when it is created                                                                               |
 | Steering                                         | Native steer via `/respond`                                                                                                                        |
 | Thread fork                                      | Transcript replay (no native `forkThread`); fork starts from the branch, not the mirrored tree                                                     |
 | Provider handoff to/from Aether                  | Needs design: to Aether requires a clean pushed tree; from Aether must release ownership first                                                     |
