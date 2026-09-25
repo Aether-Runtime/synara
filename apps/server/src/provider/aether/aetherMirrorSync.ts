@@ -15,6 +15,11 @@
 // Reset-then-apply rebuilds the whole state from the base every time, so turn N+1 never needs
 // an interdiff and a failed sync heals on the next one.
 //
+// The reset target is the commit the caller created the task from. The diff's own `baseRef` names
+// a ref on the VM (such as `origin/main`) and is not used. A diff taken against a merge-base that
+// moved on the VM usually fails the check; when its hunks happen to apply, the mirror shows the
+// agent's changes on the original base.
+//
 // Local edits: the record lives in the worktree's own Git directory, keyed by task, so a restart
 // between a sync and the adapter's own persistence cannot make the mirror's changes look like
 // local edits. A worktree that matches neither the record nor a clean checkout of the base fails

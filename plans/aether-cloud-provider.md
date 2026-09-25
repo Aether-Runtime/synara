@@ -131,6 +131,27 @@ diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same me
 - If the VM is suspended at turn end, settle now and sync lazily at the next turn start (viewing
   never boots a VM).
 
+Built in P5b as `syncAetherMirror` (`apps/server/src/provider/aether/aetherMirrorSync.ts`); P4
+wires it into the adapter:
+
+- Network reads (the diff and every binary file) and a `git apply --cached --check` against the
+  base happen before the repository lock, so a transport failure or a stale diff changes nothing.
+  The reset, apply, binary writes and fingerprint then run inside `GitCore.withMutation` with the
+  provider's claim.
+- Result: `synced {fingerprint, filesChanged, modeOnlyPaths}` or `unchanged {fingerprint}` (the
+  worktree already held that state and was not rewritten). Failures are tagged errors:
+  `MirrorDiffRebuildError`, `MirrorApplyFailedError`, `MirrorTooLargeError` (path and `maxBytes`),
+  `MirrorPathEscapeError`, `MirrorLocalEditsError`, `MirrorTransportError`, and P5a's
+  `WorktreeOwnedError` if the claim is gone.
+- Local edits: each sync records the tree it produced (HEAD plus the worktree's content tree) in
+  the worktree's Git directory, keyed by task. A worktree that matches neither that record nor a
+  clean checkout of the base fails with `MirrorLocalEditsError` naming the changed paths, and
+  nothing is touched. Resetting the worktree to the base is always accepted; that is how a user
+  resumes.
+- The wire has no file modes: new files are written 100644, and mode-only changes are reported in
+  `modeOnlyPaths`, not applied. A `too_large` deletion is mirrored (it needs no content); any other
+  `too_large` entry fails the sync.
+
 ### Worktree ownership and the mirror guard
 
 - Synara creates worktrees from the **web client** on first send and has no server-side "managed"
