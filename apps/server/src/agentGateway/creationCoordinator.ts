@@ -643,19 +643,13 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                 Effect.map((result) => result.stdout.trim()),
                 Effect.mapError((error) => new ToolInputError(errorText(error))),
               );
-            // A worktree based on the source checkout's HEAD carries its changes, which a
-            // provider that owns its worktree cannot take.
-            if (
-              sourceHead === worktreeRef &&
-              !providerSupportsFeature(target.provider, "copy-changes")
-            ) {
-              return yield* Effect.fail(
-                new ToolInputError(
-                  providerFeatureUnavailableMessage(target.provider, "copy-changes"),
-                ),
-              );
-            }
-            copyChangesFrom = sourceHead === worktreeRef ? sourceCwd : null;
+            // A worktree based on the source checkout's HEAD carries its changes, except for a
+            // provider that owns its worktree: it clones from origin and resets the worktree
+            // every turn, so it starts from the commit alone, as the web's first send does.
+            copyChangesFrom =
+              sourceHead === worktreeRef && providerSupportsFeature(target.provider, "copy-changes")
+                ? sourceCwd
+                : null;
             plannedWorktreePath = join(
               serverConfig.worktreesDir,
               stableGatewayDigest({ operationId, index }, 12),
