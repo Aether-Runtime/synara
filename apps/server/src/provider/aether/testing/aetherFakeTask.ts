@@ -215,7 +215,11 @@ export function makeFakeAetherTask() {
           const row: Json = {
             id,
             role: "user",
-            content: request.message,
+            // Aether keeps an answer's content as the answer it read.
+            content:
+              answer === undefined
+                ? request.message
+                : JSON.stringify({ tool_name: answer.tool_name, data: answer.data }),
             clientMessageId: request.client_message_id,
             ...(answer === undefined
               ? {}
@@ -223,6 +227,10 @@ export function makeFakeAetherTask() {
           };
           const current = running();
           if (answer !== undefined && current !== undefined) {
+            for (const item of current.items) {
+              const tool = item.tool as Json | undefined;
+              if (tool?.id === answer.expected_tool_id) tool.status = "approval-responded";
+            }
             current.items.push(row);
             current.state = "running";
             task = { status: "processing", awaiting: {} };
@@ -253,6 +261,13 @@ export function makeFakeAetherTask() {
         turns.splice(0, turns.length, ...turns.filter((turn) => turn.state !== "queued"));
         for (const turn of turns) {
           if (turn.state === "running" || turn.state === "awaiting_input") {
+            // Aether records the stop in the stopped turn, as a user message with no text.
+            turn.items.push({
+              id: messageId(),
+              role: "user",
+              content: "",
+              messageEvent: { kind: "task_stopped" },
+            });
             turn.state = "settled";
             bump(turn);
           }
@@ -387,7 +402,8 @@ export function makeFakeAetherTask() {
           id: toolId,
           name: "ask_user",
           input,
-          status: "input-available",
+          status: "approval-requested",
+          itemType: "dynamic_tool_call",
           display: { label: "Ask" },
         },
       });
@@ -405,6 +421,7 @@ export function makeFakeAetherTask() {
           name: "propose_plan",
           input: { plan },
           status: "approval-requested",
+          itemType: "plan",
           display: { label: "Plan" },
         },
       });
