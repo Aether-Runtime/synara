@@ -1140,6 +1140,56 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it.each([
+    [
+      "a typed failure by its message",
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "aether",
+          method: "createTask",
+          detail: "Reconnect Claude Code in Settings → Connections before starting a task.",
+        }),
+      ),
+      (detail: string) =>
+        expect(detail).toBe(
+          "Provider adapter request failed (aether) for createTask: Reconnect Claude Code in Settings → Connections before starting a task.",
+        ),
+    ],
+    [
+      "a defect in full",
+      Effect.die(new Error("adapter bug")),
+      (detail: string) => {
+        expect(detail).toContain("Error: adapter bug");
+        expect(detail).toContain("ProviderCommandReactor.test.ts");
+      },
+    ],
+  ] as const)("shows a turn start failure: %s", async (_name, sendFailure, check) => {
+    const harness = await createHarness();
+    harness.sendTurn.mockImplementationOnce(() => sendFailure);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-failure-detail"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: MessageId.makeUnsafe("turn-start-failure-detail"),
+          role: "user",
+          text: "Try",
+          attachments: [],
+        },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    const failure = async () =>
+      (await readHarnessThread(harness))?.activities.find(
+        (activity) => activity.kind === "provider.turn.start.failed",
+      );
+    await waitFor(async () => (await failure()) !== undefined);
+    check(((await failure())?.payload as { readonly detail: string }).detail);
+  });
+
   async function seedRollbackTarget(
     harness: Awaited<ReturnType<typeof createHarness>>,
     input: {

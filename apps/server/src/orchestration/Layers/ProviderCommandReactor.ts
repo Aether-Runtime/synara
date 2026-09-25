@@ -3651,7 +3651,17 @@ const make = Effect.gen(function* () {
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
             : Effect.gen(function* () {
-                const detail = Cause.pretty(cause);
+                const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
+                // A lone typed failure shows as its message; anything else (a defect, or a
+                // failure with a failed finalizer) shows in full. The log keeps the full cause.
+                const detail =
+                  failure instanceof Error && cause.reasons.length === 1
+                    ? failure.message
+                    : Cause.pretty(cause);
+                yield* Effect.logWarning("provider turn start failed", {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(cause),
+                });
                 yield* appendProviderFailureActivity({
                   threadId: event.payload.threadId,
                   kind: "provider.turn.start.failed",
@@ -3660,7 +3670,6 @@ const make = Effect.gen(function* () {
                   turnId: null,
                   createdAt: event.payload.createdAt,
                 });
-                const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
                 // A refused configuration change leaves the existing runtime and
                 // its live turn intact. Do not project a false terminal state.
                 if (
