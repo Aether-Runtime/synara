@@ -14,23 +14,6 @@ import {
 } from "./sessionLease.ts";
 
 describe("AgentGatewaySessionLease", () => {
-  it("never issues a gateway credential to a provider that cannot reach the gateway", () => {
-    const connectionForThread = vi.fn(() => ({
-      url: "http://127.0.0.1:48123/mcp",
-      bearerToken: "gateway-token",
-    }));
-    const lease = acquireAgentGatewaySessionLease(
-      { connectionForThread, revokeSessionToken: vi.fn() },
-      ThreadId.makeUnsafe("thread-cloud"),
-      "aether",
-      { enableComputerControl: true },
-    );
-
-    // No credential means no browser, device or computer tools for the cloud agent.
-    expect(lease).toBeUndefined();
-    expect(connectionForThread).not.toHaveBeenCalled();
-  });
-
   it("cancels one exact turn while the provider session lease is live", async () => {
     const cancelSessionTurnRequests = vi.fn(() => Promise.resolve());
     const lease = acquireAgentGatewaySessionLease(

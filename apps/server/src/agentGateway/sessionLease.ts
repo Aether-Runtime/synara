@@ -1,5 +1,4 @@
 import type { ProviderKind, ThreadId } from "@synara/contracts";
-import { providerReachesAgentGateway } from "@synara/shared/providerMetadata";
 import { Effect, Exit } from "effect";
 
 import type {
@@ -206,9 +205,7 @@ export function acquireAgentGatewaySessionLease(
   provider: ProviderKind,
   capabilityInput: AgentGatewayCapabilityInput,
 ): AgentGatewaySessionLease | undefined {
-  // Browser, device and computer tools are granted only through this credential, so a
-  // provider whose agent cannot reach the gateway (Aether's cloud VM) is never issued one.
-  if (credentials === undefined || !providerReachesAgentGateway(provider)) return undefined;
+  if (credentials === undefined) return undefined;
 
   const options = agentGatewaySessionLeaseOptionsFor(capabilityInput);
   const connection =

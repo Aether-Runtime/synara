@@ -149,9 +149,7 @@ function asRuntimePayloadRecord(value: unknown): Record<string, unknown> {
 function makeFakeCodexAdapter(
   provider: ProviderKind = "codex",
   options?: {
-    readonly conversationRollback?: "native" | "restart-session" | "unsupported";
-    readonly reachesAgentGateway?: boolean;
-    readonly managesWorktreeBranch?: boolean;
+    readonly conversationRollback?: "native" | "restart-session";
     readonly didResumeSession?: NonNullable<
       ProviderAdapterShape<ProviderAdapterError>["didResumeSession"]
     >;
@@ -313,12 +311,6 @@ function makeFakeCodexAdapter(
       ...(options?.conversationRollback
         ? { conversationRollback: options.conversationRollback }
         : {}),
-      ...(options?.reachesAgentGateway !== undefined
-        ? { reachesAgentGateway: options.reachesAgentGateway }
-        : {}),
-      ...(options?.managesWorktreeBranch !== undefined
-        ? { managesWorktreeBranch: options.managesWorktreeBranch }
-        : {}),
     },
     startSession,
     ...(provider === "claudeAgent" ? { prepareSessionReplacement } : {}),
@@ -429,7 +421,6 @@ function makeProviderServiceLayer(
   providers?: {
     readonly includeRestartRollbackDroid?: boolean;
     readonly includePi?: boolean;
-    readonly includeCloudAether?: boolean;
     readonly codexDidResumeSession?: NonNullable<
       ProviderAdapterShape<ProviderAdapterError>["didResumeSession"]
     >;
@@ -444,11 +435,6 @@ function makeProviderServiceLayer(
   const antigravity = makeFakeCodexAdapter("antigravity");
   const droid = makeFakeCodexAdapter("droid", { conversationRollback: "restart-session" });
   const pi = makeFakeCodexAdapter("pi");
-  const aether = makeFakeCodexAdapter("aether", {
-    conversationRollback: "unsupported",
-    reachesAgentGateway: false,
-    managesWorktreeBranch: true,
-  });
   const registry: typeof ProviderAdapterRegistry.Service = {
     getByProvider: (provider) =>
       provider === "codex"
@@ -461,9 +447,7 @@ function makeProviderServiceLayer(
               ? Effect.succeed(droid.adapter)
               : provider === "pi" && providers?.includePi === true
                 ? Effect.succeed(pi.adapter)
-                : provider === "aether" && providers?.includeCloudAether === true
-                  ? Effect.succeed(aether.adapter)
-                  : Effect.fail(new ProviderUnsupportedError({ provider })),
+                : Effect.fail(new ProviderUnsupportedError({ provider })),
     listProviders: () =>
       Effect.succeed([
         "codex",
@@ -471,7 +455,6 @@ function makeProviderServiceLayer(
         "antigravity",
         ...(providers?.includeRestartRollbackDroid === true ? (["droid"] as const) : []),
         ...(providers?.includePi === true ? (["pi"] as const) : []),
-        ...(providers?.includeCloudAether === true ? (["aether"] as const) : []),
       ] as const),
   };
 
@@ -498,7 +481,6 @@ function makeProviderServiceLayer(
     antigravity,
     droid,
     pi,
-    aether,
     layer,
     rawLayer,
   };
@@ -650,7 +632,6 @@ const restartRollbackRouting = makeProviderServiceLayer(undefined, {
   includeRestartRollbackDroid: true,
 });
 const piInteractionRouting = makeProviderServiceLayer(undefined, { includePi: true });
-const cloudRouting = makeProviderServiceLayer(undefined, { includeCloudAether: true });
 const adapterConfirmedFreshRouting = makeProviderServiceLayer(undefined, {
   codexDidResumeSession: () => false,
 });
@@ -4846,7 +4827,8 @@ rotationRetry.layer("ProviderServiceLive credential rotation event durability", 
   );
 });
 
-cloudRouting.layer("ProviderServiceLive cloud provider capabilities", (it) => {
+routing.layer("ProviderServiceLive cloud provider capabilities", (it) => {
+  // Read from the provider descriptor before any adapter is looked up: none is registered here.
   it.effect("refuses Computer Use for a provider that cannot reach the agent gateway", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
@@ -4867,29 +4849,6 @@ cloudRouting.layer("ProviderServiceLive cloud provider capabilities", (it) => {
             "Computer Use, browser automation and device tools are unavailable with Aether: its agent cannot reach Synara's agent gateway.",
         }),
       );
-      assert.equal(cloudRouting.aether.startSession.mock.calls.length, 0);
-    }),
-  );
-
-  it.effect("refuses a conversation rollback before touching the provider", () =>
-    Effect.gen(function* () {
-      const provider = yield* ProviderService;
-      const threadId = asThreadId("thread-aether-rollback");
-      yield* provider.startSession(threadId, {
-        provider: "aether",
-        threadId,
-        runtimeMode: "full-access",
-      });
-      const result = yield* Effect.result(provider.rollbackConversation({ threadId, numTurns: 1 }));
-      assertFailure(
-        result,
-        new ProviderValidationError({
-          operation: "ProviderService.rollbackConversation",
-          issue:
-            "Aether cannot roll back its conversation, so reverting changes or editing earlier messages is unavailable in this thread.",
-        }),
-      );
-      assert.equal(cloudRouting.aether.rollbackThread.mock.calls.length, 0);
     }),
   );
 });

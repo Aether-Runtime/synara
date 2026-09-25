@@ -1,5 +1,5 @@
 import type { ProviderKind } from "@synara/contracts";
-import { providerReachesAgentGateway } from "@synara/shared/providerMetadata";
+import { PROVIDER_DESCRIPTOR_BY_KIND } from "@synara/shared/providerMetadata";
 
 import { computerToolInstructions } from "./computerGuidance.ts";
 
@@ -84,7 +84,10 @@ export function providerHasSynaraGatewayControl(input: {
   readonly provider: ProviderKind;
   readonly scopedGatewayConnectionAvailable: boolean;
 }): boolean {
-  return input.scopedGatewayConnectionAvailable && providerReachesAgentGateway(input.provider);
+  return (
+    input.scopedGatewayConnectionAvailable &&
+    PROVIDER_DESCRIPTOR_BY_KIND[input.provider].reachesAgentGateway
+  );
 }
 
 /** Return the private host-context block exactly once for one provider session. */

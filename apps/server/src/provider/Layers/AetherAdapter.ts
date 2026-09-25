@@ -32,10 +32,7 @@ export function makeAetherAdapter(): AetherAdapterShape {
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "unsupported",
-      // The cloud task cannot rewind, and the mirror would overwrite a reverted worktree.
-      conversationRollback: "unsupported",
-      // The VM cannot reach the local agent gateway: no goals, computer, browser or devices.
-      reachesAgentGateway: false,
+      conversationRollback: "restart-session",
       // Every Aether thread runs in a worktree the mirror owns (plans/aether-cloud-provider.md).
       managesWorktreeBranch: true,
       supportsSkillMentions: false,

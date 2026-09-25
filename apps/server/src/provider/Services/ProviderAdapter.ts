@@ -66,21 +66,14 @@ export interface ProviderSteerSubagentPayload {
   readonly skills?: ProviderSendTurnInput["skills"];
   readonly mentions?: ProviderSendTurnInput["mentions"];
 }
-/**
- * `native` rewinds provider history, `restart-session` rebuilds context locally, and
- * `unsupported` refuses checkpoint revert and edit-and-resend before any file is touched.
- */
-export type ProviderConversationRollbackMode = "native" | "restart-session" | "unsupported";
+export type ProviderConversationRollbackMode = "native" | "restart-session";
 
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
-  /**
-   * Restart-session adapters cannot rewind provider history and must rebuild context locally.
-   * Defaults to native. Mirrored by `supportsConversationRollback` in the shared descriptors.
-   */
+  /** Restart-session adapters cannot rewind provider history and must rebuild context locally. */
   readonly conversationRollback?: ProviderConversationRollbackMode;
   readonly supportsSkillMentions?: boolean;
   readonly supportsSkillDiscovery?: boolean;
@@ -94,18 +87,9 @@ export interface ProviderAdapterCapabilities {
   /**
    * True when the provider owns the thread worktree's branch (e.g. it mirrors a
    * remote branch into the worktree), so Synara must not rename or push it on
-   * the first turn. Its threads always run in a new worktree, and features that
-   * share, copy into, or branch from the local checkout are refused. Defaults to
-   * false. Mirrored by `managesWorktreeBranch` in the shared descriptors.
+   * the first turn. Defaults to false.
    */
   readonly managesWorktreeBranch?: boolean;
-  /**
-   * False when the provider's agent cannot reach Synara's local agent gateway
-   * (it runs in a cloud VM), so it gets no synara_* tools: no thread goals,
-   * Computer Use, browser automation or device tools. Defaults to true.
-   * Mirrored by `reachesAgentGateway` in the shared descriptors.
-   */
-  readonly reachesAgentGateway?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

@@ -281,7 +281,7 @@ describe("ProviderCommandReactor", () => {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session" | "restart-session";
-    readonly conversationRollback?: "native" | "restart-session" | "unsupported";
+    readonly conversationRollback?: "native" | "restart-session";
     readonly managesWorktreeBranch?: boolean;
     readonly checkpointStore?: Partial<CheckpointStoreShape>;
     readonly studioOutputReactor?: Partial<StudioOutputReactorShape>;
@@ -8304,7 +8304,6 @@ describe("ProviderCommandReactor", () => {
   it("refuses an edit resend up front for a provider that cannot roll back", async () => {
     const harness = await createHarness({
       threadModelSelection: { provider: "aether", model: "claude-opus-5-5" },
-      conversationRollback: "unsupported",
       managesWorktreeBranch: true,
     });
     const now = new Date().toISOString();
