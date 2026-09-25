@@ -271,7 +271,7 @@ export function useChatTurnExecution({
       let switchedToLocalCheckout = false;
       let turnStartSucceeded = false;
       let settledLocalBranchUpdatedForSend = false;
-      let worktreeResetError: string | null = null;
+      let worktreeCleanupError: string | null = null;
       await (async () => {
         // "Work locally" from the setup card: drop any prepared worktree and
         // point the send (and the thread's metadata) back at the project
@@ -732,7 +732,13 @@ export function useChatTurnExecution({
             })
             .then(
               () => true,
-              () => false,
+              (error: unknown) => {
+                // The worktree this send made stays on disk; say so rather than leave it unseen.
+                worktreeCleanupError = `The worktree made for this send could not be removed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`;
+                return false;
+              },
             );
           if (removed && isServerThread) {
             // A provider that owns its worktree goes back to "no worktree yet", never Local.
@@ -760,7 +766,7 @@ export function useChatTurnExecution({
                 (error: unknown) => {
                   // The thread still points at the removed worktree, so the next send would
                   // skip creating one: say so rather than leave it stale.
-                  worktreeResetError = `The thread still points at its removed worktree: ${
+                  worktreeCleanupError = `The thread still points at its removed worktree: ${
                     error instanceof Error ? error.message : String(error)
                   }`;
                 },
@@ -823,7 +829,7 @@ export function useChatTurnExecution({
           updateSelectedComposerMentions(composerMentionsSnapshot);
           setComposerTrigger(detectComposerTrigger(promptForSend, promptForSend.length));
         }
-        if (!setupCancelled || worktreeResetError !== null) {
+        if (!setupCancelled || worktreeCleanupError !== null) {
           setThreadError(
             threadIdForSend,
             [
@@ -832,7 +838,7 @@ export function useChatTurnExecution({
                 : err instanceof Error
                   ? err.message
                   : "Failed to send message.",
-              worktreeResetError,
+              worktreeCleanupError,
             ]
               .filter((message) => message !== null)
               .join(" "),

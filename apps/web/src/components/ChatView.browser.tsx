@@ -1323,6 +1323,7 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
 
 function installDeterministicSendNativeApi(options?: {
   rejectTurnStart?: boolean;
+  rejectRemoveWorktree?: boolean;
   rejectCommand?: (
     command: Parameters<NativeApi["orchestration"]["dispatchCommand"]>[0],
   ) => boolean;
@@ -1351,6 +1352,16 @@ function installDeterministicSendNativeApi(options?: {
             ReturnType<typeof wsNativeApi.git.createDetachedWorktree>
           >;
         },
+        ...(options?.rejectRemoveWorktree
+          ? {
+              removeWorktree: async (
+                input: Parameters<typeof wsNativeApi.git.removeWorktree>[0],
+              ) => {
+                wsRequests.push({ _tag: WS_METHODS.gitRemoveWorktree, ...input });
+                throw new Error("Worktree removal failed for test.");
+              },
+            }
+          : {}),
       },
       terminal: {
         ...wsNativeApi.terminal,
@@ -8636,95 +8647,117 @@ describe("ChatView transcript geometry (full app)", () => {
     },
   );
 
-  it("resets a failed first Aether send to a new worktree and surfaces a refused reset", async () => {
-    const restoreNativeApi = installDeterministicSendNativeApi({
-      rejectTurnStart: true,
-      rejectCommand: (command) =>
-        command.type === "thread.meta.update" && command.worktreePath === null,
-    });
-    const snapshot = addThreadToSnapshot(
-      createSnapshotForTargetUser({
-        targetMessageId: "msg-user-aether-failed-first-send" as MessageId,
-        targetText: "aether failed first send",
-      }),
-      OTHER_THREAD_ID,
-    );
-    // The added thread is last: an Aether thread with no turn yet, in worktree mode.
-    const addedThread = snapshot.threads.at(-1)!;
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: {
-        ...snapshot,
-        threads: [
-          ...snapshot.threads.slice(0, -1),
-          {
-            ...addedThread,
-            modelSelection: { provider: "aether", model: "claude-opus-5-5" },
-            envMode: "worktree",
-            session: null,
-          },
-        ],
+  it.each([
+    [
+      "a refused reset",
+      {
+        rejectCommand: (command: Parameters<NativeApi["orchestration"]["dispatchCommand"]>[0]) =>
+          command.type === "thread.meta.update" && command.worktreePath === null,
       },
-      configureFixture: (nextFixture) => {
-        const providers: ServerConfig["providers"] = [
-          ...nextFixture.serverConfig.providers,
-          {
-            provider: "aether",
-            status: "ready",
-            available: true,
-            authStatus: "authenticated",
-            checkedAt: NOW_ISO,
-          },
-        ];
-        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
-        nextFixture.providerStatusesSnapshot = providers;
-        const settings = createBrowserTestServerSettings(NOW_ISO);
-        nextFixture.serverSettings = {
-          ...settings,
-          providers: {
-            ...settings.providers,
-            aether: { ...settings.providers.aether, enabled: true },
-          },
-        };
-      },
-    });
-
-    try {
-      await mounted.router.navigate({ to: "/$threadId", params: { threadId: OTHER_THREAD_ID } });
-      await waitForURL(
-        mounted.router,
-        (pathname) => pathname === `/${OTHER_THREAD_ID}`,
-        "Thread route did not switch.",
-      );
-      useComposerDraftStore.getState().setPrompt(OTHER_THREAD_ID, "Ship it in the cloud");
-      const sendButton = await waitForSendButton();
-      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
-        timeout: 8_000,
-        interval: 16,
+      "Command refused for test.",
+    ],
+    [
+      "a failed worktree removal",
+      { rejectRemoveWorktree: true },
+      "Worktree removal failed for test.",
+    ],
+  ] as const)(
+    "cleans up a failed first Aether send and surfaces %s",
+    async (cleanupFailure, cleanupOptions, surfacedError) => {
+      const restoreNativeApi = installDeterministicSendNativeApi({
+        rejectTurnStart: true,
+        ...cleanupOptions,
       });
-      wsRequests.length = 0;
-      sendButton.click();
-
-      await vi.waitFor(
-        () => {
-          // Aether never falls back to Local: the thread goes back to "no worktree yet".
-          const reset = wsRequests
-            .map(readDispatchedCommand)
-            .find(
-              (command) => command?.type === "thread.meta.update" && command.worktreePath === null,
-            );
-          expect(reset).toMatchObject({ envMode: "worktree", worktreePath: null });
-          expect(getThreadFromState(useStore.getState(), OTHER_THREAD_ID)?.error).toContain(
-            "Command refused for test.",
-          );
-        },
-        { timeout: 8_000, interval: 16 },
+      const snapshot = addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-aether-failed-first-send" as MessageId,
+          targetText: "aether failed first send",
+        }),
+        OTHER_THREAD_ID,
       );
-    } finally {
-      restoreNativeApi();
-      await mounted.cleanup();
-    }
-  });
+      // The added thread is last: an Aether thread with no turn yet, in worktree mode.
+      const addedThread = snapshot.threads.at(-1)!;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            ...snapshot.threads.slice(0, -1),
+            {
+              ...addedThread,
+              modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+              envMode: "worktree",
+              session: null,
+            },
+          ],
+        },
+        configureFixture: (nextFixture) => {
+          const providers: ServerConfig["providers"] = [
+            ...nextFixture.serverConfig.providers,
+            {
+              provider: "aether",
+              status: "ready",
+              available: true,
+              authStatus: "authenticated",
+              checkedAt: NOW_ISO,
+            },
+          ];
+          nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+          nextFixture.providerStatusesSnapshot = providers;
+          const settings = createBrowserTestServerSettings(NOW_ISO);
+          nextFixture.serverSettings = {
+            ...settings,
+            providers: {
+              ...settings.providers,
+              aether: { ...settings.providers.aether, enabled: true },
+            },
+          };
+        },
+      });
+
+      try {
+        await mounted.router.navigate({ to: "/$threadId", params: { threadId: OTHER_THREAD_ID } });
+        await waitForURL(
+          mounted.router,
+          (pathname) => pathname === `/${OTHER_THREAD_ID}`,
+          "Thread route did not switch.",
+        );
+        useComposerDraftStore.getState().setPrompt(OTHER_THREAD_ID, "Ship it in the cloud");
+        const sendButton = await waitForSendButton();
+        await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        wsRequests.length = 0;
+        sendButton.click();
+
+        await vi.waitFor(
+          () => {
+            // Aether never falls back to Local: the thread goes back to "no worktree yet". A
+            // worktree that could not be removed is kept, so the thread is not reset.
+            const reset = wsRequests
+              .map(readDispatchedCommand)
+              .find(
+                (command) =>
+                  command?.type === "thread.meta.update" && command.worktreePath === null,
+              );
+            if (cleanupFailure === "a refused reset") {
+              expect(reset).toMatchObject({ envMode: "worktree", worktreePath: null });
+            } else {
+              expect(reset).toBeUndefined();
+            }
+            expect(getThreadFromState(useStore.getState(), OTHER_THREAD_ID)?.error).toContain(
+              surfacedError,
+            );
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        restoreNativeApi();
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("says what Aether needs instead of an empty Worktree picker in a non-git project", async () => {
     const mounted = await mountChatView({
@@ -8913,12 +8946,10 @@ describe("ChatView transcript geometry (full app)", () => {
 
     try {
       await waitForComposerEditor();
-      useComposerDraftStore
-        .getState()
-        .setModelSelection(STUDIO_DRAFT_THREAD_ID, {
-          provider: "aether",
-          model: "claude-opus-5-5",
-        });
+      useComposerDraftStore.getState().setModelSelection(STUDIO_DRAFT_THREAD_ID, {
+        provider: "aether",
+        model: "claude-opus-5-5",
+      });
       useComposerDraftStore.getState().setPrompt(STUDIO_DRAFT_THREAD_ID, "Ship it in the cloud");
       const sendButton = await waitForSendButton();
       await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
