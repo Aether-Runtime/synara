@@ -25,6 +25,11 @@
 // the new HEAD; after a crash in between, the next sync finishes it when HEAD is at either end
 // and the index holds either end's tree.
 //
+// The record also keeps origin's last tip that the local branch holds (`origin`), written with
+// the fast-forward that reached it and kept by every other write. When origin deletes the branch
+// (GitHub does when its pull request merges), commits up to that tip are not the user's: Synara
+// says once that the branch is gone, and warns about local commits only beyond it.
+//
 // Known gap until the wire carries modes and blob ids: new symlinks and executables, type changes,
 // and mode changes land as regular files (existing files keep their mode). Only the local view is
 // affected; the pull request pushed from the VM is exact.
@@ -32,8 +37,16 @@
 import { randomUUID } from "node:crypto";
 
 import { isTemporaryWorktreeBranch } from "@synara/shared/git";
-import { decodeJsonResult } from "@synara/shared/schemaJson";
-import { Effect, FileSystem, Path, type PlatformError, Result, Schema, type Scope } from "effect";
+import {
+  Effect,
+  Exit,
+  FileSystem,
+  Path,
+  type PlatformError,
+  Result,
+  Schema,
+  type Scope,
+} from "effect";
 
 import type { GitCommandError, WorktreeOwnedError } from "../../git/Errors.ts";
 import { GitCore, type WorktreeClaim } from "../../git/Services/GitCore.ts";
@@ -73,6 +86,11 @@ export type AetherBranchSyncResult =
   | { readonly _tag: "current"; readonly head: string }
   /** The branch moved forward to what the VM pushed; the working tree did not change. */
   | { readonly _tag: "fast-forwarded"; readonly from: string; readonly to: string }
+  /**
+   * Origin deleted the branch (GitHub does when its pull request merges) and the local branch
+   * holds its last tip, with no commits of its own: said once, then `current`.
+   */
+  | { readonly _tag: "origin-deleted"; readonly head: string; readonly detail: string }
   /** The branch was left where it is, for the reason `detail` gives; the mirror goes on. */
   | {
       readonly _tag: "held";
@@ -112,18 +130,31 @@ const REMOTE = "origin";
 const REMOTE_TIMEOUT_MS = 60_000;
 const NO_PROMPT = { GIT_TERMINAL_PROMPT: "0" };
 
+const CommitId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u));
+
 /**
- * The tree the last sync wrote, the tree it was writing if it stopped before recording it, and
- * the fast-forward it was making if it stopped before the index followed the branch.
+ * The tree the last sync wrote, the tree it was writing if it stopped before recording it, the
+ * fast-forward it was making if it stopped before the index followed the branch, and what the
+ * local branch holds from origin. Parsed strictly: an unknown key is a corrupt record.
  */
 const MirrorRecord = Schema.Struct({
   taskId: Schema.String,
   target: Schema.String,
   pending: Schema.optionalKey(Schema.String),
   fastForward: Schema.optionalKey(Schema.Struct({ from: Schema.String, to: Schema.String })),
+  /**
+   * The last tip of the task's branch on origin that the local branch holds, and whether Synara
+   * has said that origin deleted the branch since (GitHub does when its pull request merges).
+   * Absent while the local branch holds nothing from origin beyond the task base.
+   */
+  origin: Schema.optionalKey(Schema.Struct({ tip: CommitId, deleted: Schema.Boolean })),
 });
 type MirrorRecord = typeof MirrorRecord.Type;
-const decodeMirrorRecord = decodeJsonResult(MirrorRecord);
+const decodeMirrorRecord = Schema.decodeUnknownExit(Schema.fromJsonString(MirrorRecord));
+
+/** What every rewrite of the record keeps. */
+const keptOrigin = (record: MirrorRecord | undefined) =>
+  record?.origin === undefined ? {} : { origin: record.origin };
 
 /** Git's checks for names Windows or macOS resolve to `.git`, whatever this platform is. */
 const PROTECT_DOTGIT = ["-c", "core.protectNTFS=true", "-c", "core.protectHFS=true"];
@@ -241,10 +272,10 @@ const worktreeOps = (claim: WorktreeClaim, taskId: AetherTaskId) =>
         ),
       );
       if (text === undefined) return undefined;
-      const record = decodeMirrorRecord(text);
-      if (Result.isFailure(record)) return yield* recordFailure(`${file} is corrupt.`);
+      const record = decodeMirrorRecord(text, { onExcessProperty: "error" });
+      if (Exit.isFailure(record)) return yield* recordFailure(`${file} is corrupt.`);
       // Another task's record says nothing about this one.
-      return record.success.taskId === taskId ? record.success : undefined;
+      return record.value.taskId === taskId ? record.value : undefined;
     });
     // Written aside and renamed into place: a torn record would fail every later sync.
     const writeRecord = (record: MirrorRecord) =>
@@ -309,7 +340,14 @@ const worktreeOps = (claim: WorktreeClaim, taskId: AetherTaskId) =>
           return yield* localEdits("The index holds staged changes.", staged);
         }
         yield* git(["reset", "-q"]);
-        const finished: MirrorRecord = { taskId, target: record.target };
+        // HEAD holds the tip it was moving to only if the branch moved.
+        const finished: MirrorRecord = {
+          taskId,
+          target: record.target,
+          ...(head === pending.to
+            ? { origin: { tip: pending.to, deleted: false } }
+            : keptOrigin(record)),
+        };
         yield* writeRecord(finished);
         return finished;
       });
@@ -541,18 +579,24 @@ export const syncAetherMirror = (
     return yield* ops.locked(
       Effect.gen(function* () {
         const local = yield* ops.verify;
+        const kept = keptOrigin(local.record);
         if (local.tree === target) {
           if (local.record?.target !== target || local.record.pending !== undefined) {
-            yield* ops.writeRecord({ taskId: input.taskId, target });
+            yield* ops.writeRecord({ taskId: input.taskId, target, ...kept });
           }
           return { _tag: "unchanged", tree: target } as const;
         }
         yield* refuseIgnoredInTheWay(local.tree);
         // Recorded first, so that after a crash the next sync accepts either tree.
-        yield* ops.writeRecord({ taskId: input.taskId, target: local.tree, pending: target });
+        yield* ops.writeRecord({
+          taskId: input.taskId,
+          target: local.tree,
+          pending: target,
+          ...kept,
+        });
         // On the scratch index: the real one keeps HEAD's tree, so the changes stay unstaged.
         yield* git(["read-tree", "-m", "-u", local.tree, target], { env: local.scratch });
-        yield* ops.writeRecord({ taskId: input.taskId, target });
+        yield* ops.writeRecord({ taskId: input.taskId, target, ...kept });
         return {
           _tag: "synced",
           tree: target,
@@ -681,14 +725,53 @@ export const syncAetherBranch = (
           yield* git(["config", `branch.${branch}.remote`, REMOTE]);
           yield* git(["config", `branch.${branch}.merge`, ref]);
         }
-        // What the local branch should hold at most: origin's tip, or the task base before any push.
-        const upstream = remote ?? base;
-        if (head === upstream) return { _tag: "current", head } as const;
         // Commits of the user's own: the mirror goes on over them, so every edit they made that
         // the agent does not have reads as reverted in the working tree. Always say why.
         const reverted =
           "The mirror goes on, so edits in those commits that the agent does not have read as reverted in the working tree.";
+        const known = local.record?.origin;
+        /** Records origin's tip once the local branch holds it: its deletion is then no commit of the user's. */
+        const holdsOrigin = (tip: string) =>
+          known?.tip === tip && !known.deleted
+            ? Effect.void
+            : ops.writeRecord({
+                taskId: input.taskId,
+                target: local.tree,
+                origin: { tip, deleted: false },
+              });
+        if (remote === null && known !== undefined) {
+          // Origin had the branch and deleted it: the local branch holds what it had, or more.
+          if (
+            head === known.tip ||
+            (yield* yes(["merge-base", "--is-ancestor", head, known.tip]))
+          ) {
+            if (known.deleted) return { _tag: "current", head } as const;
+            yield* ops.writeRecord({
+              taskId: input.taskId,
+              target: local.tree,
+              origin: { tip: known.tip, deleted: true },
+            });
+            return {
+              _tag: "origin-deleted",
+              head,
+              detail: `${REMOTE}/${branch} no longer exists on origin (GitHub deletes a merged pull request's branch). The local branch keeps its last tip ${short(known.tip)} and has no commits of its own.`,
+            } as const;
+          }
+          return (yield* yes(["merge-base", "--is-ancestor", known.tip, head]))
+            ? ({
+                _tag: "held",
+                reason: "ahead",
+                detail: `The local branch ${branch} has commits of its own (local ${short(head)}) beyond ${REMOTE}/${branch}'s last tip ${short(known.tip)}, and origin no longer has the branch: Synara does not move it. ${reverted}`,
+              } as const)
+            : ({
+                _tag: "held",
+                reason: "diverged",
+                detail: `The local branch ${branch} (${short(head)}) does not contain ${REMOTE}/${branch}'s last tip ${short(known.tip)}, and origin no longer has the branch: Synara does not move it. ${reverted}`,
+              } as const);
+        }
         if (remote === null) {
+          // Never pushed: the local branch should hold the task base and nothing more.
+          if (head === base) return { _tag: "current", head } as const;
           return (yield* yes(["merge-base", "--is-ancestor", base, head]))
             ? ({
                 _tag: "held",
@@ -701,20 +784,30 @@ export const syncAetherBranch = (
                 detail: `The local branch ${branch} (${short(head)}) does not contain the task base ${short(base)}: Synara does not move it. ${reverted}`,
               } as const);
         }
+        if (head === remote) {
+          yield* holdsOrigin(remote);
+          return { _tag: "current", head } as const;
+        }
         if (yield* yes(["merge-base", "--is-ancestor", head, remote])) {
           yield* ops.writeRecord({
             taskId: input.taskId,
             target: local.tree,
             fastForward: { from: head, to: remote },
+            ...keptOrigin(local.record),
           });
           // With the old value: a commit made meanwhile makes this fail rather than vanish.
           yield* git(["update-ref", ref, remote, head]);
           // The index follows HEAD; the working tree stays as the mirror wrote it.
           yield* git(["reset", "-q"]);
-          yield* ops.writeRecord({ taskId: input.taskId, target: local.tree });
+          yield* ops.writeRecord({
+            taskId: input.taskId,
+            target: local.tree,
+            origin: { tip: remote, deleted: false },
+          });
           return { _tag: "fast-forwarded", from: head, to: remote } as const;
         }
         if (yield* yes(["merge-base", "--is-ancestor", remote, head])) {
+          yield* holdsOrigin(remote);
           return {
             _tag: "held",
             reason: "ahead",

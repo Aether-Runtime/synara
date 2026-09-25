@@ -705,7 +705,11 @@ export const makeAetherAdapter = (
                 baseCommit: cursor.baseCommit,
                 pushed: pushed.success,
               }).pipe(
-                Effect.map((synced) => (synced._tag === "held" ? synced.detail : undefined)),
+                Effect.map((synced) =>
+                  synced._tag === "held" || synced._tag === "origin-deleted"
+                    ? synced.detail
+                    : undefined,
+                ),
                 Effect.catch((error) => Effect.succeed(branchFailure(error))),
               );
           return {

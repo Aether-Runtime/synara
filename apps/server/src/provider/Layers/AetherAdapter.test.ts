@@ -982,6 +982,37 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
+    it.effect(
+      "says once that origin deleted the merged branch, and never calls it local commits",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          h.finishTurns();
+          const pushed = yield* h.vmPush({ "a.md": "a\n" }, "A");
+          h.workspace.serve(diffOf(h.baseCommit, added("a.md", "a\n")));
+          yield* adapter.sendTurn(h.send("One"));
+          yield* waitFor("the first turn", () => completions(events)[0]);
+          expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(pushed);
+
+          // The pull request merges, and GitHub deletes its branch.
+          yield* git(h.root, ["--git-dir", "origin.git", "branch", "-D", FAKE_HEAD_BRANCH]);
+          for (const [index, message] of ["Two", "Three"].entries()) {
+            yield* adapter.sendTurn(h.send(message));
+            yield* waitFor(`turn ${index + 2}`, () => completions(events)[index + 1]);
+          }
+          const warnings = events.flatMap((event) =>
+            event.type === "runtime.warning" ? [event.payload.message] : [],
+          );
+          expect(warnings).toHaveLength(1);
+          expect(warnings[0]).toContain("no longer exists on origin");
+          expect(warnings[0]).not.toContain("commits of its own (");
+          expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(pushed);
+          expect(yield* h.status).toEqual([]);
+        }),
+    );
+
     it.effect("moves the branch only to what origin had before the mirror read the VM", () =>
       Effect.gen(function* () {
         const h = yield* makeHarness;

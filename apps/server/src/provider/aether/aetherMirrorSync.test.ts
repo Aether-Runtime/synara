@@ -253,6 +253,9 @@ const makeMirror = (
         ),
       head: git(worktree, ["rev-parse", "HEAD"]),
       branchName: git(worktree, ["symbolic-ref", "--short", "HEAD"]),
+      /** Origin deletes the branch, as GitHub does when its pull request merges. */
+      deleteOnOrigin: (branch: string = HEAD_BRANCH) =>
+        git(root, ["--git-dir", origin, "branch", "-D", branch]),
       /** The index is HEAD's tree: nothing staged. */
       indexIsHead: Effect.gen(function* () {
         return (
@@ -958,6 +961,22 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         expect(yield* mirror.read("notes.md")).toBe("hello\n");
       }),
     );
+
+    it.effect("fails loudly on a record with a key it does not know, or a bad origin tip", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        mirror.serve([added("notes.md", "hello\n")]);
+        const synced = yield* mirror.sync();
+        const recordFile = yield* mirror.recordFile;
+        for (const record of [
+          { taskId: TASK, target: synced.tree, originTip: "abc" },
+          { taskId: TASK, target: synced.tree, origin: { tip: "abc" } },
+        ]) {
+          yield* Effect.promise(() => fs.writeFile(recordFile, JSON.stringify(record)));
+          expect(yield* mirror.failure()).toMatchObject({ reason: "record" });
+        }
+      }),
+    );
   });
 
   describe("crashes and concurrent edits", () => {
@@ -1163,6 +1182,50 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         }),
     );
 
+    it.effect(
+      "keeps a branch origin deleted after merging it, noting it once, never as local commits",
+      () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          const vm = yield* mirror.vm(HEAD_BRANCH);
+          const pushed = yield* vm.push({ "a.md": "a\n" }, "A");
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "fast-forwarded", to: pushed });
+          // The mirror rewrites its record on the next move: it keeps what origin had.
+          mirror.serve([added("a.md", "a\n"), added("draft.md", "draft\n")]);
+          expect((yield* mirror.sync())._tag).toBe("synced");
+
+          // The pull request merges and GitHub deletes the branch.
+          yield* mirror.deleteOnOrigin();
+          const noted = yield* mirror.syncBranch();
+          expect(noted).toMatchObject({ _tag: "origin-deleted", head: pushed });
+          const detail = noted._tag === "origin-deleted" ? noted.detail : "";
+          expect(detail).toContain(pushed.slice(0, 12));
+          expect(detail).not.toContain("reverted");
+          // Once: later syncs say nothing, and HEAD stays where it is.
+          expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: pushed });
+          expect(yield* mirror.head).toBe(pushed);
+          expect(yield* mirror.status).toEqual(["?? draft.md"]);
+
+          // A commit of the user's own on top of it still warns, naming both commits.
+          yield* git(mirror.worktree, ["add", "-A"]);
+          yield* git(mirror.worktree, ["commit", "-q", "-m", "Mine"]);
+          const local = yield* mirror.head;
+          const held = yield* mirror.syncBranch();
+          expect(held).toMatchObject({ _tag: "held", reason: "ahead" });
+          const warning = held._tag === "held" ? held.detail : "";
+          expect(warning).toContain(local.slice(0, 12));
+          expect(warning).toContain(pushed.slice(0, 12));
+          expect(warning).toContain("reverted");
+
+          // The agent pushes the branch again: origin has it, and the note may come again.
+          const again = yield* vm.push({ "b.md": "b\n" }, "B");
+          expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "held", reason: "diverged" });
+          expect(again).not.toBe(local);
+        }),
+    );
+
     it.effect("never follows a force-push, and keeps mirroring", () =>
       Effect.gen(function* () {
         const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
@@ -1255,6 +1318,28 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
           expect(yield* mirror.indexIsHead).toBe(true);
           expect(yield* mirror.status).toEqual([]);
           expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: pushed });
+          // The finished fast-forward recorded what origin had: its deletion is no local commit.
+          yield* mirror.deleteOnOrigin();
+          expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "origin-deleted" });
+        }),
+      );
+
+      it.effect("records what origin had only once a crashed fast-forward moved the branch", () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          const pushed = yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          const stopping = yield* stopAt(
+            (args) => args[0] === "update-ref" && args.includes(pushed),
+          );
+          yield* mirror.syncBranch().pipe(Effect.provideService(GitCore, stopping), Effect.flip);
+          expect(yield* mirror.head).toBe(mirror.baseCommit);
+
+          // Origin deletes the branch before the next sync: HEAD never reached its tip, so
+          // there is nothing to follow and nothing of the user's own.
+          yield* mirror.deleteOnOrigin();
+          expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: mirror.baseCommit });
         }),
       );
 

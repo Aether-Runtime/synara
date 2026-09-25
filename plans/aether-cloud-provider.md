@@ -311,6 +311,9 @@ As built in P9 (`syncAetherBranch` in `aetherMirrorSync.ts`, `aetherPullRequest.
   nothing is pushed), or when origin was force-pushed or rebased, the branch stays, every mirror
   warns naming both commits and saying why the working tree looks reverted, and the mirror goes
   on.
+- The mirror record keeps origin's last tip that the branch holds. When origin deletes the branch
+  (GitHub does when its pull request merges), Synara says so once and leaves HEAD; only commits
+  beyond that tip are the user's own and warned about.
 - Crash safety: the record gets `fastForward {from, to}` before `update-ref <branch> <to> <from>`,
   then `git reset -q` points the index at HEAD's tree. The next sync of either kind finishes a
   fast-forward a crash cut short when HEAD is at either end and the index holds either end's
