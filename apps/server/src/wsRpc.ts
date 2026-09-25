@@ -39,7 +39,19 @@ import {
   type ServerLifecycleStreamEvent,
 } from "@synara/contracts";
 import { clamp } from "effect/Number";
-import { Effect, FileSystem, Layer, Option, Path, Queue, Schema, Scope, Stream } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Queue,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcMiddleware, RpcSchema, RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -114,6 +126,7 @@ import { recoverUnregisteredGitHubCheckout } from "./project/githubProjectRegist
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { getEnabledProviderAdapter } from "./provider/enabledProviderAdapter";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
+import type { ProviderServiceError } from "./provider/Errors";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { consumeCodexResetCreditEffect, listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
@@ -363,6 +376,10 @@ export const writeWorkspaceFileOutsideOwnedWorktree = (
  * deletion reactor stops the thread's provider session, which releases the worktree a provider
  * such as Aether owns, only later. That same stop runs here first; a claim held by a thread that
  * is not deleted still refuses the removal.
+ *
+ * A stop can fail after it released the claim (Aether's POST /stop failed), so the removal is
+ * tried either way. A failed stop keeps the thread's binding, so the deletion cleanup tries it
+ * again; this call reports it only when the claim it should have released still blocks removal.
  */
 export const removeWorktreeReleasingDeletedOwner = (
   services: {
@@ -382,9 +399,30 @@ export const removeWorktreeReleasingDeletedOwner = (
           readModel.threads.some(
             (thread) => thread.id === owned.ownerThreadId && thread.deletedAt !== null,
           )
-            ? services.providerService
-                .stopSession({ threadId: owned.ownerThreadId })
-                .pipe(Effect.andThen(remove))
+            ? services.providerService.stopSession({ threadId: owned.ownerThreadId }).pipe(
+                Effect.exit,
+                Effect.flatMap((stopped) =>
+                  remove.pipe(
+                    Effect.catchTag(
+                      "WorktreeOwnedError",
+                      (
+                        stillOwned,
+                      ): Effect.Effect<never, WorktreeOwnedError | ProviderServiceError> =>
+                        Exit.isFailure(stopped)
+                          ? Effect.failCause(stopped.cause)
+                          : Effect.fail(stillOwned),
+                    ),
+                    Effect.tap(() =>
+                      Exit.isFailure(stopped)
+                        ? Effect.logWarning(
+                            "git.removeWorktree removed a deleted thread's worktree after its session stop failed",
+                            { threadId: owned.ownerThreadId, cause: Cause.pretty(stopped.cause) },
+                          )
+                        : Effect.void,
+                    ),
+                  ),
+                ),
+              )
             : Effect.fail(owned),
         ),
       ),
