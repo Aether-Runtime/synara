@@ -84,7 +84,6 @@ export function useChatTurnSubmission({
   syncServerShellSnapshot,
   activeRootBranch,
   gitBranchSourceCwd,
-  setStoreThreadError,
   queryClient,
   isCenteredEmptyLanding,
   setEnvironmentPanelPreferenceOpen,
@@ -697,7 +696,7 @@ export function useChatTurnSubmission({
         setDraftThreadContext,
         activeRootBranch,
         gitBranchSourceCwd,
-        setStoreThreadError,
+        setThreadError,
         queryClient,
       });
       if (workspace === false) return false;
@@ -974,7 +973,6 @@ export function useChatTurnSubmission({
       syncServerShellSnapshot,
       activeRootBranch,
       gitBranchSourceCwd,
-      setStoreThreadError,
       queryClient,
       isCenteredEmptyLanding,
       setEnvironmentPanelPreferenceOpen,

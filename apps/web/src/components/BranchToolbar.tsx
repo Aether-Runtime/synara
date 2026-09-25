@@ -132,6 +132,9 @@ export interface BranchToolbarProps {
   // The thread's provider owns its worktree: shown as a new worktree, with no Local option
   // or local/worktree handoff. Display only; persisted env modes are left untouched.
   providerOwnsWorktree?: boolean;
+  // Set where that provider cannot run at all (no worktree can exist here): shown in place of
+  // the environment picker and branch selector.
+  environmentUnavailableMessage?: string | null;
 }
 
 export interface RuntimeUsageControlsProps {
@@ -272,6 +275,7 @@ export default function BranchToolbar({
   showBranchSelector: showBranchSelectorProp,
   fixedLocalWorkspaceCwd,
   providerOwnsWorktree: providerOwnsWorktreeProp,
+  environmentUnavailableMessage,
 }: BranchToolbarProps) {
   const providerOwnsWorktree = providerOwnsWorktreeProp ?? false;
   const handoffBusy = handoffBusyProp ?? false;
@@ -490,7 +494,11 @@ export default function BranchToolbar({
       )}
     >
       <div className={isPanel ? "flex flex-col gap-0.5" : "flex items-center gap-2"}>
-        {showEnvPicker ? (
+        {environmentUnavailableMessage ? (
+          <span className="px-1.5 text-ui-sm text-[var(--color-text-foreground-secondary)]">
+            {environmentUnavailableMessage}
+          </span>
+        ) : showEnvPicker ? (
           <ComposerEnvironmentPicker
             environmentPresentation={environmentPresentation}
             onEnvModeChange={onEnvModeChange}
@@ -552,7 +560,9 @@ export default function BranchToolbar({
 
         {/* A provider that owns its worktree also owns its branch, and a pick could move the
             thread off that worktree: once it has one, no branch is offered. */}
-        {showBranchSelector && !(providerOwnsWorktree && activeWorktreePath) ? (
+        {showBranchSelector &&
+        !environmentUnavailableMessage &&
+        !(providerOwnsWorktree && activeWorktreePath) ? (
           /* ChatView stays mounted while the route switches threads. Reset the selector's
              optimistic checkout state at that boundary so a previous thread cannot paint its
              branch while the new thread's workspace query is resolving. */

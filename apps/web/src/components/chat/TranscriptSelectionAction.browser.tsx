@@ -137,6 +137,27 @@ it("fits the composer in a narrow viewport and disables Worktree outside Git pro
   }
 });
 
+it("says what a provider that owns its worktree needs where no worktree can exist", async () => {
+  const needsGit = "Aether needs a git repository with a GitHub remote.";
+  const screen = await render(
+    <TranscriptSelectionActionLayer
+      {...props()}
+      canUseWorktree={false}
+      providerOwnsWorktree
+      environmentUnavailableMessage={needsGit}
+    />,
+  );
+  try {
+    await page.getByRole("button", { name: "Add to new Chat" }).click();
+    await expect.element(page.getByText(needsGit)).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Worktree", exact: true }))
+      .not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
 it.each(["", "Let me add more context"])(
   "opens the full composer with the quote and draft %j without sending",
   async (prompt) => {

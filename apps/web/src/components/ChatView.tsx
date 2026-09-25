@@ -4,6 +4,7 @@ import {
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
 import {
+  providerFeatureUnavailableMessage,
   providerIsCloudService,
   providerLackingFeature,
   providerSupportsFeature,
@@ -2291,6 +2292,16 @@ export default function ChatView({
     isStudioContainer,
     queriedIsRepo: branchesQuery.data?.isRepo,
   });
+  // Where no worktree can exist (Studio, the chats container, a folder without git), a provider
+  // that owns its worktree cannot run: the environment slot says what it needs instead.
+  const providerNeedingGit =
+    isContainerLandingProject || !isGitRepo
+      ? providerLackingFeature(threadGateProviders, "non-git-workspace")
+      : null;
+  const environmentUnavailableMessage =
+    providerNeedingGit === null
+      ? null
+      : providerFeatureUnavailableMessage(providerNeedingGit, "non-git-workspace");
   // Studio never offers "Initialize Git": its reference folder is ordinary cwd context,
   // so Git actions appear only when that selected folder is already a repository.
   const showGitActions = isStudioContainer
@@ -4032,7 +4043,6 @@ export default function ChatView({
     syncServerShellSnapshot,
     activeRootBranch,
     gitBranchSourceCwd,
-    setStoreThreadError,
     queryClient,
     isCenteredEmptyLanding,
     setEnvironmentPanelPreferenceOpen,
@@ -4921,6 +4931,7 @@ export default function ChatView({
     handoffBusy,
     onComposerFocusRequest: scheduleComposerFocus,
     providerOwnsWorktree: !localWorkspaceAvailable,
+    environmentUnavailableMessage,
     ...(isStudioContainer ? { fixedLocalWorkspaceCwd: threadWorkspaceCwd } : {}),
     ...(canCheckoutPullRequestIntoThread
       ? { onCheckoutPullRequestRequest: openPullRequestDialog }
@@ -6251,6 +6262,7 @@ export default function ChatView({
           defaultEnvMode={selectionChatEnvMode ?? settings.defaultThreadEnvMode}
           canUseWorktree={isGitRepo && !isContainerLandingProject}
           providerOwnsWorktree={!localWorkspaceAvailable}
+          environmentUnavailableMessage={environmentUnavailableMessage}
           canAddToSide={
             isServerThread && sidechatsAvailable && !activeThread.sidechatSourceThreadId
           }

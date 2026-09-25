@@ -26,6 +26,8 @@ interface SelectionNewChatComposerProps {
   canUseWorktree: boolean;
   /** Shown as a new worktree with no Local option; the chosen mode is still what is sent. */
   providerOwnsWorktree?: boolean;
+  /** Where that provider cannot run at all: shown in place of the environment picker. */
+  environmentUnavailableMessage: string | null;
   onSend: (prompt: string, envMode: ThreadEnvironmentMode) => Promise<void>;
   onOpenInChat: (prompt: string, envMode: ThreadEnvironmentMode) => Promise<void>;
   onClose: () => void;
@@ -36,6 +38,7 @@ export function SelectionNewChatComposer({
   defaultEnvMode,
   canUseWorktree,
   providerOwnsWorktree: providerOwnsWorktreeProp,
+  environmentUnavailableMessage,
   onSend,
   onOpenInChat,
   onClose,
@@ -204,20 +207,26 @@ export function SelectionNewChatComposer({
                 </p>
               ) : null}
               <div className={cn(COMPOSER_FOOTER_ROW_CLASS_NAME, "gap-2")}>
-                <ComposerEnvironmentPicker
-                  environmentPresentation={resolveThreadEnvironmentPresentation({
-                    envMode: providerOwnsWorktree ? "worktree" : envMode,
-                  })}
-                  onEnvModeChange={setEnvMode}
-                  canSwitchToWorktree={
-                    !providerOwnsWorktree && canUseWorktree && envMode === "local"
-                  }
-                  canSwitchToLocal={!providerOwnsWorktree}
-                  disabled={busy}
-                  onOpenChange={(open) => {
-                    environmentMenuOpenRef.current = open;
-                  }}
-                />
+                {environmentUnavailableMessage ? (
+                  <span className="min-w-0 flex-1 px-1.5 text-ui-sm text-muted-foreground">
+                    {environmentUnavailableMessage}
+                  </span>
+                ) : (
+                  <ComposerEnvironmentPicker
+                    environmentPresentation={resolveThreadEnvironmentPresentation({
+                      envMode: providerOwnsWorktree ? "worktree" : envMode,
+                    })}
+                    onEnvModeChange={setEnvMode}
+                    canSwitchToWorktree={
+                      !providerOwnsWorktree && canUseWorktree && envMode === "local"
+                    }
+                    canSwitchToLocal={!providerOwnsWorktree}
+                    disabled={busy}
+                    onOpenChange={(open) => {
+                      environmentMenuOpenRef.current = open;
+                    }}
+                  />
+                )}
                 <Button
                   type="submit"
                   variant="prominent"

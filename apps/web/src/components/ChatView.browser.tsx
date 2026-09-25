@@ -132,6 +132,7 @@ interface TestFixture {
   serverConfig: ServerConfig;
   providerStatusesSnapshot: ServerConfig["providers"] | null;
   serverSettings?: ReturnType<typeof createBrowserTestServerSettings>;
+  nonGitCwds?: ReadonlyArray<string>;
   welcome: WsWelcomePayload;
   gitBranchByCwd: Record<string, string>;
 }
@@ -1234,6 +1235,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.gitListBranches) {
     const cwd = typeof body.cwd === "string" ? body.cwd : null;
     const branchName = cwd ? (fixture.gitBranchByCwd[cwd] ?? "main") : "main";
+    if (cwd !== null && fixture.nonGitCwds?.includes(cwd)) {
+      return { isRepo: false, hasOriginRemote: false, branches: [] };
+    }
     return {
       isRepo: true,
       hasOriginRemote: true,
@@ -8718,6 +8722,124 @@ describe("ChatView transcript geometry (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      restoreNativeApi();
+      await mounted.cleanup();
+    }
+  });
+
+  it("says what Aether needs instead of an empty Worktree picker in a non-git project", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-aether-non-git" as MessageId,
+        targetText: "aether non-git test",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.nonGitCwds = ["/repo/project"];
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForEnvironmentModeButton("Local");
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+
+      await expect
+        .element(page.getByText("Aether needs a git repository with a GitHub remote."))
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Worktree", exact: true }))
+        .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("refuses an Aether send from the chats container before creating a folder", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: HOME_PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          entryPoint: "chat",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: {
+        [HOME_PROJECT_ID]: THREAD_ID,
+      },
+    });
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: withHomeChatProject(createDraftOnlySnapshot()),
+      configureFixture: (nextFixture) => {
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          homeDir: "/Users/tester",
+          chatWorkspaceRoot: "/Users/tester/Documents/Synara",
+        };
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+        const settings = createBrowserTestServerSettings(NOW_ISO);
+        nextFixture.serverSettings = {
+          ...settings,
+          providers: {
+            ...settings.providers,
+            aether: { ...settings.providers.aether, enabled: true },
+          },
+        };
+      },
+    });
+
+    try {
+      await waitForComposerEditor();
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(THREAD_ID, { provider: "aether", model: "claude-opus-5-5" });
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Ship it in the cloud");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      wsRequests.length = 0;
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector('[data-slot="toast-viewport"]')?.textContent ?? "",
+          ).toContain("Aether needs a git repository with a GitHub remote.");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      // Nothing was created on disk or on the server.
+      expect(hasDispatchedCommandType("project.create")).toBe(false);
+      expect(hasDispatchedCommandType("thread.create")).toBe(false);
     } finally {
       restoreNativeApi();
       await mounted.cleanup();

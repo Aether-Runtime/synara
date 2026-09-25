@@ -86,7 +86,6 @@ export interface ChatTurnSubmissionInput {
   syncServerShellSnapshot: ReturnType<typeof useStore.getState>["syncServerShellSnapshot"];
   activeRootBranch: string | null;
   gitBranchSourceCwd: string | null;
-  setStoreThreadError: (threadId: ThreadId, error: string | null) => void;
   queryClient: QueryClient;
   isCenteredEmptyLanding: boolean;
   setEnvironmentPanelPreferenceOpen: Dispatch<SetStateAction<boolean | null>>;
