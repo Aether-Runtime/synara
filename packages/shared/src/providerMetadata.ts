@@ -236,7 +236,9 @@ export type ProviderGatedFeature =
   | "worktree-change"
   | "thread-fork"
   | "copy-changes"
-  | "provider-handoff";
+  | "provider-handoff"
+  /** Synara's own commit, push and pull on the thread's branch, and its `gh` PR lookup. */
+  | "branch-git";
 
 /**
  * The provider capability a feature needs, as one predicate. The server refuses and the web
@@ -260,6 +262,7 @@ export function providerSupportsFeature(
     case "thread-fork":
     case "copy-changes":
     case "provider-handoff":
+    case "branch-git":
       return !descriptor.managesWorktreeBranch;
     case "conversation-rollback":
       return descriptor.supportsConversationRollback;
@@ -314,5 +317,7 @@ export function providerFeatureUnavailableMessage(
       return `${name} threads cannot copy local changes into their worktree: ${name} clones from origin and resets the worktree on every turn.`;
     case "provider-handoff":
       return `Handing a thread off to or from ${name} is not available yet: ${name} needs a clean, pushed worktree that it owns.`;
+    case "branch-git":
+      return `${name}'s agent owns this thread's branch and pushes it from the cloud, so committing, pushing or pulling here would race it. Ask the agent instead.`;
   }
 }

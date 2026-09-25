@@ -59,7 +59,12 @@ import {
   FAKE_REPO_URL,
   type FakeTurn,
 } from "../aether/testing/aetherFakeTask.ts";
-import { PROJECT_ID, TASK_ID } from "../aether/testing/aetherApiFixtures.ts";
+import {
+  PROJECT_ID,
+  pullRequestBody,
+  reviewSummaryBody,
+  TASK_ID,
+} from "../aether/testing/aetherApiFixtures.ts";
 import {
   added,
   diffOf,
@@ -743,6 +748,87 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(first);
         expect(yield* h.read("b.md")).toBe("b\n");
       }),
+    );
+
+    it.effect(
+      "reports the task's pull request with its CI and review, and each change to them",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          h.aether.hooks.onTurn = (turn) => {
+            // The agent opened the pull request during the turn; CI and the review run after it.
+            h.aether.remote.primary_pull_request = pullRequestBody({ ci_status: "pending" });
+            h.aether.remote.pr_review_summary = reviewSummaryBody({ run_status: "reviewing" });
+            delete (h.aether.remote.pr_review_summary as { verdict?: unknown }).verdict;
+            h.aether.say(turn, `text-${turn.id}`, "Opened the PR.");
+            h.aether.settle(turn);
+          };
+          yield* adapter.sendTurn(h.send("Open a PR"));
+          yield* waitFor("turn.completed", () => completions(events)[0]);
+          const reports = () =>
+            events.flatMap((event) =>
+              event.type === "vcs.state.changed" && event.payload.pullRequest !== undefined
+                ? [event.payload.pullRequest]
+                : [],
+            );
+          expect(reports().at(-1)).toEqual({
+            number: 18,
+            title: "Add docs/demo.md with checkout edge cases",
+            url: "https://github.com/Aether-Runtime/acme-checkout/pull/18",
+            baseBranch: "main",
+            headBranch: "aether/acme-checkout-640050b7d9ed",
+            state: "open",
+            additions: 3,
+            deletions: 0,
+            checks: { status: "pending", passed: 9, failed: 0, total: 9 },
+            review: { status: "reviewing", verdict: null },
+          });
+
+          // CI passes and the review approves; the next read of the task reports both.
+          h.aether.remote.primary_pull_request = pullRequestBody();
+          h.aether.remote.pr_review_summary = reviewSummaryBody();
+          h.finishTurns();
+          yield* adapter.sendTurn(h.send("Thanks"));
+          yield* waitFor("the second turn", () => completions(events)[1]);
+          expect(reports().at(-1)).toMatchObject({
+            checks: { status: "passed", passed: 9, failed: 0, total: 9 },
+            review: { status: "completed", verdict: "approve" },
+          });
+          // The branch the reactor reads from disk is the task's by then.
+          expect(yield* git(h.worktree, ["symbolic-ref", "--short", "HEAD"])).toBe(
+            FAKE_HEAD_BRANCH,
+          );
+        }),
+    );
+
+    it.effect(
+      "warns once, and reports no pull request, for one in a state Synara does not know",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          h.aether.remote.primary_pull_request = pullRequestBody({ state: "draft" });
+          h.finishTurns();
+          yield* adapter.sendTurn(h.send("One"));
+          yield* waitFor("the first turn", () => completions(events)[0]);
+          yield* adapter.sendTurn(h.send("Two"));
+          yield* waitFor("the second turn", () => completions(events)[1]);
+
+          const warnings = events.filter(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("#18 in a state"),
+          );
+          expect(warnings).toHaveLength(1);
+          expect(
+            events.some(
+              (event) =>
+                event.type === "vcs.state.changed" && event.payload.pullRequest !== undefined,
+            ),
+          ).toBe(false);
+        }),
     );
 
     it.effect("follows what the agent pushed while Synara was away, once it reattaches", () =>
@@ -2196,6 +2282,9 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         h.pruneCompletedTurns();
         expect(h.journal).toEqual([]);
         const before = events.length;
+        // A reattach reports the branch and pull request again: a report, not history.
+        const history = (from: number) =>
+          events.slice(from).filter((event) => event.type !== "vcs.state.changed");
         const resumed = yield* adapter.startSession({
           threadId: THREAD_ID,
           provider: "aether",
@@ -2205,11 +2294,11 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         });
         expect(resumed).toMatchObject({ status: "ready" });
         yield* Effect.sleep("1500 millis");
-        expect(events.slice(before)).toEqual([]);
+        expect(history(before)).toEqual([]);
 
         const third = yield* adapter.sendTurn(h.send("Third"));
         yield* waitFor("the third turn", () => completions(events)[2]);
-        expect(events.slice(before).every((event) => event.turnId === third.turnId)).toBe(true);
+        expect(history(before).every((event) => event.turnId === third.turnId)).toBe(true);
       }),
     );
 

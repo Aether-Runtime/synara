@@ -13,7 +13,9 @@
 // and been signalled; otherwise it goes idle until `wake`. While a surfaced question or plan
 // waits on the user and nothing runs, it reads `/live` every 15 s instead, so an answer given
 // in Aether's own UI shows within one slow tick; `wake` (the adapter sent an answer) ticks at
-// once. A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
+// once. Once idle, while the task's open pull request has CI or an Aether Review running, it
+// reads the turns page (which carries the task) once a minute, so the thread's PR shows them
+// settle. A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
 // an outage longer than two minutes, or an error retrying cannot fix, stops the loop with a
 // typed failure until the next `wake`.
 
@@ -21,6 +23,7 @@ import { Cause, Clock, Effect, Latch, Option, Schema, Scope } from "effect";
 
 import type { AetherApiError } from "./aetherApiErrors.ts";
 import type {
+  AetherTask,
   AetherTimelineMessage,
   AetherTurnActivityPage,
   AetherTurnId,
@@ -40,6 +43,8 @@ import {
 export const AETHER_POLL_INTERVAL_MS = 1_000;
 /** The same while a surfaced question or plan waits on the user and nothing runs. */
 export const AETHER_POLL_AWAITING_INTERVAL_MS = 15_000;
+/** Between reads of an idle task whose pull request's CI or review runs. */
+export const AETHER_POLL_PULL_REQUEST_INTERVAL_MS = 60_000;
 /** First retry delay after a transport failure; it doubles up to the maximum. */
 export const AETHER_POLL_BACKOFF_INITIAL_MS = 1_000;
 export const AETHER_POLL_BACKOFF_MAX_MS = 10_000;
@@ -104,6 +109,8 @@ export type AetherConversationPollFailure =
 
 export type AetherPollerOutput =
   | AetherIngestOutput
+  /** A turns read showed the task changed: its status line, branch, or pull request. */
+  | { readonly _tag: "TaskUpdated"; readonly task: AetherTask }
   /** The loop stopped; the adapter fails the active turn. `wake` starts it again. */
   | { readonly _tag: "PollingStopped"; readonly error: AetherConversationPollFailure };
 
@@ -184,7 +191,7 @@ export const makeAetherConversationPoller = (
     const tick = (observedAt: string) =>
       Effect.gen(function* () {
         const draft = ingest.fork();
-        const outputs: AetherIngestOutput[] = [];
+        const outputs: AetherPollerOutput[] = [];
         const live = yield* client.getLiveConversation(context.taskId, draft.openMessageIds());
         const step = yield* draft.applyLive(live, observedAt);
         outputs.push(...step.outputs);
@@ -192,7 +199,12 @@ export const makeAetherConversationPoller = (
           const page = yield* client.getConversationTurns(context.taskId, {
             limit: AETHER_TURNS_PAGE_LIMIT,
           });
+          const before = draft.task();
           outputs.push(...draft.applyTurns(page));
+          const task = draft.task();
+          if (task !== undefined && JSON.stringify(task) !== JSON.stringify(before)) {
+            outputs.push({ _tag: "TaskUpdated", task });
+          }
         }
         for (const turnId of draft.turnsNeedingActivity()) {
           const { items, revision } = yield* readActivity(draft, turnId);
@@ -219,13 +231,21 @@ export const makeAetherConversationPoller = (
           if (ingest.shouldKeepPolling()) {
             wakeState.sawActive = true;
           } else if (wakeState.sawActive || now >= wakeState.graceUntil) {
-            if (!ingest.waitsOnUser()) return;
-            // Someone may answer in Aether's own UI: look again now and then, or at a wake.
+            const waitsOnUser = ingest.waitsOnUser();
+            const watchesPullRequest = ingest.watchesPullRequest();
+            if (!waitsOnUser && !watchesPullRequest) return;
+            // Someone may answer in Aether's own UI, or the PR's CI or review may move: look
+            // again now and then, or at a wake.
             yield* Effect.raceFirst(
-              Effect.sleep(AETHER_POLL_AWAITING_INTERVAL_MS),
+              Effect.sleep(
+                waitsOnUser
+                  ? AETHER_POLL_AWAITING_INTERVAL_MS
+                  : AETHER_POLL_PULL_REQUEST_INTERVAL_MS,
+              ),
               wakeLatch.await,
             );
             yield* wakeLatch.close;
+            if (watchesPullRequest) ingest.refreshTurns();
             continue;
           }
           yield* Effect.sleep(AETHER_POLL_INTERVAL_MS);

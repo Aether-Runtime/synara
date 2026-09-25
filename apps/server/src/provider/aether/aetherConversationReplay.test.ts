@@ -109,11 +109,13 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
 
   it("produces the recorded output sequence", async () => {
     const { outputs } = await replayThroughPoller();
-    const summary = outputs.map((output) =>
-      output._tag === "Event"
-        ? [output.event.type, output.event.itemId].filter(Boolean).join(" ")
-        : output._tag,
-    );
+    const summary = outputs
+      .filter((output) => output._tag !== "TaskUpdated")
+      .map((output) =>
+        output._tag === "Event"
+          ? [output.event.type, output.event.itemId].filter(Boolean).join(" ")
+          : output._tag,
+      );
     expect(summary).toEqual([
       "TurnOrigin",
       "PendingInput",

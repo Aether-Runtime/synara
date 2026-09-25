@@ -20,7 +20,7 @@ import type {
 import { githubAvatarUrlForLogin } from "@synara/shared/githubAvatar";
 import { parseGitHubRepositoryNameWithOwnerFromPullRequestUrl } from "@synara/shared/githubRepository";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { ComposerPickerMenuPopup, ComposerPickerMenuSubPopup } from "../ComposerPickerMenuPopup";
 import {
@@ -81,6 +81,9 @@ import { formatRelativeTime } from "~/lib/relativeTime";
 import { cn } from "~/lib/utils";
 import { ensureNativeApi } from "~/nativeApi";
 import { useRightDockStore } from "~/rightDockStore";
+import { useStore } from "~/store";
+import { createThreadGitActionsMetadataSelector } from "~/storeSelectors";
+import { toThreadPullRequest } from "~/hooks/useThreadPullRequests";
 import {
   ENVIRONMENT_ROW_CLASS_NAME,
   ENVIRONMENT_ROW_ICON_CLASS_NAME,
@@ -91,12 +94,14 @@ import {
 import {
   buildPullRequestContextCard,
   describePullRequestComment,
+  describePullRequestReview,
   PULL_REQUEST_CHECK_STATUS_LABELS,
   PULL_REQUEST_CHECKS_TONE_TEXT_CLASS,
   summarizePullRequestChecks,
   summarizePullRequestComments,
   summarizePullRequestDiffStat,
   summarizePullRequestRepairs,
+  summarizeReportedPullRequestChecks,
   withStableCheckKeys,
   type PullRequestChecksTone,
 } from "./environmentPullRequest.logic";
@@ -310,16 +315,26 @@ export function EnvironmentPullRequestSection({
   const queryClient = useQueryClient();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<PullRequestConfirmAction | null>(null);
+  // A provider that owns the thread's branch (Aether) reports its PR, CI and review: nothing
+  // is looked up through git status or gh for it, and its PR's lifecycle stays with it.
+  const { branchOwner, lastKnownPr } = useStore(
+    useMemo(() => createThreadGitActionsMetadataSelector(activeThreadId), [activeThreadId]),
+  );
+  const reported = branchOwner !== null;
   // Share the git block's cache, but revalidate stale status when this always-mounted
   // panel opens so an earlier missing PR does not linger until the next polling tick.
-  const { data: gitStatus } = useQuery(gitStatusQueryOptions(gitCwd, enabled));
-  const pr = gitStatus?.pr ?? null;
+  const { data: gitStatus } = useQuery(gitStatusQueryOptions(reported ? null : gitCwd, enabled));
+  const pr = reported
+    ? lastKnownPr === null
+      ? null
+      : toThreadPullRequest(lastKnownPr)
+    : (gitStatus?.pr ?? null);
 
   const snapshotQuery = useQuery(
     gitPullRequestSnapshotQueryOptions({
       cwd: gitCwd,
       reference: pr?.url ?? null,
-      enabled: enabled && pr !== null && pr.state === "open",
+      enabled: enabled && !reported && pr !== null && pr.state === "open",
     }),
   );
 
@@ -337,7 +352,7 @@ export function EnvironmentPullRequestSection({
   // Merge / Status go through the GitHub-backed PR actions, which are keyed by project +
   // repository. A PR from a repository the project does not own only gets link actions.
   const actionInput: PullRequestDetailInput | null =
-    displayPr && projectId && pullRequestRepository && repositoryBelongsToProject
+    !reported && displayPr && projectId && pullRequestRepository && repositoryBelongsToProject
       ? { projectId, repository: pullRequestRepository, number: displayPr.number }
       : null;
   // Merge capabilities (allowed methods, stack state) and the merged/closed timestamps only
@@ -359,7 +374,10 @@ export function EnvironmentPullRequestSection({
   const comments = snapshotQuery.data?.comments ?? [];
   const commentsTruncated = snapshotQuery.data?.commentsTruncated ?? false;
   const commentsError = snapshotQuery.data?.commentsError ?? null;
-  const checksSummary = summarizePullRequestChecks(checks);
+  const checksSummary = reported
+    ? summarizeReportedPullRequestChecks(lastKnownPr?.checks)
+    : summarizePullRequestChecks(checks);
+  const review = reported ? lastKnownPr?.review : undefined;
   const repairs = summarizePullRequestRepairs({
     checks,
     comments,
@@ -618,6 +636,14 @@ export function EnvironmentPullRequestSection({
                         label="Retry loading checks"
                       />
                     </MenuItem>
+                  ) : reported ? (
+                    <MenuPlaceholder
+                      text={
+                        lastKnownPr?.checks
+                          ? `${lastKnownPr.checks.passed} passed and ${lastKnownPr.checks.failed} failed of ${lastKnownPr.checks.total} checks. Open the PR on GitHub for each check.`
+                          : "No CI reported for this PR."
+                      }
+                    />
                   ) : checks.length === 0 ? (
                     <MenuPlaceholder text="No checks reported for this PR." />
                   ) : (
@@ -636,6 +662,16 @@ export function EnvironmentPullRequestSection({
                   )}
                 </ComposerPickerMenuSubPopup>
               </MenuSub>
+              {review ? (
+                // Aether Review posts on GitHub, where the row leads.
+                <MenuItem onClick={openInGitHub}>
+                  <MenuRowLabel
+                    icon={<ChatBubbleIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
+                    label="Aether Review"
+                    trailing={describePullRequestReview(review)}
+                  />
+                </MenuItem>
+              ) : null}
               <MenuSub keepOpenOnFocusOut>
                 <MenuSubTrigger disabled={loading}>
                   <MenuRowLabel

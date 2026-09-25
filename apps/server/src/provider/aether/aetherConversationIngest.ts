@@ -510,6 +510,30 @@ export class AetherConversationIngest {
     });
   }
 
+  /** The task as the last turns page applied showed it. */
+  task(): AetherTask | undefined {
+    return this.state.task;
+  }
+
+  /** Whether the task's open pull request has CI or an Aether Review still running. */
+  watchesPullRequest(): boolean {
+    const task = this.state.task;
+    const pr = task?.primary_pull_request;
+    if (task === undefined || pr === undefined || pr === null || pr.state !== "open") return false;
+    const review = task.pr_review_summary;
+    return (
+      pr.ci_status === "pending" ||
+      (review !== null &&
+        review.pull_request_id === pr.pull_request_id &&
+        (review.run_status === "reviewing" || review.run_status === "awaiting_input"))
+    );
+  }
+
+  /** Reads the turns page, and with it the task, on the next tick. */
+  refreshTurns(): void {
+    this.state.turnsRefreshPending = true;
+  }
+
   /** Whether a surfaced question or plan waits on the user. */
   waitsOnUser(): boolean {
     const awaiting = this.awaitingAnswer();

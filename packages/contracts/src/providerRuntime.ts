@@ -13,7 +13,7 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas";
-import { ProviderKind } from "./orchestration";
+import { OrchestrationThreadPullRequest, ProviderKind } from "./orchestration";
 import { ClaudeCacheObservation } from "./claudeCache";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
@@ -755,6 +755,11 @@ export type FilesPersistedPayload = typeof FilesPersistedPayload.Type;
 const VcsStateChangedPayload = Schema.Struct({
   kind: Schema.optional(TrimmedNonEmptyStringSchema),
   cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * The thread's pull request, or null for none, as a provider that owns the thread's branch
+   * (`managesWorktreeBranch`) reports it. Absent from every other provider: Synara looks the PR up.
+   */
+  pullRequest: Schema.optional(Schema.NullOr(OrchestrationThreadPullRequest)),
 });
 export type VcsStateChangedPayload = typeof VcsStateChangedPayload.Type;
 

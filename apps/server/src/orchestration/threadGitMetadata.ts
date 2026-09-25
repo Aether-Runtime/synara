@@ -33,7 +33,13 @@ function pullRequestsEqual(
     (left.mergeability ?? "unknown") === (right.mergeability ?? "unknown") &&
     (left.additions ?? null) === (right.additions ?? null) &&
     (left.deletions ?? null) === (right.deletions ?? null) &&
-    (left.changedFiles ?? null) === (right.changedFiles ?? null)
+    (left.changedFiles ?? null) === (right.changedFiles ?? null) &&
+    left.checks?.status === right.checks?.status &&
+    left.checks?.passed === right.checks?.passed &&
+    left.checks?.failed === right.checks?.failed &&
+    left.checks?.total === right.checks?.total &&
+    left.review?.status === right.review?.status &&
+    left.review?.verdict === right.review?.verdict
   );
 }
 

@@ -2,8 +2,15 @@
 // Purpose: Stable Zustand selectors for entity lookups and lightweight sidebar projections.
 // Exports: Selector factories used by routes and sidebar-heavy components.
 
-import type { ProjectId, ThreadEnvironmentMode, ThreadId } from "@synara/contracts";
+import type {
+  OrchestrationThreadPullRequest,
+  ProjectId,
+  ProviderKind,
+  ThreadEnvironmentMode,
+  ThreadId,
+} from "@synara/contracts";
 import { isAutomationRunThread } from "@synara/shared/automationMode";
+import { providerLackingFeature } from "@synara/shared/providerMetadata";
 
 import type { AppState } from "./storeState";
 import { ACCOUNT_RATE_LIMIT_ACTIVITY_KINDS } from "./lib/rateLimits";
@@ -285,6 +292,12 @@ export interface ThreadGitActionsMetadata {
   readonly associatedWorktreeBranch: string | null | undefined;
   readonly createBranchFlowCompleted: boolean;
   readonly title: string | undefined;
+  /**
+   * The provider that owns the thread's branch (Aether), whose agent commits and pushes it and
+   * reports its PR as `lastKnownPr`; null when Synara's own git actions apply.
+   */
+  readonly branchOwner: ProviderKind | null;
+  readonly lastKnownPr: OrchestrationThreadPullRequest | null;
 }
 
 const EMPTY_THREAD_GIT_ACTIONS_METADATA: ThreadGitActionsMetadata = {
@@ -293,6 +306,8 @@ const EMPTY_THREAD_GIT_ACTIONS_METADATA: ThreadGitActionsMetadata = {
   associatedWorktreeBranch: null,
   createBranchFlowCompleted: false,
   title: undefined,
+  branchOwner: null,
+  lastKnownPr: null,
 };
 
 /** Shell-only git-action inputs (worktree, branch, title) that stay reference-stable
@@ -318,12 +333,19 @@ export function createThreadGitActionsMetadataSelector(
     const associatedWorktreeBranch = source.associatedWorktreeBranch;
     const createBranchFlowCompleted = source.createBranchFlowCompleted ?? false;
     const title = source.title;
+    const branchOwner = providerLackingFeature(
+      [state.threadSessionById?.[threadId]?.provider, source.modelSelection.provider],
+      "branch-git",
+    );
+    const lastKnownPr = source.lastKnownPr ?? null;
     if (
       previousResult.worktreePath === worktreePath &&
       previousResult.branch === branch &&
       previousResult.associatedWorktreeBranch === associatedWorktreeBranch &&
       previousResult.createBranchFlowCompleted === createBranchFlowCompleted &&
-      previousResult.title === title
+      previousResult.title === title &&
+      previousResult.branchOwner === branchOwner &&
+      previousResult.lastKnownPr === lastKnownPr
     ) {
       return previousResult;
     }
@@ -333,6 +355,8 @@ export function createThreadGitActionsMetadataSelector(
       associatedWorktreeBranch,
       createBranchFlowCompleted,
       title,
+      branchOwner,
+      lastKnownPr,
     };
     return previousResult;
   };

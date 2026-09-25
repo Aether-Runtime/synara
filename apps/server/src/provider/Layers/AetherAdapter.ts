@@ -96,6 +96,7 @@ import {
   type AetherCreatingCursor,
   type AetherResumeCursor,
 } from "../aether/aetherResumeCursor.ts";
+import { aetherThreadPullRequest } from "../aether/aetherPullRequest.ts";
 import { requireAetherWorktree, resolveAetherTaskBase } from "../aether/aetherTaskBase.ts";
 import {
   connectAetherWorkspace,
@@ -188,6 +189,8 @@ interface Task {
   interrupted: TurnId | undefined;
   /** The plan the last plan answer went to: a retry of one whose response was lost answers it. */
   answeredPlan: AetherToolId | undefined;
+  /** The pull request last reported (`aetherThreadPullRequest`, as JSON): report only changes. */
+  reportedPullRequest: string | undefined;
 }
 
 /** The one writer of a task's cursor. Every caller holds the session lock. */
@@ -585,6 +588,42 @@ export const makeAetherAdapter = (
     };
 
     // -----------------------------------------------------------------------
+    // Branch and pull request
+    // -----------------------------------------------------------------------
+
+    /**
+     * Reports the worktree's branch and the task's pull request (`vcs.state.changed`), from which
+     * the thread's branch and PR are set; `always` after the branch may have moved, otherwise
+     * only when the pull request changed. One Synara cannot show is warned about once.
+     */
+    const reportPullRequest = (
+      session: SessionBase,
+      task: Task,
+      remote: AetherTask,
+      always: boolean,
+    ) =>
+      Effect.gen(function* () {
+        const report = aetherThreadPullRequest(remote);
+        const key = JSON.stringify(report);
+        const changed = key !== task.reportedPullRequest;
+        if (!changed && !always) return;
+        task.reportedPullRequest = key;
+        if (report._tag === "Unreadable" && changed) {
+          yield* warn(session, task, undefined, ["pull-request", key], report.detail);
+        }
+        // With the turn in flight, if any, so the journal prunes it with that turn's rows.
+        const turnId = activeTurnId(task.cursor) ?? undefined;
+        yield* publish(session, task, {
+          ...(yield* base(session, task, turnId, ["vcs", randomUUID()])),
+          type: "vcs.state.changed",
+          payload: {
+            kind: "aether-task",
+            ...(report._tag === "Reported" ? { pullRequest: report.pullRequest } : {}),
+          },
+        });
+      });
+
+    // -----------------------------------------------------------------------
     // Mirror
     // -----------------------------------------------------------------------
 
@@ -635,10 +674,9 @@ export const makeAetherAdapter = (
           } as const;
         });
         // Pushes reach origin whether or not the workspace runs.
-        return {
-          ...mirrored,
-          branch: yield* followBranch(session, task, page.task),
-        } satisfies MirrorOutcome;
+        const branch = yield* followBranch(session, task, page.task);
+        yield* reportPullRequest(session, task, page.task, true);
+        return { ...mirrored, branch } satisfies MirrorOutcome;
       }).pipe(
         Effect.scoped,
         Effect.provideServices(services),
@@ -660,7 +698,11 @@ export const makeAetherAdapter = (
     /** After a reattach: follow the task's branch, which the VM may have pushed meanwhile. */
     const followAfterAttach = (session: SessionBase, task: Task) =>
       client.getConversationTurns(task.cursor.taskId, { limit: 1 }).pipe(
-        Effect.flatMap((page) => followBranch(session, task, page.task)),
+        Effect.flatMap((page) =>
+          followBranch(session, task, page.task).pipe(
+            Effect.tap(() => reportPullRequest(session, task, page.task, true)),
+          ),
+        ),
         Effect.catch((error) => Effect.succeed(branchFailure(error))),
         Effect.flatMap((note) =>
           note === undefined
@@ -765,6 +807,8 @@ export const makeAetherAdapter = (
               });
         case "TurnSettled":
           return settle(session, task, output);
+        case "TaskUpdated":
+          return reportPullRequest(session, task, output.task, false);
         case "PollingStopped":
           return pollingStopped(session, task, output.error);
         case "PendingInput":
@@ -848,6 +892,7 @@ export const makeAetherAdapter = (
           remoteTurns: new Set(),
           interrupted: undefined,
           answeredPlan: undefined,
+          reportedPullRequest: undefined,
         };
         return task;
       });

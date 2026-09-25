@@ -509,6 +509,70 @@ describe("ThreadGitMetadataReactor", () => {
     });
   });
 
+  it("takes the pull request a provider that owns the branch reports, never gh", async () => {
+    const threadId = ThreadId.makeUnsafe("aether-thread");
+    const cwd = "/repo/.worktrees/aether";
+    const reported: OrchestrationThreadPullRequest = {
+      number: 18,
+      title: "Add docs/demo.md with checkout edge cases",
+      url: "https://github.com/Aether-Runtime/acme-checkout/pull/18",
+      baseBranch: "main",
+      headBranch: "aether/acme-checkout-640050b7d9ed",
+      state: "open",
+      additions: 3,
+      deletions: 0,
+      checks: { status: "passed", passed: 9, failed: 0, total: 9 },
+      review: { status: "completed", verdict: "approve" },
+    };
+    const harness = await createHarness({
+      threads: [
+        {
+          id: threadId,
+          projectId: ProjectId.makeUnsafe("project-1"),
+          envMode: "worktree",
+          worktreePath: cwd,
+          branch: "synara/0a1b2c3d",
+          lastKnownPr: null,
+        },
+      ],
+      branchByCwd: { [cwd]: reported.headBranch },
+    });
+    const aether = { provider: "aether", threadId } as const;
+    const reportedBy = (
+      eventId: string,
+      pullRequest?: OrchestrationThreadPullRequest | null,
+    ): ProviderRuntimeEvent => ({
+      type: "vcs.state.changed",
+      eventId: EventId.makeUnsafe(eventId),
+      ...aether,
+      createdAt: "2026-08-07T10:00:30.000Z",
+      payload: { kind: "aether-task", ...(pullRequest === undefined ? {} : { pullRequest }) },
+    });
+
+    await harness.publish({ ...startedEvent(threadId, TurnId.makeUnsafe("a-1")), ...aether });
+    await harness.publish(reportedBy("vcs-reported", reported));
+    await waitFor(() => harness.commands.length === 1);
+    expect(harness.commands[0]).toMatchObject({
+      type: "thread.meta.update",
+      threadId,
+      branch: reported.headBranch,
+      lastKnownPr: reported,
+    });
+
+    // Its turn boundaries and a report without a pull request leave the reported one alone.
+    await harness.publish({ ...completedEvent(threadId, TurnId.makeUnsafe("a-1")), ...aether });
+    await harness.publish(reportedBy("vcs-no-report"));
+    await harness.drain();
+    expect(harness.commands).toHaveLength(1);
+    expect(harness.pullRequestLookups).toEqual([]);
+
+    // A provider report of no pull request clears it.
+    await harness.publish(reportedBy("vcs-closed", null));
+    await waitFor(() => harness.commands.length === 2);
+    expect(harness.commands[1]).toMatchObject({ lastKnownPr: null });
+    expect(harness.pullRequestLookups).toEqual([]);
+  });
+
   it("ignores VCS state changes reported for a different workspace", async () => {
     const threadId = ThreadId.makeUnsafe("vcs-mismatch-thread");
     const cwd = "/repo/.worktrees/vcs-mismatch";

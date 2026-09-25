@@ -1,7 +1,8 @@
 // FILE: useThreadPullRequests.ts
 // Purpose: Shared PR-badge source for thread rows (sidebar tree, activity view, kanban
 //          cards). Polls live git status per checkout plus the stored PR reference per
-//          thread, then resolves which PR each thread row should surface.
+//          thread, then resolves which PR each thread row should surface. A thread whose
+//          provider owns its branch (Aether) shows the PR that provider reported instead.
 // Layer: UI state hook (resolution rules live in Sidebar.logic.ts)
 // Exports: useThreadPullRequests, resolveThreadPullRequestFallback, toThreadPullRequest
 
@@ -11,6 +12,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@synara/contracts";
+import { providerLackingFeature } from "@synara/shared/providerMetadata";
 import { resolveThreadWorkspaceCwd } from "@synara/shared/threadEnvironment";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -23,7 +25,14 @@ export type ThreadPullRequest = GitStatusResult["pr"];
 
 export type ThreadPullRequestSource = Pick<
   SidebarThreadSummary,
-  "id" | "projectId" | "branch" | "envMode" | "worktreePath" | "lastKnownPr"
+  | "id"
+  | "projectId"
+  | "branch"
+  | "envMode"
+  | "worktreePath"
+  | "lastKnownPr"
+  | "modelSelection"
+  | "session"
 >;
 
 const THREAD_PR_STALE_TIME_MS = 30_000;
@@ -66,6 +75,19 @@ export function toThreadPullRequest(
 }
 
 /**
+ * The PR of a thread whose provider owns its branch (Aether): the one the provider reported,
+ * or null for none. Nothing is looked up for it, so it needs no local `gh` login. Undefined for
+ * every other thread, whose PR comes from git status and `gh`.
+ */
+export function providerReportedPullRequest(
+  thread: Pick<ThreadPullRequestSource, "lastKnownPr" | "modelSelection" | "session">,
+): ThreadPullRequest | undefined {
+  const providers = [thread.session?.provider, thread.modelSelection.provider];
+  if (providerLackingFeature(providers, "branch-git") === null) return undefined;
+  return thread.lastKnownPr ? toThreadPullRequest(thread.lastKnownPr) : null;
+}
+
+/**
  * Resolution for a thread row without live git-status coverage: rows revealed before the
  * shared hook picks them up (activity paging reveals a row a paint earlier) or rendered
  * where no checkout is resolvable. Runs the same persisted-PR validation as the live
@@ -103,6 +125,7 @@ export function useThreadPullRequests(input: {
         threadId: thread.id,
         branch: thread.branch,
         lastKnownPr: thread.lastKnownPr ?? null,
+        reportedPullRequest: providerReportedPullRequest(thread),
         hasDedicatedWorktree: thread.worktreePath !== null,
         cwd: resolveThreadWorkspaceCwd({
           projectCwd: projectCwdById.get(thread.projectId) ?? null,
@@ -116,7 +139,9 @@ export function useThreadPullRequests(input: {
     () => [
       ...new Set(
         threadGitTargets
-          .filter((target) => target.hasDedicatedWorktree)
+          .filter(
+            (target) => target.hasDedicatedWorktree && target.reportedPullRequest === undefined,
+          )
           .map((target) => target.cwd)
           .filter((cwd): cwd is string => cwd !== null),
       ),
@@ -134,6 +159,7 @@ export function useThreadPullRequests(input: {
     () =>
       threadGitTargets.flatMap((target) =>
         target.cwd !== null &&
+        target.reportedPullRequest === undefined &&
         target.lastKnownPr !== null &&
         target.lastKnownPr.url.trim().length > 0
           ? [{ ...target, cwd: target.cwd, lastKnownPr: target.lastKnownPr }]
@@ -180,6 +206,10 @@ export function useThreadPullRequests(input: {
 
     const map = new Map<ThreadId, ThreadPullRequest>();
     for (const target of threadGitTargets) {
+      if (target.reportedPullRequest !== undefined) {
+        map.set(target.threadId, target.reportedPullRequest);
+        continue;
+      }
       const status = target.cwd ? statusByCwd.get(target.cwd) : undefined;
       const persistedPr =
         storedPrByThreadId.get(target.threadId) ??
