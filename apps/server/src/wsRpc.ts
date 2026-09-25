@@ -82,6 +82,7 @@ import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
 import {
   beginGitHandoff,
+  requireGitHandoffThread,
   completeGitHandoff,
   discardPendingGitHandoff,
   gitHandoffMetadataCommand,
@@ -1678,6 +1679,10 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const { commandId, threadId, ...gitInput } = input;
+              yield* requireGitHandoffThread(
+                input,
+                (yield* orchestrationEngine.getReadModel()).threads,
+              );
               const operation = yield* beginGitHandoff(input);
               if (operation.phase === "pending" || operation.phase === "uncertain") {
                 return yield* new WsRpcError({

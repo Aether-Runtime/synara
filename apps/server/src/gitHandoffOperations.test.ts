@@ -1,4 +1,4 @@
-import { CommandId, ThreadId } from "@synara/contracts";
+import { CommandId, ThreadId, type ModelSelection } from "@synara/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -7,6 +7,7 @@ import {
   beginGitHandoff,
   recordGitHandoffResult,
   recoverGitHandoffOperations,
+  requireGitHandoffThread,
 } from "./gitHandoffOperations.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 
@@ -79,3 +80,25 @@ layer("Git handoff operation recovery", (it) => {
       }),
   );
 });
+
+it.effect(
+  "refuses a handoff to Local before any git operation when the provider owns the worktree",
+  () =>
+    Effect.gen(function* () {
+      const thread = (modelSelection: ModelSelection) => [
+        { id: input.threadId, session: null, modelSelection },
+      ];
+      const aether = thread({ provider: "aether", model: "claude-opus-5-5" });
+      const toLocal = { ...input, targetMode: "local" as const };
+
+      // Idle: no session and no live worktree claim.
+      const refusal = yield* requireGitHandoffThread(toLocal, aether).pipe(Effect.flip);
+      assert.include(refusal.message, "Aether needs a git repository with a GitHub remote");
+
+      const codex = thread({ provider: "codex", model: "gpt-5-codex" });
+      assert.strictEqual((yield* requireGitHandoffThread(toLocal, codex)).id, input.threadId);
+      assert.strictEqual((yield* requireGitHandoffThread(input, aether)).id, input.threadId);
+      const missing = yield* requireGitHandoffThread(toLocal, []).pipe(Effect.flip);
+      assert.include(missing.message, "was not found");
+    }),
+);

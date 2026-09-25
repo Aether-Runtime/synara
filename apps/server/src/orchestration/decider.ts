@@ -1589,6 +1589,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           yield* threadProviders(command, thread, command.modelSelection),
         );
       }
+      // A provider that owns its worktree only ever runs in it, whether or not a live session
+      // claims that worktree right now.
+      if (command.envMode === "local") {
+        yield* validateProviderFeature(
+          command,
+          "local-workspace",
+          yield* threadProviders(command, thread, command.modelSelection),
+        );
+      }
       const occurredAt = nowIso();
       return {
         ...withEventBase({

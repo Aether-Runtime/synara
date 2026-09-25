@@ -2,10 +2,13 @@ import {
   GitHandoffThreadInput,
   GitHandoffThreadResult,
   type OrchestrationCommand,
+  type OrchestrationThread,
 } from "@synara/contracts";
 import { resolveWorktreeHandoffWorkspaceMetadata } from "@synara/shared/worktreeHandoff";
 import { Data, Effect, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { threadProviders, validateProviderFeature } from "./orchestration/decider.ts";
 
 type HandoffPhase = "pending" | "git_applied" | "completed" | "uncertain";
 
@@ -61,6 +64,33 @@ const decodeOperation = (
   row.phase === "git_applied" || row.phase === "completed"
     ? parseResult(row).pipe(Effect.map((result) => ({ phase: row.phase, result })))
     : Effect.succeed({ phase: row.phase });
+
+/**
+ * The thread a handoff moves, read before any git operation runs. A handoff to Local ends with
+ * a `thread.meta.update` to Local, which the decider refuses for a thread whose provider owns
+ * its worktree, so it is refused here, before git stashes and removes that worktree.
+ */
+export const requireGitHandoffThread = (
+  input: Pick<GitHandoffThreadInput, "threadId" | "targetMode">,
+  threads: ReadonlyArray<Pick<OrchestrationThread, "id" | "session" | "modelSelection">>,
+) =>
+  Effect.gen(function* () {
+    const thread = threads.find((entry) => entry.id === input.threadId);
+    if (thread === undefined) {
+      return yield* new GitHandoffOperationError({
+        message: `Thread '${input.threadId}' was not found.`,
+      });
+    }
+    if (input.targetMode === "local") {
+      const command = { type: "thread.meta.update" } as const;
+      yield* validateProviderFeature(
+        command,
+        "local-workspace",
+        yield* threadProviders(command, thread),
+      );
+    }
+    return thread;
+  });
 
 export const beginGitHandoff = (input: GitHandoffThreadInput) =>
   Effect.gen(function* () {

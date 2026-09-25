@@ -276,6 +276,24 @@ describe("decider provider capability gating", () => {
       ).toContain("Thread goals are unavailable with Aether");
     });
 
+    it("refuses moving an idle thread to the local checkout", async () => {
+      // No session and no live worktree claim: the descriptor alone refuses it.
+      expect(
+        await refusal(
+          {
+            type: "thread.meta.update",
+            commandId: commandId("move-to-local"),
+            threadId: THREAD_ID,
+            envMode: "local",
+            worktreePath: null,
+          },
+          await makeReadModel({ modelSelection: AETHER }),
+        ),
+      ).toBe(
+        "Orchestration command invariant failed (thread.meta.update): Aether needs a git repository with a GitHub remote: its threads always run in a new worktree that Aether owns, never in the local checkout.",
+      );
+    });
+
     it("refuses Computer Use on every dispatch path", async () => {
       const readModel = await makeReadModel({ modelSelection: AETHER });
       expect(await refusal(turnStart("hello", { enableComputerControl: true }), readModel)).toBe(
@@ -407,6 +425,16 @@ describe("decider provider capability gating", () => {
       const readModel = await makeReadModel({ modelSelection, worktreePath: null });
       const accepted: ReadonlyArray<[OrchestrationCommand, string]> = [
         [goalSet(), "thread.meta-updated"],
+        [
+          {
+            type: "thread.meta.update",
+            commandId: commandId("move-to-local"),
+            threadId: THREAD_ID,
+            envMode: "local",
+            worktreePath: null,
+          },
+          "thread.meta-updated",
+        ],
         [turnStart("hello", { enableComputerControl: true }), "thread.turn-start-requested"],
         [createFromSource("thread.fork.create", modelSelection), "thread.created"],
         [createFromSource("thread.handoff.create", CLAUDE), "thread.created"],
