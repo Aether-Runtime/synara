@@ -233,28 +233,25 @@ function toolStatus(status: AetherToolStatus): ToolStatus {
 // Input decoding
 // ---------------------------------------------------------------------------
 
-const Strict = { parseOptions: { onExcessProperty: "error" } } as const;
-
 /**
  * An `ask_user` call's input, in Aether's canonical shape (every agent's questions arrive in it):
- * only the question text is required, and a question with no options takes free text. The
- * adapter maps answers back onto its option indexes.
+ * each question needs its text and its options, each option its label; a question with no
+ * options takes free text. Fields Synara does not read are ignored, as elsewhere in Aether's
+ * responses. The adapter maps answers back onto its option indexes.
  */
 export const AskUserInput = Schema.Struct({
   questions: Schema.Array(
     Schema.Struct({
-      id: Schema.optionalKey(Schema.String),
       question: Schema.String,
       header: Schema.optionalKey(Schema.String),
       options: Schema.Array(
         Schema.Struct({
           label: Schema.String,
           description: Schema.optionalKey(Schema.String),
-          preview: Schema.optionalKey(Schema.String),
-        }).annotate(Strict),
+        }),
       ),
       multiSelect: Schema.optionalKey(Schema.Boolean),
-    }).annotate(Strict),
+    }),
   ),
 });
 
@@ -269,8 +266,8 @@ type Answers = Record<string, string | ReadonlyArray<string> | null>;
 type ToolResponse = NonNullable<AetherUserMessage["toolResponse"]>;
 
 /**
- * Synara's question cards need the question and every option label non-blank; a header or an
- * option description, when sent, must not be blank either. Absent ones stay absent.
+ * Synara's question cards need the question and every option label non-blank. A blank header or
+ * option description is shown as absent.
  */
 function questionsFromInput(
   input: unknown,
@@ -281,17 +278,13 @@ function questionsFromInput(
   const questions: UserInputQuestion[] = [];
   for (const [index, question] of decoded.value.questions.entries()) {
     const text = question.question.trim();
-    const header = question.header?.trim();
+    const header = nonEmpty(question.header);
     const options = question.options.map((option) => ({
       label: option.label.trim(),
-      description: option.description?.trim(),
+      description: nonEmpty(option.description),
     }));
-    if (
-      text === "" ||
-      header === "" ||
-      options.some((o) => o.label === "" || o.description === "")
-    ) {
-      return Result.fail(`question ${index} has a blank question, header or option`);
+    if (text === "" || options.some((option) => option.label === "")) {
+      return Result.fail(`question ${index} has a blank question or option label`);
     }
     // Aether keys answers by question index, so the index is the question id.
     questions.push({

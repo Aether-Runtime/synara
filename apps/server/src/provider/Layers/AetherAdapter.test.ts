@@ -883,9 +883,10 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
             questions: [
               {
                 question: "Which color should I use?",
-                options: [{ label: "Red" }, { label: "Blue" }],
+                // A field Synara does not read, as Aether may add one.
+                options: [{ label: "Red", recommended: true }, { label: "Blue" }],
               },
-              { question: "What should it be called?", options: [] },
+              { question: "What should it be called?", options: [], allowOther: true },
             ],
           });
         yield* adapter.sendTurn(h.send("Paint it"));

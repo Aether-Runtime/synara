@@ -884,6 +884,35 @@ describe("AetherConversationIngest: pending input", () => {
     expectValidEvents(outputs);
   });
 
+  it("shows a question with a blank header or description as if they were absent, and ignores fields it does not read", () => {
+    const outputs = asked({
+      questions: [
+        {
+          header: " ",
+          question: "Which color should I use?",
+          options: [
+            { label: "Red", description: "", recommended: true },
+            { label: "Blue", description: "The calm one." },
+          ],
+          allowOther: true,
+        },
+      ],
+      title: "Colors",
+    });
+    expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "user-input.requested"]);
+    expect(events(outputs)[0]?.payload).toEqual({
+      questions: [
+        {
+          id: "0",
+          question: "Which color should I use?",
+          options: [{ label: "Red" }, { label: "Blue", description: "The calm one." }],
+          multiSelect: false,
+        },
+      ],
+    });
+    expectValidEvents(outputs);
+  });
+
   it("warns when a question cannot be shown, and still hands over the pending input", () => {
     const outputs = asked({ questions: [{ question: "Which one?", options: [{ label: " " }] }] });
     expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "runtime.warning"]);
