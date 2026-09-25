@@ -27,11 +27,13 @@ default and cannot run tasks yet. It has no executable: enable it and save an Ae
 server's secret store and is never sent back to the app.
 
 Aether runs the agent in a cloud VM, so the repository must be on GitHub and imported as a project
-in Aether. Its threads always run in a new worktree that Aether owns, and the features that need
-Synara's local agent gateway or the local checkout are unavailable for them: thread goals,
-Computer Use, browser and device tools, side chats, automations, reverting or editing earlier
-messages, copying local changes into the worktree, and handing a thread off to or from Aether.
-The app hides these controls and the server refuses them.
+in Aether. Its threads always run in a new worktree that Aether owns and, once a turn has started,
+never leave it. The features that need Synara's local agent gateway, the local checkout, or a
+second thread in that worktree are unavailable for them: thread goals, Computer Use, browser and
+device tools, side chats, forking into the same worktree, automations (including heartbeats on an
+Aether thread), reverting or editing earlier messages, copying local changes into the worktree,
+branch picks, and handing a thread off to Local or to or from Aether. The app hides these controls
+and the server refuses them.
 
 ## What Synara manages
 
