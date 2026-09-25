@@ -288,6 +288,17 @@ describe("decider provider capability gating", () => {
       expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
     });
 
+    it("accepts a first turn onto Aether when the thread's goal is paused", async () => {
+      // A paused goal is never sent to the provider, so nothing waits on the gateway.
+      const paused = await makeReadModel({
+        modelSelection: CODEX,
+        goal: "Ship it",
+        goalPaused: true,
+      });
+      const events = await decide(turnStart("hello", { modelSelection: AETHER }), paused);
+      expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    });
+
     it("refuses moving an idle thread to the local checkout", async () => {
       // No session and no live worktree claim: the descriptor alone refuses it.
       expect(
