@@ -49,10 +49,10 @@ none, or more than one.
   given there within about 15 seconds. **Implement** approves a plan, and any other message is
   feedback on it.
 - **Stop** stops the Aether turn and discards messages queued behind it, and so do archiving or
-  deleting the thread and quitting the desktop app while the chat runs, as for every provider.
-  Otherwise, when Synara stops following the task (an idle session, or the server restarting), it
-  keeps running in the cloud, and Synara follows it again: at startup for a turn in flight, or at
-  the next message.
+  deleting the thread. Otherwise, when Synara stops following the task (an idle session, quitting
+  the desktop app, or the server restarting), it keeps running in the cloud, and Synara follows it
+  again: at startup for a turn in flight, or at the next message. Quitting never asks about
+  Aether chats, and **Resume chats automatically** sends them no message.
 
 ## What Synara manages
 

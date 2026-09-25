@@ -28,13 +28,23 @@ describe("running chats quit confirmation", () => {
   it("lists sidebar and session-only running chats without duplicates", () => {
     const chats = listRunningChatsFromDesktopStore({
       sidebarThreadSummaryById: {
-        a: { id: "a", title: "Sidebar running", session: { status: "running" } },
-        idle: { id: "idle", title: "Idle", session: { status: "ready" } },
+        a: {
+          id: "a",
+          title: "Sidebar running",
+          modelSelection: { provider: "codex" },
+          session: { status: "running" },
+        },
+        idle: {
+          id: "idle",
+          title: "Idle",
+          modelSelection: { provider: "codex" },
+          session: { status: "ready" },
+        },
       },
       threadSessionById: {
-        a: { status: "running" },
-        b: { status: "connecting" },
-        idle: { status: "ready" },
+        a: { provider: "codex", status: "running" },
+        b: { provider: "claudeAgent", status: "connecting" },
+        idle: { provider: "codex", status: "ready" },
       },
       threadShellById: {
         b: { title: "Session-only connecting" },
@@ -45,6 +55,37 @@ describe("running chats quit confirmation", () => {
       { id: "b", title: "Session-only connecting" },
       { id: "a", title: "Sidebar running" },
     ]);
+  });
+
+  it("leaves out chats a cloud provider runs: quitting does not stop their turn", () => {
+    const store = {
+      sidebarThreadSummaryById: {
+        cloud: {
+          id: "cloud",
+          title: "Cloud running",
+          modelSelection: { provider: "aether" },
+          session: { status: "running" },
+        },
+        local: {
+          id: "local",
+          title: "Local running",
+          modelSelection: { provider: "codex" },
+          session: { status: "running" },
+        },
+      },
+      threadSessionById: {
+        "session-only-cloud": { provider: "aether", status: "connecting" },
+      },
+    } as const;
+
+    expect(listRunningChatsFromDesktopStore(store)).toEqual([
+      { id: "local", title: "Local running" },
+    ]);
+    // With only cloud chats running there is nothing to confirm, so the quit goes ahead.
+    const { local: _local, ...cloudOnly } = store.sidebarThreadSummaryById;
+    expect(
+      listRunningChatsFromDesktopStore({ ...store, sidebarThreadSummaryById: cloudOnly }),
+    ).toEqual([]);
   });
 
   it("builds singular and plural English copy", () => {

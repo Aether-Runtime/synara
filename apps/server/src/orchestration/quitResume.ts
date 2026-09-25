@@ -7,7 +7,10 @@
  * `prepareQuitResume` durably records the listed threads that are genuinely
  * in flight (with the turn that was running at that moment, or none while the
  * provider was still connecting) in a small JSON file next to the other server
- * state, then interrupts those turns. Because the record is written before the
+ * state, then interrupts those turns. A cloud provider's thread is neither
+ * recorded nor interrupted: its turn runs on while Synara is closed, and the next
+ * start follows it again (startup reconciliation reattaches it), so there is
+ * nothing to stop or continue. Because the record is written before the
  * renderer replies `allow`, it survives the renderer and the backend being torn
  * down mid-flight; a failed write fails the RPC and the renderer falls back to a
  * plain interrupt-and-quit.
@@ -52,6 +55,7 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { Duration, Effect, FileSystem, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 
@@ -109,7 +113,7 @@ type ThreadTurnInterruptCommand = Extract<
 /** Read-model thread fields needed to snapshot a thread into the record. */
 export type QuitResumeRecordableThread = Pick<
   OrchestrationThread,
-  "id" | "deletedAt" | "latestTurn" | "session"
+  "id" | "deletedAt" | "latestTurn" | "session" | "modelSelection"
 >;
 
 /** Read-model thread fields the boot-time planner inspects (a superset is fine). */
@@ -151,8 +155,9 @@ function inFlightTurnId(thread: QuitResumeRecordableThread): TurnId | null {
 /**
  * Pure: snapshot the requested threads into a record. Only threads that are
  * genuinely in flight are remembered — the dialog shows a snapshot, and a chat
- * that finished while it was open has nothing to resume. Unknown and deleted
- * threads are dropped, duplicates collapse, order is kept.
+ * that finished while it was open has nothing to resume — and only those a quit
+ * stops: a cloud provider's turn keeps running. Unknown and deleted threads are
+ * dropped, duplicates collapse, order is kept.
  */
 export function buildQuitResumeRecord(input: {
   readonly request: OrchestrationPrepareQuitResumeInput;
@@ -169,7 +174,12 @@ export function buildQuitResumeRecord(input: {
     }
     seen.add(threadId);
     const thread = threadsById.get(threadId);
-    if (!thread || thread.deletedAt !== null || !threadHasInFlightTurn(thread)) {
+    if (
+      !thread ||
+      thread.deletedAt !== null ||
+      !threadHasInFlightTurn(thread) ||
+      providerIsCloudService(thread.modelSelection.provider)
+    ) {
       continue;
     }
     threads.push({ threadId, turnId: inFlightTurnId(thread) });
