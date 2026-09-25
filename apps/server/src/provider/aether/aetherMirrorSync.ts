@@ -139,13 +139,28 @@ export const syncAetherMirror = (
         new MirrorApplyFailedError({ worktreePath: worktree, step, detail, ...extra }),
     };
 
-    // 1. Everything the VM has to say, before taking the lock.
-    const diff = yield* input.workspace.requestGitDiff("main").pipe(
-      Effect.mapError(
-        (error) =>
-          new MirrorTransportError({ request: "git.diff", detail: error.detail, cause: error }),
-      ),
-    );
+    // 1. The base, then everything the VM has to say, before taking the lock.
+    const base = (yield* runGit(context, "check", [
+      "rev-parse",
+      "--verify",
+      `${input.baseCommit}^{commit}`,
+    ])).stdout.trim();
+    const clean: AetherMirrorFingerprint = {
+      head: base,
+      tree: (yield* runGit(context, "check", [
+        "rev-parse",
+        "--verify",
+        `${base}^{tree}`,
+      ])).stdout.trim(),
+    };
+    const diff = yield* input.workspace
+      .requestGitDiff("main")
+      .pipe(
+        Effect.mapError(
+          (error) =>
+            new MirrorTransportError({ request: "git.diff", detail: error.detail, cause: error }),
+        ),
+      );
     const planned = planAetherMirror(diff);
     if (Result.isFailure(planned)) return yield* planned.failure;
     const plan = planned.success;
@@ -164,16 +179,7 @@ export const syncAetherMirror = (
       );
       bytes.set(file, Buffer.from(read.content, read.encoding === "base64" ? "base64" : "utf8"));
     }
-    const digest = contentDigest(input.baseCommit, diff, bytes);
-    const base = (yield* runGit(context, "check", [
-      "rev-parse",
-      "--verify",
-      `${input.baseCommit}^{commit}`,
-    ])).stdout.trim();
-    const clean: AetherMirrorFingerprint = {
-      head: base,
-      tree: (yield* runGit(context, "check", ["rev-parse", "--verify", `${base}^{tree}`])).stdout.trim(),
-    };
+    const digest = contentDigest(base, diff, bytes);
     yield* checkPatch(context, base, plan.patch);
 
     // 2. The worktree, as its owner.
@@ -274,7 +280,12 @@ const checkPatch = (context: MirrorContext, base: string, patch: string) =>
         });
         const env = { GIT_INDEX_FILE: context.path.join(directory, "index") };
         const operation = `${OPERATION}.check`;
-        yield* context.git.execute({ operation, cwd: context.worktree, args: ["read-tree", base], env });
+        yield* context.git.execute({
+          operation,
+          cwd: context.worktree,
+          args: ["read-tree", base],
+          env,
+        });
         const checked = yield* context.git.execute({
           operation,
           cwd: context.worktree,

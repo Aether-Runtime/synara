@@ -68,7 +68,12 @@ export const writeWorkingTreeTree = (
 
     yield* git.execute({ operation, cwd, args: ["add", "-A", "--", "."], env });
 
-    const treeOid = (yield* git.execute({ operation, cwd, args: ["write-tree"], env })).stdout.trim();
+    const treeOid = (yield* git.execute({
+      operation,
+      cwd,
+      args: ["write-tree"],
+      env,
+    })).stdout.trim();
     if (treeOid.length === 0) {
       return yield* new GitCommandError({
         operation,
@@ -100,7 +105,9 @@ const seedIndex = (input: WriteWorkingTreeTreeInput) =>
       return null;
     }
 
-    const indexPath = path.isAbsolute(indexPathRaw) ? indexPathRaw : path.resolve(cwd, indexPathRaw);
+    const indexPath = path.isAbsolute(indexPathRaw)
+      ? indexPathRaw
+      : path.resolve(cwd, indexPathRaw);
     const indexExists = yield* fs.exists(indexPath).pipe(Effect.orElseSucceed(() => false));
     if (!indexExists) {
       return null;
