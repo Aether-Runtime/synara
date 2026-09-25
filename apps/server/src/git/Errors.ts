@@ -1,3 +1,4 @@
+import { ProviderKind, ThreadId } from "@synara/contracts";
 import { Schema } from "effect";
 
 /**
@@ -29,6 +30,23 @@ export class GitCheckoutDirtyWorktreeError extends Schema.TaggedErrorClass<GitCh
   override get message(): string {
     const fileList = this.conflictingFiles.map((file) => `  - ${file}`).join("\n");
     return `Uncommitted changes block checkout to ${this.branch}:\n${fileList}`;
+  }
+}
+
+/**
+ * WorktreeOwnedError - A provider owns this worktree (it mirrors remote changes
+ * into it), so nothing else may mutate it or claim it until the owner releases it.
+ */
+export class WorktreeOwnedError extends Schema.TaggedErrorClass<WorktreeOwnedError>()(
+  "WorktreeOwnedError",
+  {
+    worktreePath: Schema.String,
+    ownerThreadId: ThreadId,
+    provider: ProviderKind,
+  },
+) {
+  override get message(): string {
+    return `The worktree ${this.worktreePath} is managed by the ${this.provider} session of thread ${this.ownerThreadId}. Changes to it are blocked while that session owns it.`;
   }
 }
 
@@ -83,4 +101,5 @@ export type GitManagerServiceError =
   | GitCommandError
   | GitCheckoutDirtyWorktreeError
   | GitHubCliError
-  | TextGenerationError;
+  | TextGenerationError
+  | WorktreeOwnedError;

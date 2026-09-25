@@ -84,6 +84,12 @@ export interface ProviderAdapterCapabilities {
   readonly supportsTurnSteering?: boolean;
   /** True when `turn.diff.updated.payload.unifiedDiff` contains a parseable live patch. */
   readonly supportsLiveTurnDiffPatch?: boolean;
+  /**
+   * True when the provider owns the thread worktree's branch (e.g. it mirrors a
+   * remote branch into the worktree), so Synara must not rename or push it on
+   * the first turn. Defaults to false.
+   */
+  readonly managesWorktreeBranch?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

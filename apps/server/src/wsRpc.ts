@@ -74,10 +74,10 @@ import { ComputerService } from "./computer/Services/ComputerService";
 import { makeWsComputerHandlers } from "./computer/wsComputerHandlers";
 import { makeComputerFrameRouteLayer } from "./computer/computerFrameRoute";
 import { ComputerEventInterests } from "./computer/computerEventInterests";
-import { GitCore } from "./git/Services/GitCore";
+import { GitCore, type GitCoreShape } from "./git/Services/GitCore";
 import { GitHubCli } from "./git/Services/GitHubCli";
 import { GitManager } from "./git/Services/GitManager";
-import { GitHubCliError } from "./git/Errors";
+import { GitHubCliError, WorktreeOwnedError } from "./git/Errors";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
 import {
@@ -138,6 +138,7 @@ import {
   WorkspaceFileConflictError,
   WorkspaceFileDeletedError,
   WorkspaceFileSystem,
+  type WorkspaceFileSystemShape,
 } from "./workspace/Services/WorkspaceFileSystem";
 import {
   MAX_STREAMS_PER_RPC_CLIENT,
@@ -319,6 +320,14 @@ export function toWsRpcError(cause: unknown, fallbackMessage: string) {
       cause,
     });
   }
+  if (Schema.is(WorktreeOwnedError)(cause)) {
+    return new WsRpcError({
+      message: cause.message,
+      code: "WORKTREE_OWNED",
+      retryable: false,
+      cause,
+    });
+  }
   // Missing projector cursors make the snapshot fence underivable. Mark the
   // failure non-retryable with its own code so clients surface a diagnosable
   // fault instead of restarting the stream into the same condition forever.
@@ -335,6 +344,22 @@ export function toWsRpcError(cause: unknown, fallbackMessage: string) {
     cause,
   });
 }
+
+// Editor saves bypass GitCore.withMutation, so they refuse a provider-owned
+// worktree here, before anything touches the file. The check does not take the
+// repository lock (autosave must not queue behind a long push), so only a save
+// already in flight when a provider claims the worktree can still land.
+export const writeWorkspaceFileOutsideOwnedWorktree = (
+  services: {
+    readonly git: Pick<GitCoreShape, "assertWorktreeNotOwned">;
+    readonly workspaceFileSystem: WorkspaceFileSystemShape;
+    readonly path: Path.Path;
+  },
+  input: Parameters<WorkspaceFileSystemShape["writeFile"]>[0],
+) =>
+  services.git
+    .assertWorktreeNotOwned(services.path.resolve(input.cwd, input.relativePath))
+    .pipe(Effect.andThen(services.workspaceFileSystem.writeFile(input)));
 
 // Process-wide so a subscriber's restart chain survives its own reconnects
 // (the client id is stable across a socket reconnect), but keyed per
@@ -1273,7 +1298,7 @@ const makeWsRpcHandlersLayer = () =>
             "Failed to create local file preview grant",
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
-          workspaceFileSystem.writeFile(input).pipe(
+          writeWorkspaceFileOutsideOwnedWorktree({ git, workspaceFileSystem, path }, input).pipe(
             Effect.mapError((cause) =>
               cause instanceof WorkspaceFileConflictError
                 ? new WsRpcError({

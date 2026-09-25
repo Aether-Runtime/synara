@@ -35,10 +35,11 @@ import {
 } from "@synara/contracts";
 import { isTemporaryWorktreeBranch } from "@synara/shared/git";
 import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@synara/shared/githubRepository";
+import { isWorkspaceRootWithin } from "@synara/shared/threadWorkspace";
 import { isWorkspaceRelativePathSafe } from "@synara/shared/path";
 import { decodeJsonResult } from "@synara/shared/schemaJson";
 
-import { GitCheckoutDirtyWorktreeError, GitCommandError } from "../Errors.ts";
+import { GitCheckoutDirtyWorktreeError, GitCommandError, WorktreeOwnedError } from "../Errors.ts";
 import { parseGitBlamePorcelain } from "../gitBlameParsing.ts";
 import {
   countTextFileLines,
@@ -54,6 +55,7 @@ import {
   type ExecuteGitInput,
   type ExecuteGitResult,
   type GitWorkingTreePatch,
+  type WorktreeClaim,
 } from "../Services/GitCore.ts";
 import { ServerConfig } from "../../config.ts";
 
@@ -826,6 +828,9 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
                   ...input.env,
                   ...trace2Monitor.env,
                 },
+                ...(input.stdin !== undefined
+                  ? { stdin: Stream.make(new TextEncoder().encode(input.stdin)) }
+                  : {}),
               }),
             )
             .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
@@ -982,7 +987,64 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
           ),
         ),
       );
-    const withMutation: GitCoreShape["withMutation"] = (cwd, effect) =>
+    // Provider-owned worktrees, keyed by canonical root: one claim each.
+    const claimedWorktrees = new Map<string, WorktreeClaim>();
+    const worktreeOwnedError = (claim: WorktreeClaim) =>
+      new WorktreeOwnedError({
+        worktreePath: claim.worktreePath,
+        ownerThreadId: claim.owner.threadId,
+        provider: claim.owner.provider,
+      });
+    const isPathWithin = (candidate: string, root: string) =>
+      isWorkspaceRootWithin(candidate, root, { platform: process.platform });
+
+    // The one canonicalizer for claims and checks: the native realpath (on-disk
+    // case, symlinks resolved) of the nearest existing ancestor, with the
+    // missing remainder re-appended. Any error other than a missing path fails.
+    const canonicalizeWorktreePath = (inputPath: string) =>
+      Effect.tryPromise({
+        try: async () => {
+          const missingSegments: Array<string> = [];
+          let candidate = nodePath.resolve(inputPath);
+          while (true) {
+            try {
+              const realPath = await nodeFs.realpath(candidate);
+              return nodePath.join(realPath, ...missingSegments);
+            } catch (cause) {
+              const parent = nodePath.dirname(candidate);
+              if (!hasNodeErrorCode(cause, "ENOENT") || parent === candidate) {
+                throw cause;
+              }
+              missingSegments.unshift(nodePath.basename(candidate));
+              candidate = parent;
+            }
+          }
+        },
+        catch: (cause) =>
+          new GitCommandError({
+            operation: "GitCore.canonicalizeWorktreePath",
+            command: "realpath",
+            cwd: inputPath,
+            detail: `Could not resolve ${inputPath} to check worktree ownership.`,
+            cause,
+          }),
+      });
+
+    const assertWorktreeNotOwned: GitCoreShape["assertWorktreeNotOwned"] = (inputPath, claim) =>
+      claimedWorktrees.size === 0
+        ? Effect.void
+        : canonicalizeWorktreePath(inputPath).pipe(
+            Effect.flatMap((canonicalPath) => {
+              for (const owning of claimedWorktrees.values()) {
+                if (owning !== claim && isPathWithin(canonicalPath, owning.worktreePath)) {
+                  return Effect.fail(worktreeOwnedError(owning));
+                }
+              }
+              return Effect.void;
+            }),
+          );
+
+    const withMutation: GitCoreShape["withMutation"] = (cwd, effect, options) =>
       Effect.gen(function* () {
         const key = yield* resolveRepositoryMutationKey(cwd);
         const lock = yield* repositoryMutationMapLock.withPermit(
@@ -1005,22 +1067,60 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
             return existing;
           }),
         );
-        return yield* lock.withPermit(effect).pipe(
-          Effect.ensuring(
-            repositoryMutationMapLock.withPermit(
-              Effect.sync(() => {
-                const remaining = (repositoryMutationCounts.get(key) ?? 1) - 1;
-                if (remaining <= 0) {
-                  repositoryMutationCounts.delete(key);
-                  repositoryMutationLocks.delete(key);
-                } else {
-                  repositoryMutationCounts.set(key, remaining);
+        // Checked while holding the lock, so a claim can neither interleave
+        // with this mutation nor land between the check and the work.
+        return yield* lock
+          .withPermit(assertWorktreeNotOwned(cwd, options?.claim).pipe(Effect.andThen(effect)))
+          .pipe(
+            Effect.ensuring(
+              repositoryMutationMapLock.withPermit(
+                Effect.sync(() => {
+                  const remaining = (repositoryMutationCounts.get(key) ?? 1) - 1;
+                  if (remaining <= 0) {
+                    repositoryMutationCounts.delete(key);
+                    repositoryMutationLocks.delete(key);
+                  } else {
+                    repositoryMutationCounts.set(key, remaining);
+                  }
+                }),
+              ),
+            ),
+          );
+      });
+
+    const claimWorktree: GitCoreShape["claimWorktree"] = (worktreePath, owner) =>
+      Effect.acquireRelease(
+        runGitStdout("GitCore.claimWorktree.toplevel", worktreePath, [
+          "rev-parse",
+          "--show-toplevel",
+        ]).pipe(
+          Effect.flatMap((toplevel) => canonicalizeWorktreePath(toplevel.trim())),
+          Effect.flatMap((root) =>
+            withMutation(
+              root,
+              Effect.suspend(() => {
+                for (const existing of claimedWorktrees.values()) {
+                  if (
+                    isPathWithin(root, existing.worktreePath) ||
+                    isPathWithin(existing.worktreePath, root)
+                  ) {
+                    return Effect.fail(worktreeOwnedError(existing));
+                  }
                 }
+                const claim: WorktreeClaim = { _tag: "WorktreeClaim", worktreePath: root, owner };
+                claimedWorktrees.set(root, claim);
+                return Effect.succeed(claim);
               }),
             ),
           ),
-        );
-      });
+        ),
+        (claim) =>
+          Effect.sync(() => {
+            if (claimedWorktrees.get(claim.worktreePath) === claim) {
+              claimedWorktrees.delete(claim.worktreePath);
+            }
+          }),
+      );
 
     const readMoveAwareWorkingTreeSummary = (
       cwd: string,
@@ -3022,6 +3122,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         const sanitizedBranch = targetBranch.replace(/\//g, "-");
         const repoName = path.basename(input.cwd);
         const worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
+        yield* assertWorktreeNotOwned(nodePath.resolve(input.cwd, worktreePath));
         const args = input.newBranch
           ? ["worktree", "add", "-b", input.newBranch, worktreePath, input.branch]
           : ["worktree", "add", worktreePath, input.branch];
@@ -3509,6 +3610,8 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
             ),
           ));
 
+        yield* assertWorktreeNotOwned(nodePath.resolve(input.cwd, worktreePath));
+
         // Branch-backed managed worktrees still pin to the resolved commit, so
         // ownership proofs and pruning behave exactly like the detached form.
         // The branch is created before the (slow) checkout so progress phases
@@ -3663,6 +3766,8 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
 
     const removeWorktree: GitCoreShape["removeWorktree"] = (input) =>
       Effect.gen(function* () {
+        // Git resolves a relative path against `cwd`, so the check must too.
+        yield* assertWorktreeNotOwned(nodePath.resolve(input.cwd, input.path));
         // Resolve the branch and its HEAD before removal: afterwards the
         // worktree checkout is gone and can no longer answer. Only temporary
         // synara/* branches qualify for reclamation; detached HEADs and
@@ -4147,6 +4252,8 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
 
     return {
       withMutation,
+      claimWorktree,
+      assertWorktreeNotOwned,
       execute,
       status,
       statusDetails,

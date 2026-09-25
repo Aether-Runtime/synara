@@ -314,6 +314,8 @@ export const makeOrchestrationIntegrationHarness = (
       renameBranch: (input: Parameters<GitCoreShape["renameBranch"]>[0]) =>
         Effect.succeed({ branch: input.newBranch }),
       publishBranch: () => Effect.void,
+      withMutation: (_cwd: string, effect: Effect.Effect<unknown, unknown, unknown>) => effect,
+      assertWorktreeNotOwned: () => Effect.void,
     } as unknown as GitCoreShape);
     const textGenerationLayer = Layer.succeed(TextGeneration, {
       generateBranchName: () => Effect.succeed({ branch: null }),
@@ -338,6 +340,7 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const checkpointReactorLayer = CheckpointReactorLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
+      Layer.provideMerge(GitCoreLive),
     );
     const sidechatExpiryReactorLayer = SidechatExpiryReactorLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),

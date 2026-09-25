@@ -1611,6 +1611,9 @@ const make = Effect.gen(function* () {
     if (!(yield* checkpointStore.isGitRepository(cwd))) {
       return null;
     }
+    // A provider that owns this worktree mirrors its changes into it; refuse
+    // here, before the provider conversation is trimmed.
+    yield* git.assertWorktreeNotOwned(cwd);
 
     const targetCheckpointRef =
       targetTurnCount === 0
@@ -1648,11 +1651,16 @@ const make = Effect.gen(function* () {
     if (plan === null) {
       return;
     }
-    const restored = yield* checkpointStore.restoreCheckpoint({
-      cwd: plan.cwd,
-      checkpointRef: plan.checkpointRef,
-      fallbackToHead: plan.targetTurnCount === 0,
-    });
+    // Under the repository lock, so ownership is checked again right before
+    // the restore and a claim cannot slip in while it rewrites the worktree.
+    const restored = yield* git.withMutation(
+      plan.cwd,
+      checkpointStore.restoreCheckpoint({
+        cwd: plan.cwd,
+        checkpointRef: plan.checkpointRef,
+        fallbackToHead: plan.targetTurnCount === 0,
+      }),
+    );
     if (!restored) {
       return yield* Effect.fail(
         new Error(
@@ -3199,6 +3207,7 @@ const make = Effect.gen(function* () {
 
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
+    readonly provider: ProviderKind;
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly messageId: string;
@@ -3209,6 +3218,22 @@ const make = Effect.gen(function* () {
       return;
     }
     if (!isTemporaryWorktreeBranch(input.branch)) {
+      return;
+    }
+    // The provider may own this branch (e.g. it mirrors a remote branch into
+    // the worktree), so renaming or pushing it would fight the provider. Without
+    // its capabilities that cannot be ruled out: fail instead of renaming.
+    const capabilities = yield* providerService
+      .getCapabilities(input.provider)
+      .pipe(
+        Effect.tapError((error) =>
+          Effect.logError(
+            "provider command reactor could not read provider capabilities; not renaming the worktree branch",
+            { threadId: input.threadId, provider: input.provider, error: error.message },
+          ),
+        ),
+      );
+    if (capabilities.managesWorktreeBranch === true) {
       return;
     }
 
@@ -3573,6 +3598,7 @@ const make = Effect.gen(function* () {
 
       yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
         threadId: event.payload.threadId,
+        provider: event.payload.modelSelection?.provider ?? (providerName as ProviderKind),
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         messageId: message.id,

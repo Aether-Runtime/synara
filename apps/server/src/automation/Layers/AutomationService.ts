@@ -695,12 +695,15 @@ export const AutomationServiceLive = Layer.effect(
         return Effect.void;
       }
       return git
-        .removeWorktree({
-          cwd: input.project.workspaceRoot,
-          path,
-          force: true,
-          reclaimTemporaryBranch: true,
-        })
+        .withMutation(
+          input.project.workspaceRoot,
+          git.removeWorktree({
+            cwd: input.project.workspaceRoot,
+            path,
+            force: true,
+            reclaimTemporaryBranch: true,
+          }),
+        )
         .pipe(
           Effect.catch((error) =>
             Effect.logWarning("automation unattached worktree cleanup failed", {

@@ -5,7 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Effect, Exit, FileSystem, Layer, PlatformError, Scope } from "effect";
 import { expect } from "vitest";
-import type { GitActionProgressEvent } from "@synara/contracts";
+import { ThreadId, type GitActionProgressEvent } from "@synara/contracts";
 import type {
   GitPullRequestCheck,
   GitPullRequestComment,
@@ -13,7 +13,12 @@ import type {
   ProviderStartOptions,
 } from "@synara/contracts";
 
-import { GitCommandError, GitHubCliError, TextGenerationError } from "../Errors.ts";
+import {
+  GitCommandError,
+  GitHubCliError,
+  TextGenerationError,
+  WorktreeOwnedError,
+} from "../Errors.ts";
 import { type GitManagerShape } from "../Services/GitManager.ts";
 import { GitHubCli, PULL_REQUEST_SUMMARY_JSON_FIELDS } from "../Services/GitHubCli.ts";
 import {
@@ -370,10 +375,12 @@ function makeManager(input?: {
     gitCoreLayer,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 
-  return makeGitManager.pipe(
-    Effect.provide(managerLayer),
-    Effect.map((manager) => ({ manager, ghCalls })),
-  );
+  return Effect.gen(function* () {
+    const manager = yield* makeGitManager;
+    // The GitCore instance the manager uses, for claiming worktrees.
+    const gitCore = yield* GitCore;
+    return { manager, ghCalls, gitCore };
+  }).pipe(Effect.provide(managerLayer));
 }
 
 const GitManagerTestLayer = GitCoreLive.pipe(
@@ -2852,6 +2859,45 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       );
 
       expect(errorMessage).toContain("already checked out in the main repo");
+    }),
+  );
+
+  it.effect("refuses to hand a provider-owned worktree off to Local before stashing anything", () =>
+    Effect.gen(function* () {
+      const parentDir = yield* makeTempDir("synara-git-manager-");
+      const repoDir = path.join(parentDir, "repo");
+      fs.mkdirSync(repoDir);
+      yield* initRepo(repoDir);
+      const worktreePath = path.join(parentDir, "owned");
+      yield* runGit(repoDir, ["worktree", "add", "-b", "feature/owned", worktreePath]);
+      const mirroredFile = path.join(worktreePath, "mirrored.txt");
+      fs.writeFileSync(mirroredFile, "mirrored\n");
+      const mirroredInode = fs.statSync(mirroredFile).ino;
+
+      const { manager, gitCore } = yield* makeManager();
+      yield* gitCore.claimWorktree(worktreePath, {
+        threadId: ThreadId.makeUnsafe("thread-owner"),
+        provider: "aether",
+      });
+      const error = yield* handoffThread(manager, {
+        cwd: repoDir,
+        targetMode: "local",
+        currentBranch: "feature/owned",
+        worktreePath,
+        associatedWorktreePath: worktreePath,
+        associatedWorktreeBranch: "feature/owned",
+        associatedWorktreeRef: null,
+        preferredLocalBranch: null,
+        preferredWorktreeBaseBranch: null,
+        preferredNewWorktreeName: null,
+      }).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(WorktreeOwnedError);
+      // Same inode: the file was never stashed away and restored.
+      expect(fs.statSync(mirroredFile).ino).toBe(mirroredInode);
+      expect(fs.readFileSync(mirroredFile, "utf8")).toBe("mirrored\n");
+      expect((yield* runGit(repoDir, ["stash", "list"])).stdout.trim()).toBe("");
+      expect((yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim()).toBe("main");
     }),
   );
 
