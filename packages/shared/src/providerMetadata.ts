@@ -228,6 +228,7 @@ export type ProviderGatedFeature =
   | "computer-control"
   | "sidechat"
   | "automation"
+  | "heartbeat-automation"
   | "conversation-rollback"
   | "local-workspace"
   | "non-git-workspace"
@@ -251,6 +252,7 @@ export function providerSupportsFeature(
       return descriptor.reachesAgentGateway;
     case "sidechat":
     case "automation":
+    case "heartbeat-automation":
     case "local-workspace":
     case "non-git-workspace":
     case "worktree-change":
@@ -295,6 +297,8 @@ export function providerFeatureUnavailableMessage(
       return `Side chats are unavailable in ${name} threads: a side chat shares the parent's checkout, which ${name} owns and resets on every turn.`;
     case "automation":
       return `Automations cannot run on ${name}: an automation branches from your local HEAD, which ${name} never sees.`;
+    case "heartbeat-automation":
+      return `Heartbeat automations are unavailable with ${name}: a heartbeat adds turns to a thread in its existing worktree, and ${name} runs only in a worktree it owns.`;
     case "conversation-rollback":
       return `${name} cannot roll back its conversation, so reverting changes or editing earlier messages is unavailable in this thread.`;
     case "local-workspace":

@@ -844,6 +844,48 @@ layer("AutomationService", (it) => {
     }),
   );
 
+  it.effect(
+    "refuses a heartbeat that would continue an Aether thread, with heartbeat wording",
+    () =>
+      Effect.gen(function* () {
+        resetHarness();
+        const service = yield* AutomationService;
+        const refusal =
+          /Heartbeat automations are unavailable with Aether: a heartbeat adds turns to a thread in its existing worktree/;
+        const aether = { provider: "aether" as const, model: "claude-opus-5-5" };
+        const targetThreadId = ThreadId.makeUnsafe("aether-heartbeat-thread");
+        const heartbeat = { ...createInput("local"), mode: "heartbeat" as const, targetThreadId };
+        const aetherThread = () =>
+          Option.some(makeThreadShell({ id: targetThreadId, modelSelection: aether }));
+
+        // A Codex heartbeat cannot continue an Aether thread...
+        threadShell = aetherThread();
+        assert.match((yield* service.create(heartbeat).pipe(Effect.flip)).message, refusal);
+
+        // ...nor keep one it was pointed at before the thread became Aether's, on update or run.
+        threadShell = Option.some(makeThreadShell({ id: targetThreadId }));
+        const created = yield* service.create(heartbeat);
+        threadShell = aetherThread();
+        const updateError = yield* service
+          .update({ id: created.id, name: "Renamed heartbeat" })
+          .pipe(Effect.flip);
+        assert.match(updateError.message, refusal);
+        const runError = yield* service.runNow({ automationId: created.id }).pipe(Effect.flip);
+        assert.match(runError.message, refusal);
+        assert.strictEqual(
+          dispatchedCommands.filter((command) => command.type === "thread.turn.start").length,
+          0,
+        );
+
+        // An Aether heartbeat model gets the heartbeat wording too, not "branches from local HEAD".
+        threadShell = Option.some(makeThreadShell({ id: targetThreadId }));
+        const modelError = yield* service
+          .create({ ...heartbeat, modelSelection: aether })
+          .pipe(Effect.flip);
+        assert.match(modelError.message, refusal);
+      }),
+  );
+
   it.effect("accepts and dismisses persisted automation proposals", () =>
     Effect.gen(function* () {
       resetHarness();

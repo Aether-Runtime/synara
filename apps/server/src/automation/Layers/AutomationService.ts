@@ -789,13 +789,23 @@ export const AutomationServiceLive = Layer.effect(
                 }),
               ),
             onSome: (thread) =>
-              thread.projectId === input.projectId
-                ? Effect.void
-                : Effect.fail(
+              thread.projectId !== input.projectId
+                ? Effect.fail(
                     new AutomationServiceError({
                       message: "Heartbeat target thread must belong to the automation project.",
                     }),
-                  ),
+                  )
+                : // A heartbeat continues the thread in its worktree, which such a provider owns.
+                  providerSupportsFeature(thread.modelSelection.provider, "heartbeat-automation")
+                  ? Effect.void
+                  : Effect.fail(
+                      new AutomationServiceError({
+                        message: providerFeatureUnavailableMessage(
+                          thread.modelSelection.provider,
+                          "heartbeat-automation",
+                        ),
+                      }),
+                    ),
           }),
         ),
       );
@@ -870,21 +880,24 @@ export const AutomationServiceLive = Layer.effect(
         : Effect.fail(new AutomationServiceError({ message: issue }));
     };
 
-    // Automations branch from local HEAD, which a provider that owns its worktree (it clones
-    // from origin) never sees. Checked on create, update and every run.
+    // A provider that owns its worktree (it clones from origin) never sees the local HEAD an
+    // automation branches from, nor runs in the worktree a heartbeat continues. Checked on
+    // create, update and every run.
     const validateAutomationProvider = (input: {
+      readonly mode: AutomationDefinition["mode"];
       readonly modelSelection: AutomationDefinition["modelSelection"];
-    }) =>
-      providerSupportsFeature(input.modelSelection.provider, "automation")
+    }) => {
+      const feature = automationRequiresTargetThread(input.mode)
+        ? "heartbeat-automation"
+        : "automation";
+      return providerSupportsFeature(input.modelSelection.provider, feature)
         ? Effect.void
         : Effect.fail(
             new AutomationServiceError({
-              message: providerFeatureUnavailableMessage(
-                input.modelSelection.provider,
-                "automation",
-              ),
+              message: providerFeatureUnavailableMessage(input.modelSelection.provider, feature),
             }),
           );
+    };
 
     // Run-path backstop for the fast-interval policy. validateSchedulePolicy enforces this at
     // create/update; this guards the run path it never covers. Effect.try converts a throwing
@@ -1066,6 +1079,7 @@ export const AutomationServiceLive = Layer.effect(
         });
         yield* validateAutoRuntimeMode(definition);
         yield* validateAutomationProvider(definition);
+        yield* validateHeartbeatTarget(definition);
         yield* validateFastIntervalPolicy({
           schedule: definition.schedule,
           enabled: definition.enabled,
@@ -2646,7 +2660,10 @@ export const AutomationServiceLive = Layer.effect(
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode ?? "approval-required",
         });
-        yield* validateAutomationProvider(input);
+        yield* validateAutomationProvider({
+          mode: input.mode ?? "standalone",
+          modelSelection: input.modelSelection,
+        });
         yield* validateHeartbeatTarget({
           mode: input.mode ?? "standalone",
           projectId: input.projectId,

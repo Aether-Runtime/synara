@@ -21,6 +21,40 @@ const MODEL_SELECTION: ModelSelection = {
 const NOW_ISO = "2026-06-22T08:00:00.000Z";
 
 describe("composerAutomation", () => {
+  it("refuses an automation on a provider that cannot run one, before generating an intent", async () => {
+    const generateIntent = vi.fn(async () => {
+      throw new Error("should not generate");
+    });
+    const onAether = (message: string) =>
+      resolveComposerAutomationRequest({
+        message,
+        cwd: "/tmp/project",
+        provider: "aether",
+        nowIso: NOW_ISO,
+        generateIntent,
+      });
+
+    const standalone = {
+      type: "unavailable",
+      reason:
+        "Automations cannot run on Aether: an automation branches from your local HEAD, which Aether never sees.",
+    };
+    expect(
+      await onAether("/automation run standalone say hi every 15 seconds for 3 times"),
+    ).toEqual(standalone);
+    // A chat automation continues this chat unless it says otherwise, so it is a heartbeat;
+    // one that would need a generated intent is refused without generating one.
+    const heartbeat = {
+      type: "unavailable",
+      reason:
+        "Heartbeat automations are unavailable with Aether: a heartbeat adds turns to a thread in its existing worktree, and Aether runs only in a worktree it owns.",
+    };
+    expect(await onAether("/automation say hi every 15 seconds for 3 times")).toEqual(heartbeat);
+    expect(await onAether("create an automation to check the build")).toEqual(heartbeat);
+    expect(await onAether("how do automations work every day?")).toEqual({ type: "normal-chat" });
+    expect(generateIntent).not.toHaveBeenCalled();
+  });
+
   it("keeps unmarked automation questions as normal chat", async () => {
     const generateIntent = vi.fn(async () => {
       throw new Error("should not generate");
@@ -29,6 +63,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "how do automations work every day?",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -39,6 +74,7 @@ describe("composerAutomation", () => {
     const scriptDecision = await resolveComposerAutomationRequest({
       message: "can you write a script that runs every 5 minutes?",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -55,6 +91,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "could you remind me every day to stretch?",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -90,6 +127,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "could you create an automation tomorrow morning to check the queue?",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -121,6 +159,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "could you say hi every 15 seconds for 3 times",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -158,6 +197,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "/automation independently check CI every 5 minutes",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -181,6 +221,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "/automation ogni domenica alle 9 controlla CI",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
       generateIntentTimeoutMs: 1,
@@ -219,6 +260,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "check it every 6h",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -267,6 +309,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "/automation say hi every 15 seconds for 3 times",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -317,6 +360,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "/automation say hi every 15 seconds 3 times total",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -364,6 +408,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "/automation run standalone say hi every 15 seconds for 3 times",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -428,6 +473,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "/automation watch the release branch every hour until the release is out",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -470,6 +516,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "could you create an automation for me?",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -503,6 +550,7 @@ describe("composerAutomation", () => {
     const first = await resolveComposerAutomationRequest({
       message: "create an automation to check the build",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: incompleteGeneration,
     });
@@ -517,6 +565,7 @@ describe("composerAutomation", () => {
     const combined = await resolveComposerAutomationRequest({
       message: "create an automation to check the build\nevery 6 hours",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: failingEnrichment,
     });
@@ -540,6 +589,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "create an automation\ncheck the build every 6 hours",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -571,6 +621,7 @@ describe("composerAutomation", () => {
     const first = await resolveComposerAutomationRequest({
       message: "create an automation for me to check the build",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -585,6 +636,7 @@ describe("composerAutomation", () => {
     const combined = await resolveComposerAutomationRequest({
       message: "create an automation to check the build\nevery 6 hours",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -601,6 +653,7 @@ describe("composerAutomation", () => {
     const withoutConnector = await resolveComposerAutomationRequest({
       message: "create an automation for me check the build\nevery 6 hours",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -613,6 +666,7 @@ describe("composerAutomation", () => {
     const scheduledTask = await resolveComposerAutomationRequest({
       message: "schedule a task for me to check the build",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -624,6 +678,7 @@ describe("composerAutomation", () => {
     const scheduledTaskCombined = await resolveComposerAutomationRequest({
       message: "schedule a task to check the build\nevery 6 hours",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -636,6 +691,7 @@ describe("composerAutomation", () => {
     const usSubject = await resolveComposerAutomationRequest({
       message: "create an automation for US outages every hour",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -652,6 +708,7 @@ describe("composerAutomation", () => {
     const metricsSubject = await resolveComposerAutomationRequest({
       message: "create an automation for metrics every hour",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -668,6 +725,7 @@ describe("composerAutomation", () => {
     const leadingBareCadence = await resolveComposerAutomationRequest({
       message: "every hour check metrics",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -684,6 +742,7 @@ describe("composerAutomation", () => {
     const trailingEachCadence = await resolveComposerAutomationRequest({
       message: "check CI each hour",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -700,6 +759,7 @@ describe("composerAutomation", () => {
     const leadingEachCadence = await resolveComposerAutomationRequest({
       message: "each hour check CI",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -716,6 +776,7 @@ describe("composerAutomation", () => {
     const wakeUpEachCadence = await resolveComposerAutomationRequest({
       message: "create an automation where you wake up each 6h and check the site",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -732,6 +793,7 @@ describe("composerAutomation", () => {
     const runItEachCadence = await resolveComposerAutomationRequest({
       message: "create an automation where you run it each 6h and check the queue",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -748,6 +810,7 @@ describe("composerAutomation", () => {
     const punctuatedFiller = await resolveComposerAutomationRequest({
       message: "create an automation for me!",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -759,6 +822,7 @@ describe("composerAutomation", () => {
     const punctuatedCombined = await resolveComposerAutomationRequest({
       message: "create an automation\ncheck the build every 6 hours",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -786,6 +850,7 @@ describe("composerAutomation", () => {
     const first = await resolveComposerAutomationRequest({
       message: "crea un'automazione per me che controlla la build",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -800,6 +865,7 @@ describe("composerAutomation", () => {
     const combined = await resolveComposerAutomationRequest({
       message: "crea un'automazione che controlla la build\nogni 6 ore",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -816,6 +882,7 @@ describe("composerAutomation", () => {
     const mercatoSubject = await resolveComposerAutomationRequest({
       message: "crea un'automazione per mercato ogni ora",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -839,6 +906,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "create an automation to remind me to say please",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -895,6 +963,7 @@ describe("composerAutomation", () => {
     const decision = await resolveComposerAutomationRequest({
       message: "create an automation to check the build",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -921,6 +990,7 @@ describe("composerAutomation", () => {
     const first = await resolveComposerAutomationRequest({
       message: "/automation every 6 hours",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent,
     });
@@ -937,6 +1007,7 @@ describe("composerAutomation", () => {
     const combined = await resolveComposerAutomationRequest({
       message: "create an automation every 6 hours\ncheck the build",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -953,6 +1024,7 @@ describe("composerAutomation", () => {
     const dailyWithTaskOrdinal = await resolveComposerAutomationRequest({
       message: "/automation every day check every second item in the queue",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });
@@ -969,6 +1041,7 @@ describe("composerAutomation", () => {
     const leadingOrdinalWithDailyCadence = await resolveComposerAutomationRequest({
       message: "/automation every second item in the queue daily",
       cwd: "/tmp/project",
+      provider: "codex",
       nowIso: NOW_ISO,
       generateIntent: offline,
     });

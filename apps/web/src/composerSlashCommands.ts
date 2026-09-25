@@ -557,6 +557,7 @@ const SLASH_COMMAND_PROVIDER_FEATURES: Partial<Record<ComposerSlashCommand, Prov
     goal: "thread-goal",
     "computer-use": "computer-control",
     side: "sidechat",
+    automation: "automation",
   };
 
 function providerSupportsSlashCommand(

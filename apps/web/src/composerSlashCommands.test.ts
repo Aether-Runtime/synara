@@ -65,10 +65,11 @@ describe("composerSlashCommands", () => {
       });
     for (const provider of ["codex", "claudeAgent"] as const) {
       expect(commandsFor(provider)).toEqual(
-        expect.arrayContaining(["goal", "computer-use", "side"]),
+        expect.arrayContaining(["goal", "computer-use", "side", "automation"]),
       );
     }
     const aetherCommands = commandsFor("aether");
+    expect(aetherCommands).not.toContain("automation");
     expect(aetherCommands).not.toContain("goal");
     expect(aetherCommands).not.toContain("computer-use");
     expect(aetherCommands).not.toContain("side");

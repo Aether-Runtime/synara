@@ -9,6 +9,7 @@ import type {
   AutomationMode,
   ModelSelection,
   ProjectId,
+  ProviderKind,
   ServerAutomationIntentMissingField,
   ServerGenerateAutomationIntentInput,
   ServerGenerateAutomationIntentResult,
@@ -23,6 +24,10 @@ import {
 } from "./automationForm";
 import { stopWhenFromCompletionPolicy } from "@synara/shared/automationCompletionPolicy";
 import { automationRequiresTargetThread } from "@synara/shared/automationMode";
+import {
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import {
   acknowledgedWarningIdsForAutomaticChatAutomation,
   buildAutomationDraftWarnings,
@@ -51,6 +56,8 @@ const DEFAULT_GENERATE_INTENT_TIMEOUT_MS = 1_500;
 
 export type ComposerAutomationRequestDecision =
   | { readonly type: "normal-chat" }
+  // An automation request the selected provider cannot run, refused before any generation.
+  | { readonly type: "unavailable"; readonly reason: string }
   | {
       // The message reads as an automation request but is missing required fields
       // (a task and/or a schedule). ChatView turns this into a conversational
@@ -160,6 +167,7 @@ function isAutoSubmittableBoundedFastLoop(intent: ChatAutomationIntent | null): 
 export async function resolveComposerAutomationRequest(input: {
   readonly message: string;
   readonly cwd: string;
+  readonly provider: ProviderKind;
   readonly nowIso?: string;
   readonly generateIntent: GenerateComposerAutomationIntent;
   readonly generateIntentTimeoutMs?: number;
@@ -196,6 +204,14 @@ export async function resolveComposerAutomationRequest(input: {
     detectChatAutomationExecutionScope(automationMessage);
   const automationDefaultMode: AutomationMode =
     automationExecutionScope === "thread" ? "heartbeat" : "standalone";
+  const unavailableFeature =
+    automationDefaultMode === "heartbeat" ? "heartbeat-automation" : "automation";
+  if (!providerSupportsFeature(input.provider, unavailableFeature)) {
+    return {
+      type: "unavailable",
+      reason: providerFeatureUnavailableMessage(input.provider, unavailableFeature),
+    };
+  }
   const shouldGenerateIntent =
     !isAutoSubmittableBoundedFastLoop(deterministicAutomationIntent) &&
     shouldGenerateAutomationIntent({
