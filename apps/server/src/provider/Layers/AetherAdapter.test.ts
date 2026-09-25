@@ -306,7 +306,6 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         const { adapter, events } = yield* h.launch();
         expect(providerAdapterConformanceIssues(adapter)).toEqual([]);
         expect(adapter.capabilities).toMatchObject({
-          managesWorktreeBranch: true,
           supportsTurnSteering: true,
           sessionModelSwitch: "unsupported",
         });
