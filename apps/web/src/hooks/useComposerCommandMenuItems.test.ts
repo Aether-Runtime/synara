@@ -4,6 +4,7 @@ import type { ComposerThreadMentionSource, Project } from "../types";
 import {
   buildThreadMentionComposerItems,
   resolveThreadMentionForThreadId,
+  useComposerCommandMenuItems,
 } from "./useComposerCommandMenuItems";
 
 function project(id: string, kind: Project["kind"], name: string): Project {
@@ -233,5 +234,46 @@ describe("resolveThreadMentionForThreadId", () => {
         }),
       ).toBeNull();
     }
+  });
+});
+
+describe("useComposerCommandMenuItems skills", () => {
+  const localSkill = {
+    name: "openai-docs",
+    description: "Read the OpenAI docs",
+    path: "/Users/me/.codex/skills/openai-docs/SKILL.md",
+    enabled: true,
+  };
+  const skillItemsFor = (
+    provider: "aether" | "codex",
+    kind: "slash-command" | "skill",
+  ): ReadonlyArray<string> =>
+    useComposerCommandMenuItems({
+      composerTrigger: { kind, query: "", rangeStart: 0, rangeEnd: 1 },
+      provider,
+      providerPlugins: [],
+      providerNativeCommands: [],
+      providerSkills: [localSkill],
+      workspaceEntries: [],
+      searchableModelOptions: [],
+      supportsFastSlashCommand: false,
+      canOfferCompactCommand: false,
+      canOfferReviewCommand: false,
+      canOfferForkCommand: false,
+      canOfferSideCommand: false,
+      canOfferExportCommand: false,
+      dynamicAgents: [],
+    })
+      .filter((item) => item.type === "skill")
+      .map((item) => item.label);
+
+  it("offers this machine's skills to a local provider", () => {
+    expect(skillItemsFor("codex", "slash-command")).toEqual(["openai-docs"]);
+    expect(skillItemsFor("codex", "skill")).toEqual(["openai-docs"]);
+  });
+
+  it("offers no local skills to a cloud provider, even ones left over from another provider", () => {
+    expect(skillItemsFor("aether", "slash-command")).toEqual([]);
+    expect(skillItemsFor("aether", "skill")).toEqual([]);
   });
 });

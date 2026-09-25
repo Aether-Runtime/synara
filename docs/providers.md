@@ -32,9 +32,10 @@ never leave it. The features that need Synara's local agent gateway, the local c
 second thread in or from that worktree are unavailable for them: thread goals, Computer Use,
 browser and device tools, side chats, forking (into the same worktree or a new one), automations
 (including heartbeats on an Aether thread), reverting or editing earlier messages, branch picks,
-and handing a thread off to Local or to or from Aether. The app hides these controls and the server refuses them. Local changes
-are never copied into an Aether worktree: neither the app nor the agent gateway copies them, so an
-Aether worktree starts from its base commit alone.
+and handing a thread off to Local or to or from Aether. The app hides these controls and the server
+refuses them. Skills installed on this machine are not offered either, since the agent in the VM
+cannot use them. Local changes are never copied into an Aether worktree: neither the app nor the
+agent gateway copies them, so an Aether worktree starts from its base commit alone.
 
 The VM clones from origin, so the first message needs a clean worktree whose HEAD is the tip of a
 branch on origin. The task is based on the project's default branch when that branch's tip is HEAD,
