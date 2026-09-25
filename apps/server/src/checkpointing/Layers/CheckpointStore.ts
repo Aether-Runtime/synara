@@ -16,6 +16,7 @@ import { Cause, Deferred, Effect, Exit, Layer, FileSystem, Option, Path, Semapho
 import { CheckpointInvariantError, type CheckpointStoreError } from "../Errors.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { writeWorkingTreeTree } from "../../git/workingTreeTree.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef } from "@synara/contracts";
 
@@ -67,35 +68,6 @@ const makeCheckpointStore = Effect.gen(function* () {
         allowNonZeroExit: true,
       })
       .pipe(Effect.map((result) => result.code === 0));
-
-  const seedCheckpointIndex = (cwd: string, tempIndexPath: string) =>
-    Effect.gen(function* () {
-      const indexPathResult = yield* git.execute({
-        operation: "CheckpointStore.resolveWorkingIndex",
-        cwd,
-        args: ["rev-parse", "--git-path", "index"],
-        allowNonZeroExit: true,
-      });
-      const indexPathRaw = indexPathResult.stdout.trim();
-      if (indexPathResult.code !== 0 || indexPathRaw.length === 0) {
-        return null;
-      }
-
-      const indexPath = path.isAbsolute(indexPathRaw)
-        ? indexPathRaw
-        : path.resolve(cwd, indexPathRaw);
-      const indexExists = yield* fs.exists(indexPath).pipe(Effect.orElseSucceed(() => false));
-      if (!indexExists) {
-        return null;
-      }
-
-      // Preserve Git's stat cache in the throwaway index. Starting every
-      // checkpoint from `read-tree HEAD` discards it, forcing `git add -A` to
-      // rescan and re-hash the whole worktree before every user turn.
-      const indexInfo = yield* fs.stat(indexPath);
-      yield* fs.copyFile(indexPath, tempIndexPath);
-      return indexInfo;
-    });
 
   const resolveCheckpointCommit = (
     cwd: string,
@@ -159,66 +131,15 @@ const makeCheckpointStore = Effect.gen(function* () {
               GIT_COMMITTER_EMAIL: "synara@users.noreply.github.com",
             };
 
-            const workingIndexInfo = yield* seedCheckpointIndex(input.cwd, tempIndexPath);
-            if (workingIndexInfo === null && (yield* hasHeadCommit(input.cwd))) {
-              yield* git.execute({
-                operation,
-                cwd: input.cwd,
-                args: ["read-tree", "HEAD"],
-                env: commitEnv,
-              });
-            }
-            if (workingIndexInfo !== null) {
-              // A copied index can describe a rapid same-size rewrite as clean
-              // when its cached stat tuple still matches. Really-refresh makes
-              // Git verify those racily-clean entries and leaves changed paths
-              // for the following add to hash, without discarding the cache for
-              // the rest of a large workspace.
-              yield* git.execute({
-                operation,
-                cwd: input.cwd,
-                args: ["update-index", "--really-refresh"],
-                env: commitEnv,
-                allowNonZeroExit: true,
-              });
-
-              // Copying or refreshing the temporary index advances its file
-              // timestamp. Git uses that timestamp to decide whether an entry
-              // whose cached stat tuple still matches is "racily clean" and
-              // needs hashing. Restore the working index's original timestamp
-              // so rapid same-size rewrites remain newer than (or equal to) the
-              // index snapshot and `git add` verifies their contents.
-              if (workingIndexInfo.mtime !== undefined) {
-                yield* fs.utimes(
-                  tempIndexPath,
-                  workingIndexInfo.atime ?? workingIndexInfo.mtime,
-                  workingIndexInfo.mtime,
-                );
-              }
-            }
-
-            yield* git.execute({
+            const treeOid = yield* writeWorkingTreeTree({
+              git,
+              fs,
+              path,
               operation,
               cwd: input.cwd,
-              args: ["add", "-A", "--", "."],
+              indexPath: tempIndexPath,
               env: commitEnv,
             });
-
-            const writeTreeResult = yield* git.execute({
-              operation,
-              cwd: input.cwd,
-              args: ["write-tree"],
-              env: commitEnv,
-            });
-            const treeOid = writeTreeResult.stdout.trim();
-            if (treeOid.length === 0) {
-              return yield* new GitCommandError({
-                operation,
-                command: "git write-tree",
-                cwd: input.cwd,
-                detail: "git write-tree returned an empty tree oid.",
-              });
-            }
 
             const message = `Synara checkpoint ref=${input.checkpointRef}`;
             const commitTreeResult = yield* git.execute({
