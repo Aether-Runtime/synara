@@ -191,6 +191,10 @@ interface Task {
   answeredPlan: AetherToolId | undefined;
   /** The pull request last reported (`aetherThreadPullRequest`, as JSON): report only changes. */
   reportedPullRequest: string | undefined;
+  /** The turn in flight while its agent has output nothing yet: its workspace's boot shows. */
+  bootingTurn: TurnId | undefined;
+  /** The boot status last shown for `bootingTurn`. */
+  bootStatus: string | undefined;
 }
 
 /** The one writer of a task's cursor. Every caller holds the session lock. */
@@ -623,6 +627,27 @@ export const makeAetherAdapter = (
         });
       });
 
+    /**
+     * Shows the turn in flight what Aether's infrastructure is doing (its workspace booting)
+     * while the agent has output nothing yet; the agent's own status lines are not shown.
+     */
+    const reportBootStatus = (session: SessionBase, task: Task, remote: AetherTask) =>
+      Effect.gen(function* () {
+        const turnId = activeTurnId(task.cursor);
+        const message =
+          remote.latest_status_source === "infra"
+            ? remote.latest_status_message?.trim()
+            : undefined;
+        if (turnId === null || turnId !== task.bootingTurn) return;
+        if (message === undefined || message.length === 0 || message === task.bootStatus) return;
+        task.bootStatus = message;
+        yield* publish(session, task, {
+          ...(yield* base(session, task, turnId, ["status", yield* nowIso])),
+          type: "runtime.status",
+          payload: { message },
+        });
+      });
+
     // -----------------------------------------------------------------------
     // Mirror
     // -----------------------------------------------------------------------
@@ -785,6 +810,10 @@ export const makeAetherAdapter = (
     const handleOutput = (session: SessionBase, task: Task, output: AetherPollerOutput) => {
       switch (output._tag) {
         case "Event":
+          // The agent's first output ends the turn's boot.
+          if (output.event.turnId !== undefined && output.event.turnId === task.bootingTurn) {
+            task.bootingTurn = undefined;
+          }
           return publish(session, task, output.event);
         case "TurnOrigin":
           return bindOrigin(task, output.turnId, output.clientMessageId)
@@ -808,7 +837,9 @@ export const makeAetherAdapter = (
         case "TurnSettled":
           return settle(session, task, output);
         case "TaskUpdated":
-          return reportPullRequest(session, task, output.task, false);
+          return reportPullRequest(session, task, output.task, false).pipe(
+            Effect.andThen(reportBootStatus(session, task, output.task)),
+          );
         case "PollingStopped":
           return pollingStopped(session, task, output.error);
         case "PendingInput":
@@ -893,6 +924,8 @@ export const makeAetherAdapter = (
           interrupted: undefined,
           answeredPlan: undefined,
           reportedPullRequest: undefined,
+          bootingTurn: undefined,
+          bootStatus: undefined,
         };
         return task;
       });
@@ -1268,6 +1301,8 @@ export const makeAetherAdapter = (
             : yield* respondTurn(session, state, turn);
         transition(task, (cursor) => ({ ...cursor, active: true }));
         task.interrupted = undefined;
+        task.bootingTurn = turnId;
+        task.bootStatus = undefined;
         yield* publish(session, task, {
           ...(yield* base(session, task, turnId, ["started"])),
           type: "turn.started",

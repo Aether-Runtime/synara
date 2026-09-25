@@ -408,6 +408,11 @@ interface MessagesTimelineProps {
   hasMessages: boolean;
   isWorking: boolean;
   workingLabel?: WorkingLabel | undefined;
+  /**
+   * What the provider reports before the agent's first output (Aether: its cloud workspace
+   * booting), shown under the working label.
+   */
+  workingDetail?: string | null | undefined;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
   /** Transient "New worktree" setup progress; rendered as an ephemeral step card at the tail. */
@@ -528,6 +533,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hasMessages,
   isWorking,
   workingLabel: workingLabelProp,
+  workingDetail: workingDetailProp,
   activeTurnInProgress,
   activeTurnStartedAt,
   worktreeSetup: worktreeSetupProp,
@@ -600,6 +606,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // entire component (silently, since `panicThreshold` is unset), which would drop
   // memoization for the whole transcript. See MessagesTimeline.compiler.test.ts.
   const workingLabel = workingLabelProp ?? "Thinking";
+  const workingDetail = workingDetailProp ?? null;
   const worktreeSetup = worktreeSetupProp ?? null;
   const worktreeSetupPendingAction = worktreeSetupPendingActionProp ?? null;
   const followLiveOutput = followLiveOutputProp ?? false;
@@ -2588,6 +2595,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           style={{ fontSize: `${appTypographyScale.chatPx}px` }}
         >
           {workingLabel}
+        </div>
+      )}
+      {row.kind === "working" && workingDetail !== null && (
+        <div
+          className={cn("pt-0.5 font-system-ui text-chat-meta", MUTED_LABEL_TEXT_CLASS_NAME)}
+          data-testid="working-detail"
+        >
+          {workingDetail}
         </div>
       )}
 

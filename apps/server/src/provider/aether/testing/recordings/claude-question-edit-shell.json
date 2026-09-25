@@ -1,6 +1,6 @@
 {
   "source": "fixture-claude-v2-live.json.txt: a Claude Code task on acme-checkout asking one question, then editing a file, running a shell command and streaming a long reply.",
-  "trimmed": "Entries are copied in order from the recorded run. Removed: the recorder's periodic safety turns reads (not part of the polling model), live ticks identical to the tick before that triggered no other read, the ticks after the turn settled, and every response field the client's decoders do not read.",
+  "trimmed": "Entries are copied in order from the recorded run, reordered only where the polling model reads differently. Removed: the recorder's periodic safety turns reads (not part of the polling model) except those made while the task was queued, which stand for the turns reads the loop makes in place of /live then (one per distinct status line); live ticks identical to the tick before that triggered no other read; the ticks after the turn settled; and every response field the client's decoders do not read. A live read that saw a queued task's run start follows the turns read that saw it, as the loop reads them.",
   "note": "An entry with sameAsPrevious=true returned a body identical to the previous response for the same path; the body is omitted.",
   "log": [
     {
@@ -61,18 +61,73 @@
       }
     },
     {
-      "why": "tick",
-      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
+      "why": "queued",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/turns?limit=200",
       "status": 200,
       "body": {
-        "activeExecution": {
-          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
-          "processingMessageId": "afe3ef02-9374-4f5a-ba1b-fce213c93f31"
+        "task": {
+          "status": "queued",
+          "run_context": {
+            "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Booting workspace",
+          "latest_status_source": "infra"
         },
-        "headRevision": 2671406,
-        "resetSequence": 0,
-        "open": [],
-        "replacements": []
+        "head_revision": 2671322,
+        "turns": [
+          {
+            "id": "8a117558-1d50-40f0-ab8f-579a346732f2",
+            "root_message": {
+              "id": "afe3ef02-9374-4f5a-ba1b-fce213c93f31",
+              "role": "user",
+              "content": "This task generates API fixtures, so follow the steps exactly:\n1. Before changing anything, ask me exactly one multiple-choice question using your question tool: \"Which label should the checkout submit button use?\" with the options \"Pay now\" and \"Place order\".\n2. After I answer, change the checkout submit button's label to my choice using your file-editing tool (not a shell command).\n3. Run `git diff --stat` in the shell.\n4. Finish with a summary of about 150 words describing what you changed and why.\nKeep the code change to that one label."
+            },
+            "members": [],
+            "state": "queued",
+            "revision_sequence": 2671322
+          }
+        ],
+        "has_more_older": false,
+        "oldest_sequence_loaded": 2671322
+      }
+    },
+    {
+      "why": "queued",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/turns?limit=200",
+      "status": 200,
+      "body": {
+        "task": {
+          "status": "queued",
+          "run_context": {
+            "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Preparing workspace",
+          "latest_status_source": "infra"
+        },
+        "head_revision": 2671322,
+        "turns": [
+          {
+            "id": "8a117558-1d50-40f0-ab8f-579a346732f2",
+            "root_message": {
+              "id": "afe3ef02-9374-4f5a-ba1b-fce213c93f31",
+              "role": "user",
+              "content": "This task generates API fixtures, so follow the steps exactly:\n1. Before changing anything, ask me exactly one multiple-choice question using your question tool: \"Which label should the checkout submit button use?\" with the options \"Pay now\" and \"Place order\".\n2. After I answer, change the checkout submit button's label to my choice using your file-editing tool (not a shell command).\n3. Run `git diff --stat` in the shell.\n4. Finish with a summary of about 150 words describing what you changed and why.\nKeep the code change to that one label."
+            },
+            "members": [],
+            "state": "queued",
+            "revision_sequence": 2671322
+          }
+        ],
+        "has_more_older": false,
+        "oldest_sequence_loaded": 2671322
       }
     },
     {
@@ -119,6 +174,21 @@
         "turn_revision_sequence": 2671406,
         "has_more_older": false,
         "oldest_sequence_loaded": null
+      }
+    },
+    {
+      "why": "tick",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
+      "status": 200,
+      "body": {
+        "activeExecution": {
+          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
+          "processingMessageId": "afe3ef02-9374-4f5a-ba1b-fce213c93f31"
+        },
+        "headRevision": 2671406,
+        "resetSequence": 0,
+        "open": [],
+        "replacements": []
       }
     },
     {
@@ -512,21 +582,6 @@
       }
     },
     {
-      "why": "tick",
-      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
-      "status": 200,
-      "body": {
-        "activeExecution": {
-          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
-          "processingMessageId": "1a8748cd-0473-4351-a542-b8c97e2f4e97"
-        },
-        "headRevision": 2673141,
-        "resetSequence": 0,
-        "open": [],
-        "replacements": []
-      }
-    },
-    {
       "why": "head-moved",
       "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/turns?limit=200",
       "status": 200,
@@ -618,6 +673,21 @@
         "turn_revision_sequence": 2673141,
         "has_more_older": false,
         "oldest_sequence_loaded": 2673098
+      }
+    },
+    {
+      "why": "tick",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
+      "status": 200,
+      "body": {
+        "activeExecution": {
+          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
+          "processingMessageId": "1a8748cd-0473-4351-a542-b8c97e2f4e97"
+        },
+        "headRevision": 2673141,
+        "resetSequence": 0,
+        "open": [],
+        "replacements": []
       }
     },
     {

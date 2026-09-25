@@ -384,6 +384,7 @@ import { useChatTranscriptScroll } from "./chat/useChatTranscriptScroll";
 import { useChatTurnFollowUps } from "./chat/useChatTurnFollowUps";
 import { useChatTurnSubmission } from "./chat/useChatTurnSubmission";
 import { useChatWorkLog } from "./chat/useChatWorkLog";
+import { deriveWorkingDetail } from "../workLog";
 import { useChatWorkspaceSelection } from "./chat/useChatWorkspaceSelection";
 import { useComposerDiscovery } from "./chat/useComposerDiscovery";
 import { useComposerReferences } from "./chat/useComposerReferences";
@@ -1539,6 +1540,14 @@ export default function ChatView({
   // progress, collapsing the newest answer into a closed "Worked for" disclosure.
   // The latest turn is the transcript's own notion of "current", so fall back to it.
   const activeTurnIdForTranscript = activeThread?.session?.activeTurnId ?? activeLatestTurnId;
+  // What the provider reports before the agent's first output (Aether's workspace booting).
+  const workingDetail = deriveWorkingDetail({
+    activities: threadActivities,
+    turnId: activeTurnIdForTranscript,
+    replyStarted:
+      activeLatestTurnId === activeTurnIdForTranscript &&
+      (activeLatestTurn?.assistantMessageId ?? null) !== null,
+  });
   // The edit affordance must mirror the exact policy the server decider applies:
   // resolve the editable target from the raw sequence-ordered thread messages and
   // the running-session turn id — never from the createdAt-sorted timeline rows,
@@ -6015,6 +6024,7 @@ export default function ChatView({
                       isConnecting,
                       providerName: providerDisplayName,
                     })}
+                    workingDetail={workingDetail}
                     worktreeSetup={activeWorktreeSetup}
                     worktreeSetupPendingAction={worktreeSetupPendingAction}
                     onResolveWorktreeSetup={onResolveWorktreeSetup}

@@ -415,6 +415,58 @@ describe("makeAetherConversationPoller", () => {
     expect(tasks).toEqual(["Booting workspace", "Preparing workspace", "Workspace ready"]);
   });
 
+  it("while the task is queued, reads the turns page in place of /live: one read a tick", async () => {
+    // As recorded on a cold start: the head does not move while the workspace boots, only the
+    // task's status line does; the run starting moves it.
+    const bootedAt = 4_000;
+    const { calls, outputs } = await run(
+      {
+        live: (_call, at) =>
+          at < bootedAt
+            ? liveBody({ headRevision: 1 })
+            : liveBody({ headRevision: 2, activeExecution: executing }),
+        turns: (_call, at) =>
+          at < bootedAt
+            ? turnsBody(
+                taskBody("queued", {
+                  latest_status_message: statusAt(at),
+                  latest_status_source: "infra",
+                }),
+                "queued",
+                1,
+              )
+            : turnsBody(
+                taskBody("processing", {
+                  latest_status_message: "Workspace ready",
+                  latest_status_source: "infra",
+                }),
+                "running",
+                2,
+              ),
+        activity: (call) => activityBody([], { turn_revision_sequence: call === 0 ? 1 : 2 }),
+      },
+      { seconds: 6 },
+    );
+    const kinds = calls.map((call) => `${call.at / 1_000}:${call.kind}`);
+    expect(kinds).toEqual([
+      "0:live",
+      "0:turns",
+      "0:activity",
+      "1:turns",
+      "2:turns",
+      "3:turns",
+      "4:turns",
+      "4:activity",
+      // Once it runs, /live again, and the turns page only when the head moves.
+      "5:live",
+      "6:live",
+    ]);
+    const statuses = outputs.flatMap((output) =>
+      output._tag === "TaskUpdated" ? [output.task.latest_status_message] : [],
+    );
+    expect(statuses).toEqual(["Booting workspace", "Preparing workspace", "Workspace ready"]);
+  });
+
   it("after the turn, reads the task every minute while its pull request's CI or review runs", async () => {
     const settledAt = 150_000;
     const pullRequestAt = (at: number) => ({

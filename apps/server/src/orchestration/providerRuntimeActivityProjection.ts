@@ -795,6 +795,21 @@ export function projectProviderRuntimeActivities(
       ];
     }
 
+    case "runtime.status":
+      // Shown under the working indicator until the agent reports anything; never a row.
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "runtime.status",
+          summary: truncateDetail(event.payload.message),
+          payload: {},
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+
     case "model.rerouted": {
       return [
         {

@@ -54,6 +54,7 @@ interface ChatTranscriptPaneProps {
   isTemporaryThread?: boolean;
   isWorking: boolean;
   workingLabel?: ComponentProps<typeof MessagesTimeline>["workingLabel"];
+  workingDetail?: ComponentProps<typeof MessagesTimeline>["workingDetail"];
   followLiveOutput: boolean;
   listRef: RefObject<LegendListRef | null>;
   timelineControllerRef?: RefObject<MessagesTimelineController | null>;
@@ -135,6 +136,7 @@ export function ChatTranscriptPane({
   isTemporaryThread,
   isWorking,
   workingLabel,
+  workingDetail,
   followLiveOutput,
   listRef,
   timelineControllerRef,
@@ -252,6 +254,7 @@ export function ChatTranscriptPane({
             hasMessages={hasMessages}
             isWorking={isWorking}
             {...(workingLabel ? { workingLabel } : {})}
+            workingDetail={workingDetail}
             worktreeSetup={worktreeSetup}
             worktreeSetupPendingAction={worktreeSetupPendingAction ?? null}
             {...(onResolveWorktreeSetup ? { onResolveWorktreeSetup } : {})}

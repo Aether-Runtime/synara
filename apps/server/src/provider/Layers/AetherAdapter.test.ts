@@ -680,6 +680,42 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
     );
   });
 
+  describe("boot progress", () => {
+    it.effect("shows the workspace's boot status for the turn until the agent's first output", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        let running: FakeTurn | undefined;
+        // The VM boots: the turn runs, but the agent has said nothing yet.
+        h.aether.hooks.onTurn = (turn) => {
+          running = turn;
+        };
+        h.aether.remote.latest_status_message = "Booting workspace";
+        h.aether.remote.latest_status_source = "infra";
+        const turn = yield* adapter.sendTurn(h.send("Go"));
+        const statuses = () =>
+          events.flatMap((event) =>
+            event.type === "runtime.status" ? [[event.turnId, event.payload.message]] : [],
+          );
+        yield* waitFor("the boot status", () => (statuses().length > 0 ? true : undefined));
+
+        // The agent speaks; a later infra line (and the agent's own) no longer shows.
+        h.aether.remote.latest_status_message = "Workspace ready";
+        h.aether.say(running!, "text-1", "Starting on it.");
+        yield* waitFor("the agent's text", () =>
+          events.some((event) => event.itemId === "text-1") ? true : undefined,
+        );
+        h.aether.remote.latest_status_message = "Run command";
+        h.aether.remote.latest_status_source = "agent";
+        h.aether.settle(running!);
+        yield* waitFor("turn.completed", () => completions(events)[0]);
+
+        expect(statuses()).toEqual([[turn.turnId, "Booting workspace"]]);
+      }),
+    );
+  });
+
   describe("the task's branch", () => {
     it.effect(
       "puts the worktree on the task's branch and follows each push before the turn completes",

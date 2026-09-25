@@ -205,6 +205,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "files.persisted",
   "vcs.state.changed",
   "runtime.warning",
+  "runtime.status",
   "runtime.error",
   "event.unmapped",
 ]);
@@ -259,6 +260,7 @@ const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
 const VcsStateChangedType = Schema.Literal("vcs.state.changed");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
+const RuntimeStatusType = Schema.Literal("runtime.status");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 const EventUnmappedType = Schema.Literal("event.unmapped");
 
@@ -769,6 +771,16 @@ const RuntimeWarningPayload = Schema.Struct({
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 
+/**
+ * What the provider is doing for the turn before its agent reports anything, such as a cloud
+ * workspace booting ("Booting workspace"). The latest one shows under the working indicator
+ * until the agent's first output; it is never a transcript row.
+ */
+const RuntimeStatusPayload = Schema.Struct({
+  message: TrimmedNonEmptyStringSchema,
+});
+export type RuntimeStatusPayload = typeof RuntimeStatusPayload.Type;
+
 const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   class: Schema.optional(RuntimeErrorClass),
@@ -1145,6 +1157,13 @@ const ProviderRuntimeWarningEvent = Schema.Struct({
 });
 export type ProviderRuntimeWarningEvent = typeof ProviderRuntimeWarningEvent.Type;
 
+const ProviderRuntimeStatusEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: RuntimeStatusType,
+  payload: RuntimeStatusPayload,
+});
+export type ProviderRuntimeStatusEvent = typeof ProviderRuntimeStatusEvent.Type;
+
 const ProviderRuntimeEventUnmappedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: EventUnmappedType,
@@ -1209,6 +1228,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeFilesPersistedEvent,
   ProviderRuntimeVcsStateChangedEvent,
   ProviderRuntimeWarningEvent,
+  ProviderRuntimeStatusEvent,
   ProviderRuntimeErrorEvent,
   ProviderRuntimeEventUnmappedEvent,
 ]);

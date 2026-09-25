@@ -1241,6 +1241,40 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Work log");
   });
 
+  it("shows the provider's status under the working label until the agent speaks", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const render = (workingDetail: string | null) =>
+      renderToStaticMarkup(
+        <MessagesTimeline
+          hasMessages
+          isWorking
+          workingDetail={workingDetail}
+          activeTurnInProgress
+          activeTurnStartedAt="2026-09-25T17:37:14.000Z"
+          timelineEntries={[]}
+          turnDiffSummaryByAssistantMessageId={new Map()}
+          nowIso="2026-09-25T17:37:30.000Z"
+          expandedWorkGroups={{}}
+          onToggleWorkGroup={() => {}}
+          onOpenTurnDiff={() => {}}
+          revertTurnCountByUserMessageId={new Map()}
+          onRevertUserMessage={() => {}}
+          isRevertingCheckpoint={false}
+          onImageExpand={() => {}}
+          markdownCwd={undefined}
+          resolvedTheme="light"
+          timestampFormat="locale"
+          workspaceRoot={undefined}
+        />,
+      );
+
+    const booting = render("Booting workspace");
+    expect(booting).toContain("Thinking");
+    expect(booting).toContain('data-testid="working-detail"');
+    expect(booting.indexOf("Booting workspace")).toBeGreaterThan(booting.indexOf("Thinking"));
+    expect(render(null)).not.toContain('data-testid="working-detail"');
+  });
+
   it("keeps the generic working copy alongside the active compaction entry", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const [compactionEntry] = deriveWorkLogEntries(

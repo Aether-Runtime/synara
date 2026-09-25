@@ -581,6 +581,24 @@ export class AetherConversationIngest {
     return Result.succeed({ outputs, refreshTurns });
   }
 
+  /**
+   * Whether the next tick reads the turns page in place of `/live`: while the task is queued
+   * (its workspace boots, and nothing runs or is open), the head does not move but the task's
+   * status line does, and only the turns page carries it.
+   */
+  readsTurnsInPlaceOfLive(): boolean {
+    return this.state.task?.status === "queued" && this.state.open.length === 0;
+  }
+
+  /** Applies a turns page read in place of `/live` (see `readsTurnsInPlaceOfLive`). */
+  applyTurnsInPlaceOfLive(page: AetherConversationTurnsPage): ReadonlyArray<AetherIngestOutput> {
+    const state = this.state;
+    if (state.lastLiveHead !== undefined && page.head_revision < state.lastLiveHead) return [];
+    state.lastLiveHead = page.head_revision;
+    state.executing = false;
+    return this.applyTurns(page);
+  }
+
   /** Applies a turns page; a page older than the live head already applied is ignored. */
   applyTurns(page: AetherConversationTurnsPage): ReadonlyArray<AetherIngestOutput> {
     const state = this.state;
