@@ -1,3 +1,5 @@
+import { PROVIDER_DESCRIPTOR_BY_KIND } from "@synara/shared/providerMetadata";
+
 import type {
   ProviderAdapterCapabilities,
   ProviderAdapterShape,
@@ -11,7 +13,11 @@ type CapabilityFlag = Exclude<
   | "supportsPluginMentions"
   | "supportsLiveTurnDiffPatch"
   | "managesWorktreeBranch"
+  | "reachesAgentGateway"
 >;
+
+/** Adapter capabilities the shared provider descriptors mirror for the decider and the web. */
+type DescriptorMirroredCapability = "reachesAgentGateway" | "managesWorktreeBranch" | "conversationRollback";
 
 type OptionalAdapterMethod =
   | "steerTurn"
@@ -34,10 +40,12 @@ type RequiredAdapterMethod =
   | "rollbackThread"
   | "stopAll";
 
-export interface ProviderAdapterConformanceIssue {
-  readonly capability?: CapabilityFlag;
-  readonly missingMethod: OptionalAdapterMethod | RequiredAdapterMethod;
-}
+export type ProviderAdapterConformanceIssue =
+  | {
+      readonly capability?: CapabilityFlag;
+      readonly missingMethod: OptionalAdapterMethod | RequiredAdapterMethod;
+    }
+  | { readonly descriptorMismatch: DescriptorMirroredCapability };
 
 export interface ProviderAdapterRegistrationIssue {
   readonly provider: ProviderAdapterShape<unknown>["provider"];
@@ -78,6 +86,7 @@ export function providerAdapterConformanceIssues(
       issues.push({ missingMethod: method });
     }
   }
+  issues.push(...providerDescriptorMismatches(adapter));
   for (const requirement of CAPABILITY_METHOD_REQUIREMENTS) {
     if (adapter.capabilities[requirement.capability] !== true) {
       continue;
@@ -92,6 +101,32 @@ export function providerAdapterConformanceIssues(
     }
   }
   return issues;
+}
+
+/**
+ * The web and the pure decider gate features on the shared descriptors, and the reactors on
+ * the adapter; a mismatch would let one side offer what the other refuses.
+ */
+function providerDescriptorMismatches(
+  adapter: ProviderAdapterShape<unknown>,
+): ProviderAdapterConformanceIssue[] {
+  const descriptor = PROVIDER_DESCRIPTOR_BY_KIND[adapter.provider];
+  if (descriptor === undefined) return [];
+  const capabilities = adapter.capabilities;
+  const mismatches: DescriptorMirroredCapability[] = [];
+  if ((capabilities.reachesAgentGateway !== false) !== descriptor.reachesAgentGateway) {
+    mismatches.push("reachesAgentGateway");
+  }
+  if ((capabilities.managesWorktreeBranch === true) !== descriptor.managesWorktreeBranch) {
+    mismatches.push("managesWorktreeBranch");
+  }
+  if (
+    (capabilities.conversationRollback !== "unsupported") !==
+    descriptor.supportsConversationRollback
+  ) {
+    mismatches.push("conversationRollback");
+  }
+  return mismatches.map((descriptorMismatch) => ({ descriptorMismatch }));
 }
 
 export function providerAdapterRegistrationIssues(
@@ -116,9 +151,11 @@ export function assertProviderAdapterConformance(adapter: ProviderAdapterShape<u
 
   const detail = issues
     .map((issue) =>
-      issue.capability
-        ? `${issue.capability} requires ${issue.missingMethod}()`
-        : `required method ${issue.missingMethod}() is missing`,
+      "descriptorMismatch" in issue
+        ? `${issue.descriptorMismatch} disagrees with the shared provider descriptor`
+        : issue.capability
+          ? `${issue.capability} requires ${issue.missingMethod}()`
+          : `required method ${issue.missingMethod}() is missing`,
     )
     .join(", ");
   throw new Error(`Provider adapter "${adapter.provider}" has invalid capabilities: ${detail}.`);

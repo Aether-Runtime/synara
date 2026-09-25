@@ -39,6 +39,7 @@ import {
   providerSupportsAutoRuntimeMode,
   unsupportedAutoRuntimeModeMessage,
 } from "@synara/shared/runtimeMode";
+import { providerFeatureUnavailableMessage } from "@synara/shared/providerMetadata";
 import { createHash, randomUUID } from "node:crypto";
 import {
   Cause,
@@ -150,6 +151,23 @@ function validateAutoRuntimeMode(
         new ProviderValidationError({
           operation,
           issue: unsupportedAutoRuntimeModeMessage(provider),
+        }),
+      );
+}
+
+// A provider whose agent cannot reach the local agent gateway gets no gateway credential, so
+// Computer Use would silently do nothing: refuse it the way OpenCode's external server does.
+function validateComputerControlReachable(
+  operation: string,
+  adapter: Pick<ProviderAdapterShape<ProviderAdapterError>, "provider" | "capabilities">,
+  enableComputerControl: boolean | undefined,
+) {
+  return enableComputerControl !== true || adapter.capabilities.reachesAgentGateway !== false
+    ? Effect.void
+    : Effect.fail(
+        new ProviderValidationError({
+          operation,
+          issue: providerFeatureUnavailableMessage(adapter.provider, "computer-control"),
         }),
       );
 }
@@ -1861,6 +1879,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           input.provider,
           input.runtimeMode,
         );
+        yield* validateComputerControlReachable(
+          "ProviderService.startSession",
+          yield* registry.getByProvider(input.provider),
+          input.enableComputerControl,
+        );
         // An explicit start is the recovery authority for a failed retirement,
         // but it must never interleave with one still in progress. Capture the
         // exact settled fence so this replacement cannot delete a newer fence
@@ -3343,6 +3366,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               // not replay the stale native cursor merely to close it again.
               allowRecovery: false,
             });
+            if (routed.adapter.capabilities.conversationRollback === "unsupported") {
+              return yield* toValidationError(
+                "ProviderService.rollbackConversation",
+                providerFeatureUnavailableMessage(routed.adapter.provider, "conversation-rollback"),
+              );
+            }
             if (routed.adapter.capabilities.conversationRollback === "restart-session") {
               // Some provider protocols can resume but cannot rewind. Clear their
               // native cursor so edit-and-resend cannot continue from stale history;

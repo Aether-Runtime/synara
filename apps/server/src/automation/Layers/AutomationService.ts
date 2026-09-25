@@ -35,6 +35,10 @@ import {
 import { buildTemporaryWorktreeBranchName } from "@synara/shared/git";
 import { providerStartOptionsFromServerSettings } from "@synara/shared/serverSettings";
 import { autoRuntimeModeSelectionIssue } from "@synara/shared/runtimeMode";
+import {
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import { Cause, Effect, Layer, Option, PubSub, Queue, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -866,6 +870,22 @@ export const AutomationServiceLive = Layer.effect(
         : Effect.fail(new AutomationServiceError({ message: issue }));
     };
 
+    // Automations branch from local HEAD, which a provider that owns its worktree (it clones
+    // from origin) never sees. Checked on create, update and every run.
+    const validateAutomationProvider = (input: {
+      readonly modelSelection: AutomationDefinition["modelSelection"];
+    }) =>
+      providerSupportsFeature(input.modelSelection.provider, "automation")
+        ? Effect.void
+        : Effect.fail(
+            new AutomationServiceError({
+              message: providerFeatureUnavailableMessage(
+                input.modelSelection.provider,
+                "automation",
+              ),
+            }),
+          );
+
     // Run-path backstop for the fast-interval policy. validateSchedulePolicy enforces this at
     // create/update; this guards the run path it never covers. Effect.try converts a throwing
     // schedule (invalid cron/timezone in a persisted row) into a typed error so the dispatch
@@ -1042,6 +1062,7 @@ export const AutomationServiceLive = Layer.effect(
           acknowledgedRisks: definition.acknowledgedRisks,
         });
         yield* validateAutoRuntimeMode(definition);
+        yield* validateAutomationProvider(definition);
         yield* validateFastIntervalPolicy({
           schedule: definition.schedule,
           enabled: definition.enabled,
@@ -2622,6 +2643,7 @@ export const AutomationServiceLive = Layer.effect(
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode ?? "approval-required",
         });
+        yield* validateAutomationProvider(input);
         yield* validateHeartbeatTarget({
           mode: input.mode ?? "standalone",
           projectId: input.projectId,
@@ -2661,6 +2683,7 @@ export const AutomationServiceLive = Layer.effect(
           acknowledgedRisks: definition.acknowledgedRisks,
         });
         yield* validateAutoRuntimeMode(definition);
+        yield* validateAutomationProvider(definition);
         yield* validateHeartbeatTarget(definition);
       });
 

@@ -7,7 +7,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
-import { ModelSelection, ProviderStartOptions } from "./orchestration";
+import { ModelSelection, ProviderKind, ProviderStartOptions } from "./orchestration";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 
@@ -276,6 +276,9 @@ export const GitCreateDetachedWorktreeInput = Schema.Struct({
   ref: TrimmedNonEmptyStringSchema,
   path: Schema.NullOr(TrimmedNonEmptyStringSchema),
   copyChangesFrom: Schema.optional(TrimmedNonEmptyStringSchema),
+  // The provider the worktree is created for. A provider that owns its worktree (it clones
+  // from origin and resets the worktree on every turn) refuses `copyChangesFrom`.
+  provider: Schema.optional(ProviderKind),
   // When set, the worktree is created on this new branch (pinned at `ref`)
   // instead of a detached HEAD, so threads get a branch attached from birth.
   newBranch: Schema.optional(TrimmedNonEmptyStringSchema),

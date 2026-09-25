@@ -15,6 +15,27 @@ export interface ProviderDescriptor {
    * can route steers without a runtime round-trip; keep the two in sync.
    */
   readonly supportsNativeTurnSteering: boolean;
+  /**
+   * False when the provider's agent cannot reach Synara's local agent gateway (Aether runs in
+   * a cloud VM), so it never gets the thread-scoped synara_* tools that thread goals, Computer
+   * Use, browser automation and device tools depend on. Mirrors the adapter's
+   * `reachesAgentGateway` capability; the adapter registry refuses a mismatch.
+   */
+  readonly reachesAgentGateway: boolean;
+  /**
+   * True when the provider owns its thread's worktree and branch (Aether mirrors its cloud VM
+   * into it). Its threads always start in a new worktree, and nothing that shares, copies into,
+   * or branches from the local checkout applies: Local mode, local↔worktree handoff,
+   * copied changes, side chats, automations, and provider handoff. Mirrors the adapter's
+   * `managesWorktreeBranch` capability.
+   */
+  readonly managesWorktreeBranch: boolean;
+  /**
+   * False when the provider cannot rewind its conversation, so checkpoint revert and
+   * edit-and-resend are refused before any file is touched. Mirrors the adapter's
+   * `conversationRollback` capability being `"unsupported"`.
+   */
+  readonly supportsConversationRollback: boolean;
   /** Synara docs page covering install, sign-in, and verification for this runtime. */
   readonly setupDocsHref: string;
   readonly usage: {
@@ -39,6 +60,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/codex",
     supportsNativeTurnSteering: true,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "codex login",
       learnMoreHref: "https://platform.openai.com/usage",
@@ -50,6 +74,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/claude-code",
     supportsNativeTurnSteering: true,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "claude",
       learnMoreHref: "https://docs.anthropic.com/en/docs/about-claude/models#rate-limits",
@@ -61,6 +88,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/cursor",
     supportsNativeTurnSteering: false,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "cursor-agent login",
       learnMoreHref: "https://cursor.com/dashboard",
@@ -72,6 +102,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/antigravity",
     supportsNativeTurnSteering: false,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "agy",
       learnMoreHref: "https://antigravity.google",
@@ -83,6 +116,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/grok",
     supportsNativeTurnSteering: false,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "grok login",
       learnMoreHref: "https://console.x.ai",
@@ -94,6 +130,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/factory-droid",
     supportsNativeTurnSteering: false,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "droid",
       learnMoreHref: "https://docs.factory.ai/pricing",
@@ -105,6 +144,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/opencode",
     supportsNativeTurnSteering: false,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "opencode auth login",
       learnMoreHref: "https://opencode.ai",
@@ -116,6 +158,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/pi",
     supportsNativeTurnSteering: true,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "pi",
       learnMoreHref: "https://pi.dev",
@@ -127,6 +172,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://trysynara.com/docs/providers/devin",
     supportsNativeTurnSteering: false,
+    reachesAgentGateway: true,
+    managesWorktreeBranch: false,
+    supportsConversationRollback: true,
     usage: {
       signInCommand: "devin auth login",
       learnMoreHref: "https://app.devin.ai/usage",
@@ -139,6 +187,9 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     available: true,
     setupDocsHref: "https://runaether.dev",
     supportsNativeTurnSteering: false,
+    reachesAgentGateway: false,
+    managesWorktreeBranch: true,
+    supportsConversationRollback: false,
     usage: null,
   },
 ] as const satisfies readonly ProviderDescriptor[]);
@@ -153,3 +204,74 @@ export const providerSupportsNativeTurnSteering = (kind: string): boolean =>
   PROVIDER_DESCRIPTORS.some(
     (descriptor) => descriptor.kind === kind && descriptor.supportsNativeTurnSteering,
   );
+
+const findProviderDescriptor = (kind: string) =>
+  PROVIDER_DESCRIPTORS.find((descriptor) => descriptor.kind === kind);
+
+// The capability checks below also accept plain strings. An unknown provider is not gated
+// here: it cannot start a session, and the adapter registry already fails loudly for it.
+export const providerReachesAgentGateway = (kind: string): boolean =>
+  findProviderDescriptor(kind)?.reachesAgentGateway ?? true;
+
+export const providerManagesWorktreeBranch = (kind: string): boolean =>
+  findProviderDescriptor(kind)?.managesWorktreeBranch ?? false;
+
+export const providerSupportsConversationRollback = (kind: string): boolean =>
+  findProviderDescriptor(kind)?.supportsConversationRollback ?? true;
+
+/** A Synara feature a provider capability can rule out. */
+export type ProviderGatedFeature =
+  | "thread-goal"
+  | "computer-control"
+  | "sidechat"
+  | "automation"
+  | "conversation-rollback"
+  | "local-workspace"
+  | "copy-changes"
+  | "provider-handoff";
+
+/**
+ * The provider capability a feature needs, as one predicate. The server refuses and the web
+ * hides with the same answer, so the two cannot drift apart.
+ */
+export function providerSupportsFeature(kind: string, feature: ProviderGatedFeature): boolean {
+  switch (feature) {
+    case "thread-goal":
+    case "computer-control":
+      return providerReachesAgentGateway(kind);
+    case "sidechat":
+    case "automation":
+    case "local-workspace":
+    case "copy-changes":
+    case "provider-handoff":
+      return !providerManagesWorktreeBranch(kind);
+    case "conversation-rollback":
+      return providerSupportsConversationRollback(kind);
+  }
+}
+
+/** Why `feature` is unavailable for `kind`; the server's refusal text. */
+export function providerFeatureUnavailableMessage(
+  kind: string,
+  feature: ProviderGatedFeature,
+): string {
+  const name = findProviderDescriptor(kind)?.displayName ?? kind;
+  switch (feature) {
+    case "thread-goal":
+      return `Thread goals are unavailable with ${name}: its agent cannot reach Synara's agent gateway, so it could never mark a goal as achieved.`;
+    case "computer-control":
+      return `Computer Use, browser automation and device tools are unavailable with ${name}: its agent cannot reach Synara's agent gateway.`;
+    case "sidechat":
+      return `Side chats are unavailable in ${name} threads: a side chat shares the parent's checkout, which ${name} owns and resets on every turn.`;
+    case "automation":
+      return `Automations cannot run on ${name}: an automation branches from your local HEAD, which ${name} never sees.`;
+    case "conversation-rollback":
+      return `${name} cannot roll back its conversation, so reverting or editing earlier messages is unavailable in this thread.`;
+    case "local-workspace":
+      return `${name} threads always run in a new worktree that ${name} owns; they cannot work in the local checkout.`;
+    case "copy-changes":
+      return `${name} threads cannot copy local changes into their worktree: ${name} clones from origin and resets the worktree on every turn.`;
+    case "provider-handoff":
+      return `Handing a thread off to or from ${name} is not available yet: ${name} needs a clean, pushed worktree that it owns.`;
+  }
+}
