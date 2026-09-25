@@ -504,6 +504,10 @@ describe("MessagesTimeline tail anchor", () => {
           const offset = anchorTopOffsetPx(handle(), FIRST_SENT_MESSAGE_ID);
           if (offset !== null) offsets.push(offset);
         }
+        // The cached working row renders each change.
+        expect(document.querySelector('[data-testid="working-detail"]')?.textContent ?? null).toBe(
+          detail,
+        );
       }
 
       expect(offsets.length).toBeGreaterThan(0);

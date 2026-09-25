@@ -930,6 +930,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       settledTurnCollapseTransitions,
       submittingEditedUserMessageId,
       toolGroupSummaryOverrides,
+      workingDetail,
     }),
     [
       crossTaskOrigin,
@@ -948,6 +949,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       settledTurnCollapseTransitions,
       submittingEditedUserMessageId,
       toolGroupSummaryOverrides,
+      workingDetail,
     ],
   );
   // Latest rows kept in a ref so the imperative scroll controller can look up a message's
