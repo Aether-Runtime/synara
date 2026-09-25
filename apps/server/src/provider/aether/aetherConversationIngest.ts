@@ -25,15 +25,13 @@ import {
   type CanonicalItemType,
   type ProviderRuntimeEvent,
   type RuntimeItemStatus,
-  type RuntimeTaskListItem,
   type ThreadId,
   type TurnId,
   type UserInputQuestion,
 } from "@synara/contracts";
-import { Option, Result, Schema } from "effect";
+import { Cause, Result, Schema } from "effect";
 
 import { normalizeClaudeTodoTasks } from "../claudeTaskTracker.ts";
-import { makeRuntimeTaskListItem, nonEmptyRuntimeTaskListPayload } from "../runtimeTaskList.ts";
 import type {
   AetherConversationTurnsPage,
   AetherLiveConversationSnapshot,
@@ -43,8 +41,10 @@ import type {
   AetherTimelineTool,
   AetherToolId,
   AetherTaskId,
+  AetherTurnActivityPage,
   AetherTurnId,
   AetherUnknownValue,
+  AetherUserMessage,
 } from "./aetherApiSchemas.ts";
 
 // ---------------------------------------------------------------------------
@@ -58,12 +58,10 @@ export interface AetherIngestContext {
   readonly turnIdFor: (turnId: AetherTurnId) => TurnId;
 }
 
-export interface AetherIngestSeed {
-  /**
-   * How much of each message Synara already holds, for a restart in the middle of a stream:
-   * streaming resumes after that many characters instead of repeating them.
-   */
-  readonly streamedLengthByMessageId?: ReadonlyMap<string, number>;
+/** A turn run: its turn, and the user message that started it (the root, or an answer). */
+export interface AetherRunKey {
+  readonly turnId: AetherTurnId;
+  readonly runMessageId: string;
 }
 
 export type AetherPendingInputKind = "questions" | "plan";
@@ -82,6 +80,7 @@ export type AetherIngestOutput =
       readonly _tag: "TurnOrigin";
       readonly turnId: AetherTurnId;
       readonly rootMessageId: AetherMessageId;
+      readonly rootMessageText: string;
       readonly clientMessageId?: string;
     }
   /**
@@ -102,14 +101,13 @@ export type AetherIngestOutput =
       readonly kind: AetherPendingInputKind;
     }
   /**
-   * Exactly once per turn run. A run is keyed by the last user message in the turn
-   * (`runMessageId`): the root message, or the answer that resumed the turn.
+   * Once per turn run, after the run's last event. A run is keyed by the turn's last user message
+   * (`runMessageId`): the root message, or the answer that resumed the turn. A proposed plan
+   * therefore settles its Aether turn twice: `awaiting_input(plan)` when the plan is proposed,
+   * then `settled` (or `errored`) when the approved run ends. That is intended: approving a plan
+   * starts a new Synara turn, so the adapter maps each settle to its own Synara turn.
    */
-  | ({
-      readonly _tag: "TurnSettled";
-      readonly turnId: AetherTurnId;
-      readonly runMessageId: string;
-    } & AetherTurnSettlement)
+  | ({ readonly _tag: "TurnSettled" } & AetherRunKey & AetherTurnSettlement)
   /** `resetSequence` moved: the conversation was truncated and is being re-read. */
   | { readonly _tag: "ConversationReset"; readonly resetSequence: number };
 
@@ -120,7 +118,7 @@ export class AetherTranscriptDivergedError extends Schema.TaggedErrorClass<Aethe
     taskId: Schema.String,
     turnId: Schema.String,
     messageId: Schema.String,
-    source: Schema.Literals(["live", "activity", "seed"]),
+    source: Schema.Literals(["live", "activity"]),
     streamedLength: Schema.Number,
     receivedLength: Schema.Number,
   },
@@ -130,17 +128,24 @@ export class AetherTranscriptDivergedError extends Schema.TaggedErrorClass<Aethe
   }
 }
 
+/** A pending question or plan that Synara cannot follow: no turn owns it, or its answer is unreadable. */
+export class AetherPendingInputError extends Schema.TaggedErrorClass<AetherPendingInputError>()(
+  "AetherPendingInputError",
+  {
+    taskId: Schema.String,
+    toolId: Schema.String,
+    detail: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Synara cannot follow Aether's pending input ${this.toolId}: ${this.detail}`;
+  }
+}
+
 export interface AetherLiveStep {
   readonly outputs: ReadonlyArray<AetherIngestOutput>;
   /** `headRevision` moved (or a previous refresh did not finish): re-read the turns page. */
   readonly refreshTurns: boolean;
-}
-
-/** One activity page, as far as paging back needs it. */
-export interface AetherActivityPageView {
-  readonly items: ReadonlyArray<AetherTimelineMessage>;
-  readonly has_more_older: boolean;
-  readonly oldest_sequence_loaded: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,9 +204,6 @@ function toolStatus(status: AetherToolStatus): ToolStatus {
   }
 }
 
-const isUnknown = (value: unknown): value is AetherUnknownValue =>
-  typeof value === "object" && value !== null && (value as { _tag?: unknown })._tag === "Unknown";
-
 // ---------------------------------------------------------------------------
 // Input decoding
 // ---------------------------------------------------------------------------
@@ -224,10 +226,16 @@ const AskUserAnswer = Schema.Struct({
 
 const ProposePlanInput = Schema.Struct({ plan: Schema.String });
 
+type Answers = Record<string, string | ReadonlyArray<string> | null>;
+type ToolResponse = NonNullable<AetherUserMessage["toolResponse"]>;
+
 /** Synara's question cards need every text field non-empty after trimming. */
-function questionsFromInput(input: unknown): ReadonlyArray<UserInputQuestion> | undefined {
-  const decoded = Schema.decodeUnknownOption(AskUserInput)(input);
-  if (Option.isNone(decoded) || decoded.value.questions.length === 0) return undefined;
+function questionsFromInput(
+  input: unknown,
+): Result.Result<ReadonlyArray<UserInputQuestion>, string> {
+  const decoded = Schema.decodeUnknownExit(AskUserInput)(input);
+  if (decoded._tag === "Failure") return Result.fail(Cause.pretty(decoded.cause));
+  if (decoded.value.questions.length === 0) return Result.fail("it asks no questions");
   const questions: UserInputQuestion[] = [];
   for (const [index, question] of decoded.value.questions.entries()) {
     const text = question.question.trim();
@@ -239,9 +247,9 @@ function questionsFromInput(input: unknown): ReadonlyArray<UserInputQuestion> | 
     if (
       text === "" ||
       header === "" ||
-      options.some((option) => option.label === "" || option.description === "")
+      options.some((o) => o.label === "" || o.description === "")
     ) {
-      return undefined;
+      return Result.fail(`question ${index} has a blank question, header or option`);
     }
     // Aether keys answers by question index, so the index is the question id.
     questions.push({
@@ -252,48 +260,43 @@ function questionsFromInput(input: unknown): ReadonlyArray<UserInputQuestion> | 
       multiSelect: question.multiSelect ?? false,
     });
   }
-  return questions;
+  return Result.succeed(questions);
 }
 
-/** Answer labels by question id, from an `ask_user` tool response. */
+/** Answer labels by question id, from the `ask_user` response that answered `questions`. */
 function answersFromResponse(
   questions: ReadonlyArray<UserInputQuestion>,
-  data: unknown,
-): Record<string, string | ReadonlyArray<string> | null> | undefined {
-  const decoded = Schema.decodeUnknownOption(AskUserAnswer)(data);
-  if (Option.isNone(decoded)) return undefined;
-  const answers: Record<string, string | ReadonlyArray<string> | null> = {};
-  for (const question of questions) {
-    const labels = (decoded.value.answers[question.id] ?? []).flatMap((choice) => {
-      const label = question.options[choice]?.label;
-      return label === undefined ? [] : [label];
-    });
-    const custom = decoded.value.customAnswers?.[question.id]?.trim();
-    const chosen = custom === undefined || custom === "" ? labels : [...labels, custom];
-    answers[question.id] = question.multiSelect ? chosen : (chosen[0] ?? null);
+  response: ToolResponse,
+): Result.Result<Answers, string> {
+  if (response.tool_name !== "ask_user") {
+    return Result.fail(`it was answered with a ${response.tool_name} response`);
   }
-  return answers;
-}
-
-/** Claude's `TodoWrite` (`todos`) or Codex's `update_plan` (`plan`, `explanation`). */
-function taskListFromInput(input: Readonly<Record<string, unknown>>):
-  | {
-      readonly explanation?: string;
-      readonly tasks: ReadonlyArray<RuntimeTaskListItem>;
+  const decoded = Schema.decodeUnknownExit(AskUserAnswer)(response.data);
+  if (decoded._tag === "Failure") return Result.fail(Cause.pretty(decoded.cause));
+  const { answers: choices, customAnswers = {} } = decoded.value;
+  const asked = new Set(questions.map((question) => question.id));
+  const unasked = [...Object.keys(choices), ...Object.keys(customAnswers)].find(
+    (id) => !asked.has(id),
+  );
+  if (unasked !== undefined) return Result.fail(`the answer names question ${unasked}`);
+  const answers: Answers = {};
+  for (const question of questions) {
+    const labels: string[] = [];
+    for (const choice of choices[question.id] ?? []) {
+      const label = question.options[choice]?.label;
+      if (label === undefined) {
+        return Result.fail(`question ${question.id} has no option ${choice}`);
+      }
+      labels.push(label);
     }
-  | undefined {
-  if (Array.isArray(input.todos)) return normalizeClaudeTodoTasks(input) ?? undefined;
-  if (!Array.isArray(input.plan)) return undefined;
-  const tasks = input.plan.flatMap((entry: unknown) => {
-    if (typeof entry !== "object" || entry === null) return [];
-    const step = entry as Record<string, unknown>;
-    const item = makeRuntimeTaskListItem(step.step, step.status);
-    return item ? [item] : [];
-  });
-  const payload = nonEmptyRuntimeTaskListPayload(tasks);
-  if (payload === null) return undefined;
-  const explanation = typeof input.explanation === "string" ? input.explanation.trim() : "";
-  return explanation === "" ? payload : { explanation, ...payload };
+    const custom = customAnswers[question.id]?.trim();
+    if (custom !== undefined && custom !== "") labels.push(custom);
+    if (!question.multiSelect && labels.length > 1) {
+      return Result.fail(`question ${question.id} takes one answer and got ${labels.length}`);
+    }
+    answers[question.id] = question.multiSelect ? labels : (labels[0] ?? null);
+  }
+  return Result.succeed(answers);
 }
 
 function fingerprint(value: unknown): string {
@@ -314,7 +317,6 @@ type TurnState = AetherConversationTurnsPage["turns"][number]["state"];
 type RowRecord =
   | { readonly kind: "tool"; readonly key: string; readonly terminal: boolean }
   | { readonly kind: "tasks"; readonly key: string | undefined; readonly terminal: boolean }
-  | { readonly kind: "client" }
   | { readonly kind: "done" };
 
 interface TurnRecord {
@@ -326,14 +328,14 @@ interface TurnRecord {
   revisionRead: number | undefined;
   /** The last user message in the turn: the root, or an answer that resumed it. */
   lastUserMessageId: string;
-  /** `ask_user` answers carried by user rows, in order. */
-  readonly answers: Array<unknown>;
+  /** Question and plan calls in the turn, each with the response of the answer row after it. */
+  readonly inputs: Map<AetherToolId, ToolResponse | undefined>;
+  /** The latest of `inputs`: the call the next answer row answers. */
+  lastInputId: AetherToolId | undefined;
   readonly rows: Map<string, RowRecord>;
 }
 
 interface MessageRecord {
-  readonly turnId: AetherTurnId;
-  readonly variant: "text" | "thinking";
   /** Text already streamed as deltas. */
   streamed: string;
   /** The closed message's final text. */
@@ -353,6 +355,27 @@ type AwaitingAnswer = Extract<
   { readonly tool_id: AetherToolId }
 >;
 
+interface IngestState {
+  lastLiveHead: number | undefined;
+  turnsRefreshPending: boolean;
+  resetSequence: number | undefined;
+  executing: boolean;
+  task: AetherTask | undefined;
+  open: AetherLiveConversationSnapshot["open"];
+  /** Turns in page order, oldest first like activity rows. */
+  turnOrder: ReadonlyArray<AetherTurnId>;
+  /** Turns the resume watermark covers, fixed at the first turns page. */
+  resumed: ReadonlySet<AetherTurnId> | undefined;
+  readonly turns: Map<AetherTurnId, TurnRecord>;
+  readonly messages: Map<string, MessageRecord>;
+  pending: PendingInput | undefined;
+  readonly surfacedToolIds: Set<string>;
+  readonly settledRuns: Set<string>;
+  readonly warnedOnce: Set<string>;
+}
+
+const runKey = (turn: TurnRecord) => `${turn.id}:${turn.lastUserMessageId}`;
+
 // ---------------------------------------------------------------------------
 // Ingest
 // ---------------------------------------------------------------------------
@@ -360,136 +383,168 @@ type AwaitingAnswer = Extract<
 /**
  * One task's conversation ingestion. Feed it every live snapshot, the turns page whenever
  * `refreshTurns` asks for it, each turn from `turnsNeedingActivity()`, then `finishRefresh`.
+ * Methods change the state in place; the poller applies each tick to a `fork()` and keeps the
+ * fork only when the whole tick succeeds.
  */
 export class AetherConversationIngest {
   private readonly context: AetherIngestContext;
-  private readonly seedLengths: ReadonlyMap<string, number>;
+  private readonly resumeAfter: AetherRunKey | undefined;
+  private state: IngestState = {
+    lastLiveHead: undefined,
+    turnsRefreshPending: true,
+    resetSequence: undefined,
+    executing: false,
+    task: undefined,
+    open: [],
+    turnOrder: [],
+    resumed: undefined,
+    turns: new Map(),
+    messages: new Map(),
+    pending: undefined,
+    surfacedToolIds: new Set(),
+    settledRuns: new Set(),
+    warnedOnce: new Set(),
+  };
 
-  private lastLiveHead: number | undefined;
-  private turnsRefreshPending = true;
-  private resetSequence: number | undefined;
-  private executing = false;
-  private task: AetherTask | undefined;
-  private openIds: ReadonlyArray<AetherMessageId> = [];
-  private turnOrder: ReadonlyArray<AetherTurnId> = [];
-  private readonly turns = new Map<AetherTurnId, TurnRecord>();
-  private readonly messages = new Map<string, MessageRecord>();
-  private pending: PendingInput | undefined;
-  private readonly surfacedToolIds = new Set<string>();
-  private readonly settledRuns = new Set<string>();
-  private readonly warnedOnce = new Set<string>();
-
-  constructor(context: AetherIngestContext, seed: AetherIngestSeed = {}) {
+  /**
+   * `resumeAfter` is the last run the adapter signalled before a restart: that run, and every
+   * turn listed before its turn on the first turns page, count as signalled, so history does not
+   * settle again. If its turn is not on that page (the conversation was truncated past it), every
+   * turn there counts.
+   */
+  constructor(context: AetherIngestContext, resumeAfter?: AetherRunKey) {
     this.context = context;
-    this.seedLengths = seed.streamedLengthByMessageId ?? new Map();
+    this.resumeAfter = resumeAfter;
+  }
+
+  /** An independent copy to apply a tick to. */
+  fork(): AetherConversationIngest {
+    const fork = new AetherConversationIngest(this.context, this.resumeAfter);
+    const state = this.state;
+    fork.state = {
+      ...state,
+      turns: new Map(
+        [...state.turns].map(([id, turn]) => [
+          id,
+          { ...turn, inputs: new Map(turn.inputs), rows: new Map(turn.rows) },
+        ]),
+      ),
+      messages: new Map([...state.messages].map(([id, message]) => [id, { ...message }])),
+      surfacedToolIds: new Set(state.surfacedToolIds),
+      settledRuns: new Set(state.settledRuns),
+      warnedOnce: new Set(state.warnedOnce),
+    };
+    return fork;
   }
 
   /** The open message ids to pass to the next live read. */
   openMessageIds(): ReadonlyArray<AetherMessageId> {
-    return this.openIds;
+    return this.state.open.map((message) => message.id);
   }
 
   /**
-   * Whether the task still has work to watch: an executing run, a queued or processing task,
-   * a question or plan waiting on an answer, or data not read yet.
+   * Whether the task still has work to watch: an executing run, a busy task, a question or plan
+   * waiting on an answer, a turn still running, a run not signalled yet, or data not read yet.
    */
   shouldKeepPolling(): boolean {
-    if (this.executing || this.openIds.length > 0 || this.turnsRefreshPending) return true;
-    if (this.turnsNeedingActivity().length > 0) return true;
-    const task = this.task;
-    if (task === undefined) return true;
-    switch (task.status) {
-      case "queued":
-      case "processing":
-        return true;
-      case "awaiting_input":
-        return task.awaiting_input.kind !== "message";
-      case "errored":
-        return false;
-    }
+    const { executing, open, turnsRefreshPending, task, turnOrder, turns } = this.state;
+    if (executing || open.length > 0 || turnsRefreshPending) return true;
+    if (this.turnsNeedingActivity().length > 0 || this.awaitingAnswer() !== undefined) return true;
+    if (task === undefined || task.status === "queued" || task.status === "processing") return true;
+    return turnOrder.some((id) => {
+      const turn = turns.get(id)!;
+      return (turn.state !== "settled" && turn.state !== "errored") || !this.isSignalled(turn);
+    });
   }
 
   applyLive(
     snapshot: AetherLiveConversationSnapshot,
     observedAt: string,
   ): Result.Result<AetherLiveStep, AetherTranscriptDivergedError> {
+    const state = this.state;
     const outputs: AetherIngestOutput[] = [];
-    if (this.resetSequence !== undefined && snapshot.resetSequence !== this.resetSequence) {
+    if (state.resetSequence !== undefined && snapshot.resetSequence !== state.resetSequence) {
       // Rows past the reset are gone. Re-read every turn from the newest page; rows that
       // survived keep their ids, so re-reading them emits nothing new.
-      for (const turn of this.turns.values()) turn.revisionRead = undefined;
-      this.turnsRefreshPending = true;
+      for (const turn of state.turns.values()) turn.revisionRead = undefined;
+      state.turnsRefreshPending = true;
       outputs.push({ _tag: "ConversationReset", resetSequence: snapshot.resetSequence });
-      outputs.push(
-        this.warning(undefined, ["reset", String(snapshot.resetSequence)], observedAt, {
-          message: "The Aether conversation was truncated; Synara re-read it from the first page.",
-          detail: { resetSequence: snapshot.resetSequence },
-        }),
-      );
     }
-    this.resetSequence = snapshot.resetSequence;
-    this.executing = snapshot.activeExecution !== undefined;
+    state.resetSequence = snapshot.resetSequence;
+    state.executing = snapshot.activeExecution !== undefined;
 
     // Closed messages first: they were opened before anything still open.
-    for (const message of snapshot.replacements) {
-      const text = this.advanceText(message, message.conversationTurnId, true, "live", observedAt);
-      if (Result.isFailure(text)) return Result.fail(text.failure);
-      outputs.push(...text.success);
+    for (const [messages, closed] of [
+      [snapshot.replacements, true],
+      [snapshot.open, false],
+    ] as const) {
+      for (const message of messages) {
+        const text = this.advanceText(
+          message,
+          message.conversationTurnId,
+          closed,
+          "live",
+          observedAt,
+        );
+        if (Result.isFailure(text)) return Result.fail(text.failure);
+        outputs.push(...text.success);
+      }
     }
-    for (const message of snapshot.open) {
-      const text = this.advanceText(message, message.conversationTurnId, false, "live", observedAt);
-      if (Result.isFailure(text)) return Result.fail(text.failure);
-      outputs.push(...text.success);
-    }
-    this.openIds = snapshot.open.map((message) => message.id);
+    state.open = snapshot.open;
 
-    const refreshTurns = this.turnsRefreshPending || snapshot.headRevision !== this.lastLiveHead;
-    this.lastLiveHead = snapshot.headRevision;
-    this.turnsRefreshPending = refreshTurns;
+    const refreshTurns = state.turnsRefreshPending || snapshot.headRevision !== state.lastLiveHead;
+    state.lastLiveHead = snapshot.headRevision;
+    state.turnsRefreshPending = refreshTurns;
     return Result.succeed({ outputs, refreshTurns });
   }
 
+  /** Applies a turns page; a page older than the live head already applied is ignored. */
   applyTurns(page: AetherConversationTurnsPage): ReadonlyArray<AetherIngestOutput> {
+    const state = this.state;
+    if (state.lastLiveHead !== undefined && page.head_revision < state.lastLiveHead) return [];
     const outputs: AetherIngestOutput[] = [];
-    this.task = page.task;
-    this.turnsRefreshPending = false;
+    state.task = page.task;
+    state.turnsRefreshPending = false;
+    if (state.resumed === undefined) {
+      const mark = this.resumeAfter;
+      const markAt = mark === undefined ? -1 : page.turns.findIndex((t) => t.id === mark.turnId);
+      const covered = mark === undefined ? 0 : markAt === -1 ? page.turns.length : markAt + 1;
+      state.resumed = new Set(page.turns.slice(0, covered).map((turn) => turn.id));
+    }
     for (const turn of page.turns) {
-      const known = this.turns.get(turn.id);
-      if (known === undefined) {
-        this.turns.set(turn.id, {
-          id: turn.id,
-          state: turn.state,
-          revision: turn.revision_sequence,
-          revisionRead: undefined,
-          lastUserMessageId: turn.root_message.id,
-          answers: [],
-          rows: new Map(),
-        });
-        outputs.push({
-          _tag: "TurnOrigin",
-          turnId: turn.id,
-          rootMessageId: turn.root_message.id,
-          ...(turn.root_message.clientMessageId === undefined
-            ? {}
-            : { clientMessageId: turn.root_message.clientMessageId }),
-        });
-      } else {
+      const known = state.turns.get(turn.id);
+      if (known !== undefined) {
         known.state = turn.state;
         known.revision = turn.revision_sequence;
+        continue;
       }
+      state.turns.set(turn.id, {
+        id: turn.id,
+        state: turn.state,
+        revision: turn.revision_sequence,
+        revisionRead: undefined,
+        lastUserMessageId: turn.root_message.id,
+        inputs: new Map(),
+        lastInputId: undefined,
+        rows: new Map(),
+      });
+      outputs.push({
+        _tag: "TurnOrigin",
+        turnId: turn.id,
+        rootMessageId: turn.root_message.id,
+        rootMessageText: turn.root_message.content,
+        ...(turn.root_message.clientMessageId === undefined
+          ? {}
+          : { clientMessageId: turn.root_message.clientMessageId }),
+      });
     }
-    this.turnOrder = page.turns.map((turn) => turn.id);
+    state.turnOrder = page.turns.map((turn) => turn.id);
     return outputs;
   }
 
   /** Turns whose activity changed since it was last read. */
   turnsNeedingActivity(): ReadonlyArray<AetherTurnId> {
-    return this.turnOrder.filter((turnId) => {
-      const turn = this.turns.get(turnId);
-      return (
-        turn !== undefined && (turn.revisionRead === undefined || turn.revisionRead < turn.revision)
-      );
-    });
+    return this.state.turnOrder.filter((turnId) => !this.isCurrent(this.state.turns.get(turnId)!));
   }
 
   /**
@@ -499,19 +554,18 @@ export class AetherConversationIngest {
    */
   needsOlderActivity(
     turnId: AetherTurnId,
-    page: AetherActivityPageView,
+    page: AetherTurnActivityPage,
     readSoFar: ReadonlySet<string>,
   ): boolean {
     if (!page.has_more_older || page.oldest_sequence_loaded === null) return false;
-    const turn = this.turns.get(turnId);
+    const turn = this.state.turns.get(turnId);
     if (turn === undefined || turn.revisionRead === undefined) return true;
     const oldest = page.items[0];
     if (oldest === undefined || !turn.rows.has(oldest.id)) return true;
     for (const [rowId, row] of turn.rows) {
+      const message = this.state.messages.get(rowId);
       const open =
-        row.kind === "tool" || row.kind === "tasks"
-          ? !row.terminal
-          : this.messages.get(rowId)?.final === undefined && this.messages.has(rowId);
+        row.kind === "done" ? message !== undefined && message.final === undefined : !row.terminal;
       if (open && !readSoFar.has(rowId)) return true;
     }
     return false;
@@ -524,18 +578,21 @@ export class AetherConversationIngest {
     revision: number,
     observedAt: string,
   ): Result.Result<ReadonlyArray<AetherIngestOutput>, AetherTranscriptDivergedError> {
-    const turn = this.turns.get(turnId);
-    if (turn === undefined) return Result.succeed([]);
+    const turn = this.state.turns.get(turnId);
+    // A read older than one already applied (a lagging replica) is dropped and read again.
+    if (turn === undefined || revision < (turn.revisionRead ?? 0)) return Result.succeed([]);
     const outputs: AetherIngestOutput[] = [];
     for (const item of items) {
       if (item.role === "user") {
         turn.lastUserMessageId = item.id;
+        const answered = turn.lastInputId;
         if (
           item.toolResponse !== undefined &&
-          item.toolResponse.tool_name === "ask_user" &&
-          !turn.rows.has(item.id)
+          !turn.rows.has(item.id) &&
+          answered !== undefined &&
+          turn.inputs.get(answered) === undefined
         ) {
-          turn.answers.push(item.toolResponse.data);
+          turn.inputs.set(answered, item.toolResponse);
         }
         turn.rows.set(item.id, { kind: "done" });
         continue;
@@ -545,7 +602,7 @@ export class AetherConversationIngest {
         case "thinking": {
           turn.rows.set(item.id, { kind: "done" });
           // While a message is open the live endpoint owns it.
-          if (this.openIds.includes(item.id)) break;
+          if (this.state.open.some((message) => message.id === item.id)) break;
           const text = this.advanceText(item, turnId, true, "activity", observedAt);
           if (Result.isFailure(text)) return text;
           outputs.push(...text.success);
@@ -559,9 +616,8 @@ export class AetherConversationIngest {
           break;
       }
     }
-    // The activity was read after the turns page, so it is at least as new as the page's
-    // revision even when its own `turn_revision_sequence` trails it.
-    turn.revisionRead = Math.max(turn.revisionRead ?? 0, revision, turn.revision);
+    // A read that trails the turns page is applied, and the turn is read again next tick.
+    turn.revisionRead = revision;
     return Result.succeed(outputs);
   }
 
@@ -569,36 +625,41 @@ export class AetherConversationIngest {
    * After a refresh's reads: resolves an answered question or plan, surfaces a new one, and
    * signals every turn run that settled.
    */
-  finishRefresh(observedAt: string): ReadonlyArray<AetherIngestOutput> {
+  finishRefresh(
+    observedAt: string,
+  ): Result.Result<ReadonlyArray<AetherIngestOutput>, AetherPendingInputError> {
+    const state = this.state;
     const outputs: AetherIngestOutput[] = [];
     const awaiting = this.awaitingAnswer();
 
-    const pending = this.pending;
-    if (pending !== undefined && awaiting?.tool_id !== pending.toolId) {
-      if (pending.kind === "questions") {
-        outputs.push(this.resolveQuestions(pending, observedAt));
-      }
-      outputs.push({
-        _tag: "PendingInputResolved",
-        turnId: pending.turnId,
-        toolId: pending.toolId,
-        kind: pending.kind,
-      });
-      this.pending = undefined;
+    // An answer is read from the pending turn's activity, so wait until that is current.
+    const pending = state.pending;
+    if (
+      pending !== undefined &&
+      awaiting?.tool_id !== pending.toolId &&
+      this.isCurrent(state.turns.get(pending.turnId)!)
+    ) {
+      const resolved = this.resolveInput(pending, observedAt);
+      if (Result.isFailure(resolved)) return resolved;
+      outputs.push(...resolved.success);
+      state.pending = undefined;
     }
-    if (awaiting !== undefined && !this.surfacedToolIds.has(awaiting.tool_id)) {
-      outputs.push(...this.surfaceInput(awaiting, observedAt));
+    if (awaiting !== undefined && !state.surfacedToolIds.has(awaiting.tool_id)) {
+      const surfaced = this.surfaceInput(awaiting, observedAt);
+      if (Result.isFailure(surfaced)) return surfaced;
+      outputs.push(...surfaced.success);
     }
 
-    for (const turnId of this.turnOrder) {
-      const turn = this.turns.get(turnId);
-      if (turn === undefined || turn.revisionRead === undefined) continue;
-      if (turn.revisionRead < turn.revision) continue;
+    for (const turnId of state.turnOrder) {
+      const turn = state.turns.get(turnId)!;
+      // Never before the turn's last rows: its activity must be current and its text closed.
+      if (!this.isCurrent(turn) || state.open.some((m) => m.conversationTurnId === turn.id)) {
+        continue;
+      }
+      if (this.isSignalled(turn)) continue;
       const settlement = this.settlementOf(turn);
       if (settlement === undefined) continue;
-      const run = `${turn.id}:${turn.lastUserMessageId}`;
-      if (this.settledRuns.has(run)) continue;
-      this.settledRuns.add(run);
+      state.settledRuns.add(runKey(turn));
       outputs.push({
         _tag: "TurnSettled",
         turnId: turn.id,
@@ -606,15 +667,26 @@ export class AetherConversationIngest {
         ...settlement,
       });
     }
-    return outputs;
+    return Result.succeed(outputs);
   }
 
   // -------------------------------------------------------------------------
   // Settlement and pending input
   // -------------------------------------------------------------------------
 
+  private isCurrent(turn: TurnRecord): boolean {
+    return turn.revisionRead !== undefined && turn.revisionRead >= turn.revision;
+  }
+
+  private isSignalled(turn: TurnRecord): boolean {
+    if (this.state.settledRuns.has(runKey(turn))) return true;
+    const mark = this.resumeAfter;
+    if (mark === undefined || this.state.resumed?.has(turn.id) !== true) return false;
+    return turn.id !== mark.turnId || turn.lastUserMessageId === mark.runMessageId;
+  }
+
   private awaitingAnswer(): AwaitingAnswer | undefined {
-    const task = this.task;
+    const task = this.state.task;
     if (task?.status !== "awaiting_input" || task.awaiting_input.kind === "message") {
       return undefined;
     }
@@ -622,11 +694,11 @@ export class AetherConversationIngest {
   }
 
   private settlementOf(turn: TurnRecord): AetherTurnSettlement | undefined {
-    const task = this.task;
+    const task = this.state.task;
     if (task === undefined) return undefined;
     if (turn.state === "awaiting_input") {
       const awaiting = this.awaitingAnswer();
-      return awaiting?.kind === "plan" && this.pending?.turnId === turn.id
+      return awaiting?.kind === "plan" && this.state.pending?.turnId === turn.id
         ? { state: "awaiting_input", kind: "plan" }
         : undefined;
     }
@@ -643,78 +715,118 @@ export class AetherConversationIngest {
   }
 
   private anotherTurnActive(turnId: AetherTurnId): boolean {
-    return this.turnOrder.some((id) => {
+    return this.state.turnOrder.some((id) => {
       if (id === turnId) return false;
-      const state = this.turns.get(id)?.state;
+      const state = this.state.turns.get(id)?.state;
       return state === "queued" || state === "running" || state === "awaiting_input";
     });
   }
 
-  private surfaceInput(awaiting: AwaitingAnswer, observedAt: string): AetherIngestOutput[] {
-    this.surfacedToolIds.add(awaiting.tool_id);
-    const turnId =
-      this.turnOrder.find((id) => this.turns.get(id)?.state === "awaiting_input") ??
-      this.turnOrder[this.turnOrder.length - 1];
-    if (turnId === undefined) return [];
+  /** Surfaces the input once the turn that asked it has been read. */
+  private surfaceInput(
+    awaiting: AwaitingAnswer,
+    observedAt: string,
+  ): Result.Result<AetherIngestOutput[], AetherPendingInputError> {
+    const state = this.state;
+    const toolId = awaiting.tool_id;
+    const turnId = state.turnOrder.find((id) => state.turns.get(id)!.inputs.has(toolId));
+    if (turnId === undefined) {
+      if (this.turnsNeedingActivity().length > 0) return Result.succeed([]);
+      return Result.fail(
+        new AetherPendingInputError({
+          taskId: this.context.taskId,
+          toolId,
+          detail: `no turn on the first page made the ${awaiting.kind} call`,
+        }),
+      );
+    }
+    state.surfacedToolIds.add(toolId);
     const outputs: AetherIngestOutput[] = [
-      {
-        _tag: "PendingInput",
-        turnId,
-        toolId: awaiting.tool_id,
-        kind: awaiting.kind,
-        input: awaiting.input,
-      },
+      { _tag: "PendingInput", turnId, toolId, kind: awaiting.kind, input: awaiting.input },
     ];
-    const refs = { requestId: awaiting.tool_id } as const;
+    const refs = { requestId: toolId } as const;
     if (awaiting.kind === "questions") {
       const questions = questionsFromInput(awaiting.input);
-      this.pending = { turnId, toolId: awaiting.tool_id, kind: "questions", questions };
+      state.pending = {
+        turnId,
+        toolId,
+        kind: "questions",
+        questions: Result.isSuccess(questions) ? questions.success : undefined,
+      };
       outputs.push(
-        questions === undefined
-          ? this.warning(turnId, [awaiting.tool_id, "questions-unreadable"], observedAt, {
+        Result.isFailure(questions)
+          ? this.warning(turnId, [toolId, "questions-unreadable"], observedAt, {
               message: "Aether is waiting on a question that Synara cannot display.",
-              detail: { toolId: awaiting.tool_id, input: awaiting.input },
+              detail: { toolId, input: awaiting.input, error: questions.failure },
             })
-          : this.event(turnId, [awaiting.tool_id, "user-input.requested"], observedAt, refs, {
+          : this.event(turnId, [toolId, "user-input.requested"], observedAt, refs, {
               type: "user-input.requested",
-              payload: { questions },
+              payload: { questions: questions.success },
             }),
       );
-      return outputs;
+      return Result.succeed(outputs);
     }
-    this.pending = { turnId, toolId: awaiting.tool_id, kind: "plan", questions: undefined };
-    const plan = Schema.decodeUnknownOption(ProposePlanInput)(awaiting.input).pipe(
-      Option.flatMap((input) => Option.fromNullishOr(nonEmpty(input.plan))),
-    );
+    state.pending = { turnId, toolId, kind: "plan", questions: undefined };
+    const decoded = Schema.decodeUnknownExit(ProposePlanInput)(awaiting.input);
+    const plan = decoded._tag === "Success" ? nonEmpty(decoded.value.plan) : undefined;
     outputs.push(
-      Option.isNone(plan)
-        ? this.warning(turnId, [awaiting.tool_id, "plan-unreadable"], observedAt, {
+      plan === undefined
+        ? this.warning(turnId, [toolId, "plan-unreadable"], observedAt, {
             message: "Aether is waiting on a plan approval that Synara cannot display.",
-            detail: { toolId: awaiting.tool_id, input: awaiting.input },
+            detail: {
+              toolId,
+              input: awaiting.input,
+              error: decoded._tag === "Failure" ? Cause.pretty(decoded.cause) : "the plan is empty",
+            },
           })
-        : this.event(turnId, [awaiting.tool_id, "plan-proposed"], observedAt, refs, {
+        : this.event(turnId, [toolId, "plan-proposed"], observedAt, refs, {
             type: "turn.proposed.completed",
-            payload: { planMarkdown: plan.value },
+            payload: { planMarkdown: plan },
           }),
     );
-    return outputs;
+    return Result.succeed(outputs);
   }
 
-  private resolveQuestions(pending: PendingInput, observedAt: string): AetherIngestOutput {
-    const turn = this.turns.get(pending.turnId);
-    const response = turn?.answers[turn.answers.length - 1];
-    const answers =
-      pending.questions === undefined || response === undefined
-        ? undefined
-        : answersFromResponse(pending.questions, response);
-    return this.event(
-      pending.turnId,
-      [pending.toolId, "user-input.resolved"],
+  /**
+   * The task stopped waiting on `pending`. A shown question resolves with the answer row that
+   * followed its call; with no answer row (the task was stopped) nothing resolves it, and Synara
+   * settles the request as stale when the turn ends.
+   */
+  private resolveInput(
+    pending: PendingInput,
+    observedAt: string,
+  ): Result.Result<AetherIngestOutput[], AetherPendingInputError> {
+    const { turnId, toolId, kind } = pending;
+    const resolved: AetherIngestOutput = { _tag: "PendingInputResolved", turnId, toolId, kind };
+    if (pending.questions === undefined) return Result.succeed([resolved]);
+    const response = this.state.turns.get(turnId)!.inputs.get(toolId);
+    if (response === undefined) {
+      const warning = this.warning(turnId, [toolId, "unanswered"], observedAt, {
+        message: "Aether stopped waiting on a question without an answer.",
+        detail: { toolId },
+      });
+      return Result.succeed([warning, resolved]);
+    }
+    const answers = answersFromResponse(pending.questions, response);
+    if (Result.isFailure(answers)) {
+      return Result.fail(
+        new AetherPendingInputError({
+          taskId: this.context.taskId,
+          toolId,
+          detail: `the answer is unreadable: ${answers.failure}`,
+        }),
+      );
+    }
+    const event = this.event(
+      turnId,
+      [toolId, "user-input.resolved"],
       observedAt,
-      { requestId: pending.toolId },
-      // No readable answer (answered elsewhere without one, or cancelled): resolved, empty.
-      { type: "user-input.resolved", payload: { answers: answers ?? {} } },
+      {
+        requestId: toolId,
+      },
+      { type: "user-input.resolved", payload: { answers: answers.success } },
     );
+    return Result.succeed([event, resolved]);
   }
 
   // -------------------------------------------------------------------------
@@ -727,8 +839,12 @@ export class AetherConversationIngest {
     tool: AetherTimelineTool,
     observedAt: string,
   ): AetherIngestOutput[] {
-    if (CLIENT_SURFACED_TOOL_NAMES.has(tool.name) || this.surfacedToolIds.has(tool.id)) {
-      turn.rows.set(rowId, { kind: "client" });
+    if (CLIENT_SURFACED_TOOL_NAMES.has(tool.name)) {
+      if (!turn.inputs.has(tool.id)) {
+        turn.inputs.set(tool.id, undefined);
+        turn.lastInputId = tool.id;
+      }
+      turn.rows.set(rowId, { kind: "done" });
       return [];
     }
     const outputs: AetherIngestOutput[] = [];
@@ -765,7 +881,6 @@ export class AetherConversationIngest {
       ...(detail === undefined ? {} : { detail }),
       data: {
         toolCallId: tool.id,
-        callId: tool.id,
         toolName: tool.name,
         input: tool.input,
         aetherStatus: status.raw,
@@ -794,6 +909,7 @@ export class AetherConversationIngest {
     return outputs;
   }
 
+  /** Claude's `TodoWrite` (`todos`) becomes a task list update. */
   private applyTaskList(
     turn: TurnRecord,
     rowId: string,
@@ -802,8 +918,8 @@ export class AetherConversationIngest {
     observedAt: string,
   ): AetherIngestOutput[] {
     const previous = turn.rows.get(rowId);
-    const tasks = taskListFromInput(tool.input);
-    if (tasks === undefined) {
+    const tasks = normalizeClaudeTodoTasks(tool.input);
+    if (tasks === null) {
       turn.rows.set(rowId, { kind: "tasks", key: undefined, terminal: status.terminal });
       // The input fills in while the call streams; only a finished call is unreadable.
       if (!status.terminal || Object.keys(tool.input).length === 0) return [];
@@ -852,13 +968,13 @@ export class AetherConversationIngest {
         ),
       ];
     }
-    const raw = isUnknown(reason) ? reason.raw : reason;
     return [
       this.warning(turn.id, [rowId, "seam"], observedAt, {
-        message: isUnknown(reason)
-          ? `Aether marked a conversation seam Synara does not recognize (${raw}).`
-          : `Aether marked a conversation seam (${raw}).`,
-        detail: { reason: raw },
+        message:
+          typeof reason === "string"
+            ? `Aether marked a conversation seam (${reason}).`
+            : `Aether marked a conversation seam Synara does not recognize (${reason.raw}).`,
+        detail: { reason: typeof reason === "string" ? reason : reason.raw },
       }),
     ];
   }
@@ -875,34 +991,25 @@ export class AetherConversationIngest {
     source: "live" | "activity",
     observedAt: string,
   ): Result.Result<AetherIngestOutput[], AetherTranscriptDivergedError> {
-    let record = this.messages.get(message.id);
+    let record = this.state.messages.get(message.id);
     if (record === undefined) {
-      const seeded = this.seedLengths.get(message.id) ?? 0;
-      if (seeded > message.content.length) {
-        return Result.fail(
-          this.diverged(turnId, message.id, "seed", seeded, message.content.length),
-        );
-      }
-      record = {
-        turnId,
-        variant: message.variant,
-        streamed: message.content.slice(0, seeded),
-        final: undefined,
-      };
-      this.messages.set(message.id, record);
+      record = { streamed: "", final: undefined };
+      this.state.messages.set(message.id, record);
     }
-    if (record.final !== undefined) {
-      return message.content === record.final
-        ? Result.succeed([])
-        : Result.fail(
-            this.diverged(turnId, message.id, source, record.final.length, message.content.length),
-          );
-    }
-    if (!message.content.startsWith(record.streamed)) {
+    const kept = record.final ?? record.streamed;
+    if (record.final !== undefined ? message.content !== kept : !message.content.startsWith(kept)) {
       return Result.fail(
-        this.diverged(turnId, message.id, source, record.streamed.length, message.content.length),
+        new AetherTranscriptDivergedError({
+          taskId: this.context.taskId,
+          turnId,
+          messageId: message.id,
+          source,
+          streamedLength: kept.length,
+          receivedLength: message.content.length,
+        }),
       );
     }
+    if (record.final !== undefined) return Result.succeed([]);
 
     const outputs: AetherIngestOutput[] = [];
     const refs = { itemId: message.id } as const;
@@ -949,23 +1056,6 @@ export class AetherConversationIngest {
   // Event construction
   // -------------------------------------------------------------------------
 
-  private diverged(
-    turnId: AetherTurnId,
-    messageId: string,
-    source: "live" | "activity" | "seed",
-    streamedLength: number,
-    receivedLength: number,
-  ): AetherTranscriptDivergedError {
-    return new AetherTranscriptDivergedError({
-      taskId: this.context.taskId,
-      turnId,
-      messageId,
-      source,
-      streamedLength,
-      receivedLength,
-    });
-  }
-
   private event(
     turnId: AetherTurnId | undefined,
     idParts: ReadonlyArray<string>,
@@ -1001,8 +1091,8 @@ export class AetherConversationIngest {
     payload: { readonly message: string; readonly detail?: unknown },
   ): AetherIngestOutput[] {
     const key = idParts.join(":");
-    if (this.warnedOnce.has(key)) return [];
-    this.warnedOnce.add(key);
+    if (this.state.warnedOnce.has(key)) return [];
+    this.state.warnedOnce.add(key);
     return [this.warning(turnId, idParts, observedAt, payload)];
   }
 }

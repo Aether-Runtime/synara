@@ -1,5 +1,5 @@
 // FILE: aetherRecording.ts
-// Purpose: Loads the trimmed Aether recordings (`recordings/*.json`) and replays one as an HTTP
+// Purpose: Loads a trimmed Aether recording (`recordings/*.json`) and replays it as an HTTP
 // transport that serves the recorded responses strictly in recorded order.
 // Layer: Test support.
 
@@ -7,62 +7,40 @@ import { readFileSync } from "node:fs";
 
 import type { OutboundHttpRequest, OutboundHttpResponse } from "@synara/shared/outboundHttp";
 
-export type RecordingName = "claude-question-edit-shell" | "codex-errored";
+export type RecordingName = "claude-question-edit-shell";
 
 export interface RecordedExchange {
-  /** Seconds since the epoch, when the recorder got the response. */
-  readonly t: number;
   /** Why the recorder made the request: `tick`, `head-moved` or `turn-moved`. */
-  readonly why?: string;
+  readonly why: string;
   /** Path and query, as sent. */
   readonly path: string;
   readonly status: number;
-  readonly ms: number;
   readonly body: unknown;
 }
 
-export interface Recording {
-  readonly exchanges: ReadonlyArray<RecordedExchange>;
-  /** Everything in the file except the log: source, what was trimmed, recorded totals. */
-  readonly meta: Readonly<Record<string, unknown>>;
-}
-
 interface RecordingFile {
-  readonly log: ReadonlyArray<{
-    readonly t: number;
-    readonly why?: string;
-    readonly path: string;
-    readonly status: number;
-    readonly ms: number;
-    readonly body?: unknown;
-    readonly sameAsPrevious?: boolean;
-  }>;
-  readonly [key: string]: unknown;
+  readonly log: ReadonlyArray<
+    Omit<RecordedExchange, "body"> & {
+      readonly body?: unknown;
+      readonly sameAsPrevious?: boolean;
+    }
+  >;
 }
 
 /** Reads a recording; a `sameAsPrevious` entry gets the previous body for its path. */
-export function loadRecording(name: RecordingName): Recording {
+export function loadRecording(name: RecordingName): ReadonlyArray<RecordedExchange> {
   const file = JSON.parse(
     readFileSync(new URL(`./recordings/${name}.json`, import.meta.url), "utf8"),
   ) as RecordingFile;
   const lastBodyByPath = new Map<string, unknown>();
-  const exchanges = file.log.map((entry, index): RecordedExchange => {
+  return file.log.map((entry, index) => {
     if (entry.sameAsPrevious === true && !lastBodyByPath.has(entry.path)) {
       throw new Error(`${name} entry ${index} repeats a body the recording never had`);
     }
     const body = entry.sameAsPrevious === true ? lastBodyByPath.get(entry.path) : entry.body;
     lastBodyByPath.set(entry.path, body);
-    return {
-      t: entry.t,
-      ...(entry.why === undefined ? {} : { why: entry.why }),
-      path: entry.path,
-      status: entry.status,
-      ms: entry.ms,
-      body,
-    };
+    return { why: entry.why, path: entry.path, status: entry.status, body };
   });
-  const { log: _log, ...meta } = file;
-  return { exchanges, meta };
 }
 
 export interface ReplayTransport {

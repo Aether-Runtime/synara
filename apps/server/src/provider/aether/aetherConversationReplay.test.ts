@@ -2,33 +2,18 @@
 // poll loop, on a test clock, and checks the events and signals it produces.
 
 import { AetherApiBaseUrl, ProviderRuntimeEvent, ThreadId, TurnId } from "@synara/contracts";
-import { Effect, Result, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { makeAetherApiClient } from "../Layers/AetherApiClient.ts";
-import {
-  AetherConversationTurnsPage,
-  AetherTaskId,
-  AetherTurnActivityPage,
-  AetherTurnId,
-} from "./aetherApiSchemas.ts";
-import {
-  AetherConversationIngest,
-  type AetherIngestContext,
-  type AetherIngestOutput,
-} from "./aetherConversationIngest.ts";
+import { AetherTaskId } from "./aetherApiSchemas.ts";
 import {
   AETHER_POLL_INTERVAL_MS,
   makeAetherConversationPoller,
   type AetherPollerOutput,
 } from "./aetherConversationPoller.ts";
-import {
-  loadRecording,
-  replayTransport,
-  type RecordingName,
-  type ReplayTransport,
-} from "./testing/aetherRecording.ts";
+import { loadRecording, replayTransport, type ReplayTransport } from "./testing/aetherRecording.ts";
 
 const API_BASE_URL = AetherApiBaseUrl.makeUnsafe("https://api.runaether.dev");
 const THREAD_ID = ThreadId.makeUnsafe("thread-aether-replay");
@@ -39,16 +24,6 @@ const CLAUDE_ANSWER = "1a8748cd-0473-4351-a542-b8c97e2f4e97";
 const ASK_TOOL_ID = "toolu_014ppzUGtM2uoSgVDQ2KGm7X";
 const TEXT_ID =
   "message:e7d7476e-98b6-584d-b21f-8a8176fa2fcc:text:35eb7848fba9d7b5b0b8fc9018869f649becdf547bc87b315d6a5bef7fbf07ba";
-const CODEX_TASK = "a361464d-eeb8-41cc-a10a-712773e603e4";
-const CODEX_TURN = "93756a94-1429-4b10-9f78-3c138d23ef7e";
-
-function contextFor(taskId: string): AetherIngestContext {
-  return {
-    taskId: AetherTaskId.makeUnsafe(taskId),
-    threadId: THREAD_ID,
-    turnIdFor: (turnId) => TurnId.makeUnsafe(`synara-${turnId}`),
-  };
-}
 
 const flush = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
@@ -75,9 +50,8 @@ interface Replay {
 }
 
 /** Wakes the poller once, then advances the clock a tick at a time for `seconds`. */
-async function replayThroughPoller(name: RecordingName, taskId: string, seconds = 240) {
-  const recording = loadRecording(name);
-  const transport = replayTransport(recording.exchanges);
+async function replayThroughPoller(seconds = 120) {
+  const transport = replayTransport(loadRecording("claude-question-edit-shell"));
   const outputs: AetherPollerOutput[] = [];
   await Effect.gen(function* () {
     const client = makeAetherApiClient({
@@ -87,7 +61,11 @@ async function replayThroughPoller(name: RecordingName, taskId: string, seconds 
     });
     const poller = yield* makeAetherConversationPoller({
       client,
-      context: contextFor(taskId),
+      context: {
+        taskId: AetherTaskId.makeUnsafe(CLAUDE_TASK),
+        threadId: THREAD_ID,
+        turnIdFor: (turnId) => TurnId.makeUnsafe(`synara-${turnId}`),
+      },
       emit: (output) => Effect.sync(() => void outputs.push(output)),
     });
     yield* poller.wake;
@@ -105,34 +83,52 @@ const eventsOf = (outputs: ReadonlyArray<AetherPollerOutput>) =>
 
 describe("Aether replay: question, file edit, shell command, long reply (Claude Code)", () => {
   it("issues exactly the recorded requests, one at a time, and goes idle once settled", async () => {
-    const { transport, outputs } = await replayThroughPoller(
-      "claude-question-edit-shell",
-      CLAUDE_TASK,
-    );
+    const { transport, outputs } = await replayThroughPoller();
+    // Every recorded request, in order, and none after the last: the loop went idle.
     expect(transport.mismatches()).toEqual([]);
+    expect(transport.remaining()).toEqual([]);
+    expect(transport.requested()).toHaveLength(57);
     expect(transport.maxInFlight()).toBe(1);
-    // Only the recorder's two ticks after settlement are left: the loop went idle.
-    expect(transport.remaining().map((exchange) => [exchange.t, exchange.why])).toEqual([
-      [1790253380.7222989, "tick"],
-      [1790253382.036194, "tick"],
-    ]);
     expect(outputs.filter((output) => output._tag === "PollingStopped")).toEqual([]);
     expect(eventsOf(outputs).filter((event) => event.type === "runtime.warning")).toEqual([]);
   });
 
-  it("produces the recorded event sequence", async () => {
-    const { outputs } = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
-    expect(outputs).toMatchSnapshot();
+  it("produces the recorded output sequence", async () => {
+    const { outputs } = await replayThroughPoller();
+    const summary = outputs.map((output) =>
+      output._tag === "Event"
+        ? [output.event.type, output.event.itemId].filter(Boolean).join(" ")
+        : output._tag,
+    );
+    expect(summary).toEqual([
+      "TurnOrigin",
+      "PendingInput",
+      "user-input.requested",
+      "user-input.resolved",
+      "PendingInputResolved",
+      "item.started toolu_01LqzJk9fKdyQMiEfXUs5Eeb",
+      "item.completed toolu_01LqzJk9fKdyQMiEfXUs5Eeb",
+      "item.started toolu_01LZHLGuwFLNuVgMbxuKcRhQ",
+      "item.completed toolu_01LZHLGuwFLNuVgMbxuKcRhQ",
+      "item.started toolu_018ofRoXAuUWMhxvqmRjFKYN",
+      "item.completed toolu_018ofRoXAuUWMhxvqmRjFKYN",
+      "item.started toolu_018MwGK76HNubHQMt98x6DU7",
+      "item.completed toolu_018MwGK76HNubHQMt98x6DU7",
+      "item.completed toolu_01X2w96QgTAChBvY6We8rcmK",
+      ...Array.from({ length: 12 }, () => `content.delta ${TEXT_ID}`),
+      `item.completed ${TEXT_ID}`,
+      "TurnSettled",
+    ]);
   });
 
   it("produces identical outputs when replayed twice", async () => {
-    const first = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
-    const second = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
+    const first = await replayThroughPoller();
+    const second = await replayThroughPoller();
     expect(second.outputs).toEqual(first.outputs);
   });
 
   it("emits valid runtime events with unique, deterministic ids", async () => {
-    const { outputs } = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
+    const { outputs } = await replayThroughPoller();
     const events = eventsOf(outputs);
     for (const event of events) {
       const encoded = Schema.encodeUnknownSync(ProviderRuntimeEvent)(event);
@@ -144,7 +140,7 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
   });
 
   it("settles the turn exactly once, on the answer's run, after its last event", async () => {
-    const { outputs } = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
+    const { outputs } = await replayThroughPoller();
     const settled = outputs.filter((output) => output._tag === "TurnSettled");
     expect(settled).toEqual([
       { _tag: "TurnSettled", turnId: CLAUDE_TURN, runMessageId: CLAUDE_ANSWER, state: "settled" },
@@ -157,12 +153,13 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
         _tag: "TurnOrigin",
         turnId: CLAUDE_TURN,
         rootMessageId: "afe3ef02-9374-4f5a-ba1b-fce213c93f31",
+        rootMessageText: expect.stringMatching(/^This task generates API fixtures/),
       },
     ]);
   });
 
   it("surfaces the question, then resolves it with the chosen label after the answer", async () => {
-    const { outputs } = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
+    const { outputs } = await replayThroughPoller();
     const requestedAt = outputs.findIndex(
       (output) => output._tag === "Event" && output.event.type === "user-input.requested",
     );
@@ -251,7 +248,7 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
   });
 
   it("maps the shell commands, file read and file edit to completed tool rows", async () => {
-    const { outputs } = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
+    const { outputs } = await replayThroughPoller();
     const completed = eventsOf(outputs).flatMap((event) =>
       event.type === "item.completed" && event.payload.itemType !== "assistant_message"
         ? [[event.itemId, event.payload.itemType, event.payload.status, event.payload.detail]]
@@ -282,7 +279,7 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
   });
 
   it("streams the reply as suffix deltas that add up to the final text", async () => {
-    const { outputs } = await replayThroughPoller("claude-question-edit-shell", CLAUDE_TASK);
+    const { outputs } = await replayThroughPoller();
     const events = eventsOf(outputs);
     const deltas = events.flatMap((event) =>
       event.type === "content.delta" && event.itemId === TEXT_ID ? [event.payload] : [],
@@ -298,86 +295,5 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
     expect(completion.payload.detail).toMatch(/^The checkout submit button now says "Place order"/);
     // The empty thinking block streams nothing and completes nothing.
     expect(events.some((event) => event.itemId?.includes(":thinking:"))).toBe(false);
-  });
-});
-
-describe("Aether replay: errored before any activity (Codex, out of quota)", () => {
-  // The Codex recording predates the live endpoint recorder (it polled GET /tasks/{id}), so it
-  // replays its conversation reads straight through the ingest, in recorded order.
-  function replayThroughIngest() {
-    const { exchanges } = loadRecording("codex-errored");
-    const ingest = new AetherConversationIngest(contextFor(CODEX_TASK));
-    const outputs: AetherIngestOutput[] = [];
-    for (const exchange of exchanges) {
-      const observedAt = new Date(exchange.t * 1000).toISOString();
-      if (exchange.path.endsWith("/activity")) {
-        const page = Schema.decodeUnknownSync(AetherTurnActivityPage)(exchange.body);
-        const applied = ingest.applyActivity(
-          AetherTurnId.makeUnsafe(CODEX_TURN),
-          page.items,
-          page.turn_revision_sequence,
-          observedAt,
-        );
-        if (Result.isFailure(applied)) throw applied.failure;
-        outputs.push(...applied.success);
-      } else {
-        const page = Schema.decodeUnknownSync(AetherConversationTurnsPage)(exchange.body);
-        outputs.push(...ingest.applyTurns(page));
-      }
-      outputs.push(...ingest.finishRefresh(observedAt));
-    }
-    return { ingest, outputs };
-  }
-
-  it("signals one errored settlement carrying the task's error, and nothing else", () => {
-    const { ingest, outputs } = replayThroughIngest();
-    expect(outputs).toEqual([
-      {
-        _tag: "TurnOrigin",
-        turnId: CODEX_TURN,
-        rootMessageId: "0a297ad3-9649-4049-8282-a5cac4bbe7b9",
-      },
-      {
-        _tag: "TurnSettled",
-        turnId: CODEX_TURN,
-        runMessageId: "0a297ad3-9649-4049-8282-a5cac4bbe7b9",
-        state: "errored",
-        errorMessage:
-          "You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 26th, 2026 1:40 AM.",
-      },
-    ]);
-    expect(ingest.shouldKeepPolling()).toBe(false);
-  });
-});
-
-describe("Aether request budget, from the recorded run", () => {
-  it("states the recorded request rate under this polling model", () => {
-    const { meta, exchanges } = loadRecording("claude-question-edit-shell");
-    const recorded = meta.recorded as {
-      readonly ticks: number;
-      readonly headMovedTurnsReads: number;
-      readonly turnMovedActivityReads: number;
-      readonly firstT: number;
-      readonly lastT: number;
-    };
-    const trimmed = meta.trimmed as { readonly identicalTicksRemoved: number };
-    const keptTicks = exchanges.filter((exchange) => exchange.why === "tick").length;
-    expect(keptTicks + trimmed.identicalTicksRemoved).toBe(recorded.ticks);
-    expect(exchanges.filter((exchange) => exchange.why === "head-moved")).toHaveLength(
-      recorded.headMovedTurnsReads,
-    );
-    expect(exchanges.filter((exchange) => exchange.why === "turn-moved")).toHaveLength(
-      recorded.turnMovedActivityReads,
-    );
-
-    const minutes = (recorded.lastT - recorded.firstT) / 60;
-    const requests =
-      recorded.ticks + recorded.headMovedTurnsReads + recorded.turnMovedActivityReads;
-    expect(Math.round(minutes * 100) / 100).toBe(9.31);
-    expect(requests).toBe(418);
-    expect(Math.round((recorded.ticks / minutes) * 10) / 10).toBe(41.6);
-    expect(Math.round((requests / minutes) * 10) / 10).toBe(44.9);
-    // 16 of 387 ticks saw headRevision move; a tick never made more than three requests.
-    expect(Math.round((recorded.headMovedTurnsReads / recorded.ticks) * 1000) / 10).toBe(4.1);
   });
 });

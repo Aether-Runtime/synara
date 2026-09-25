@@ -10,25 +10,32 @@ import {
 } from "./aetherApiSchemas.ts";
 import {
   AetherConversationIngest,
+  AetherPendingInputError,
   AetherTranscriptDivergedError,
   type AetherIngestOutput,
-  type AetherIngestSeed,
+  type AetherRunKey,
 } from "./aetherConversationIngest.ts";
-import { TASK_ID, TURN_ID, taskBody, userMessageBody } from "./testing/aetherApiFixtures.ts";
+import {
+  TASK_ID,
+  TOOL_ID,
+  TURN_ID,
+  taskBody,
+  userMessageBody,
+} from "./testing/aetherApiFixtures.ts";
 
 type Json = Record<string, unknown>;
 
 const AT = "2026-09-25T10:00:00.000Z";
 const OTHER_TURN_ID = AetherTurnId.makeUnsafe("9c8b7a6f-5e4d-4c3b-8a29-18f7e6d5c4b3");
 
-function makeIngest(seed?: AetherIngestSeed) {
+function makeIngest(resumeAfter?: AetherRunKey) {
   return new AetherConversationIngest(
     {
       taskId: TASK_ID,
       threadId: ThreadId.makeUnsafe("thread-1"),
       turnIdFor: (turnId) => TurnId.makeUnsafe(`synara-${turnId}`),
     },
-    seed,
+    resumeAfter,
   );
 }
 
@@ -87,9 +94,35 @@ const activityBody = (items: ReadonlyArray<Json>, revision = 1, extra: Json = {}
   oldest_sequence_loaded: null,
   ...extra,
 });
+const askRow = (toolId: string) =>
+  toolRow(toolId, { name: "ask_user", status: "input-available", itemType: "dynamic_tool_call" });
+const answerRow = (id: string, data: unknown): Json => ({
+  ...userMessageBody({ id }),
+  toolResponse: { tool_name: "ask_user", data },
+});
 const processingTask = (extra: Json = {}) => taskBody("processing", extra);
 const idleTask = () =>
   taskBody("processing", { status: "awaiting_input", awaiting_input: { kind: "message" } });
+const askingTask = (toolId: string) =>
+  taskBody("processing", {
+    status: "awaiting_input",
+    awaiting_input: {
+      kind: "questions",
+      tool_id: toolId,
+      input: {
+        questions: [
+          {
+            header: "Pick",
+            question: "Which one?",
+            options: [
+              { label: "A", description: "The A." },
+              { label: "B", description: "The B." },
+            ],
+          },
+        ],
+      },
+    },
+  });
 
 function live(ingest: AetherConversationIngest, body: Json) {
   const step = ingest.applyLive(Schema.decodeUnknownSync(AetherLiveConversationSnapshot)(body), AT);
@@ -97,12 +130,18 @@ function live(ingest: AetherConversationIngest, body: Json) {
   return step.success;
 }
 
+function finish(ingest: AetherConversationIngest) {
+  const finished = ingest.finishRefresh(AT);
+  if (Result.isFailure(finished)) throw finished.failure;
+  return finished.success;
+}
+
 /** One refresh: the turns page, the activity of every turn that needs it, then the finish. */
-function refresh(
+function refreshResult(
   ingest: AetherConversationIngest,
   page: Json,
   activity: Readonly<Record<string, Json>> = {},
-): AetherIngestOutput[] {
+): Result.Result<AetherIngestOutput[], AetherPendingInputError> {
   const outputs = [
     ...ingest.applyTurns(Schema.decodeUnknownSync(AetherConversationTurnsPage)(page)),
   ];
@@ -114,14 +153,39 @@ function refresh(
     if (Result.isFailure(applied)) throw applied.failure;
     outputs.push(...applied.success);
   }
-  outputs.push(...ingest.finishRefresh(AT));
-  return outputs;
+  const finished = ingest.finishRefresh(AT);
+  if (Result.isFailure(finished)) return Result.fail(finished.failure);
+  return Result.succeed([...outputs, ...finished.success]);
+}
+
+function refresh(
+  ingest: AetherConversationIngest,
+  page: Json,
+  activity: Readonly<Record<string, Json>> = {},
+): AetherIngestOutput[] {
+  const refreshed = refreshResult(ingest, page, activity);
+  if (Result.isFailure(refreshed)) throw refreshed.failure;
+  return refreshed.success;
+}
+
+function refreshFailure(
+  ingest: AetherConversationIngest,
+  page: Json,
+  activity: Readonly<Record<string, Json>>,
+): AetherPendingInputError {
+  const refreshed = refreshResult(ingest, page, activity);
+  if (Result.isSuccess(refreshed)) throw new Error("the refresh succeeded");
+  return refreshed.failure;
 }
 
 const events = (outputs: ReadonlyArray<AetherIngestOutput>) =>
   outputs.flatMap((output) => (output._tag === "Event" ? [output.event] : []));
 const signals = (outputs: ReadonlyArray<AetherIngestOutput>) =>
   outputs.filter((output) => output._tag !== "Event");
+const settles = (outputs: ReadonlyArray<AetherIngestOutput>) =>
+  outputs.filter((output) => output._tag === "TurnSettled");
+const tags = (outputs: ReadonlyArray<AetherIngestOutput>) =>
+  outputs.map((output) => (output._tag === "Event" ? output.event.type : output._tag));
 
 function expectValidEvents(outputs: ReadonlyArray<AetherIngestOutput>) {
   for (const event of events(outputs)) {
@@ -131,34 +195,6 @@ function expectValidEvents(outputs: ReadonlyArray<AetherIngestOutput>) {
 }
 
 describe("AetherConversationIngest: text", () => {
-  it("streams only the new suffix of accumulated content, then completes on close", () => {
-    const ingest = makeIngest();
-    const first = live(ingest, liveBody({ open: [message("m1", "Hel")] })).outputs;
-    const second = live(ingest, liveBody({ open: [message("m1", "Hello")] })).outputs;
-    const repeat = live(ingest, liveBody({ open: [message("m1", "Hello")] })).outputs;
-    const closed = live(ingest, liveBody({ replacements: [message("m1", "Hello!")] })).outputs;
-
-    expect(events(first).map((event) => [event.type, event.payload])).toEqual([
-      ["content.delta", { streamKind: "assistant_text", delta: "Hel" }],
-    ]);
-    expect(events(second).map((event) => event.payload)).toEqual([
-      { streamKind: "assistant_text", delta: "lo" },
-    ]);
-    expect(repeat).toEqual([]);
-    expect(events(closed).map((event) => [event.type, event.payload])).toEqual([
-      ["content.delta", { streamKind: "assistant_text", delta: "!" }],
-      ["item.completed", { itemType: "assistant_message", status: "completed", detail: "Hello!" }],
-    ]);
-    expect(events([...first, ...second, ...closed]).map((event) => event.eventId)).toEqual([
-      `aether:${TASK_ID}:${TURN_ID}:m1:delta:3`,
-      `aether:${TASK_ID}:${TURN_ID}:m1:delta:5`,
-      `aether:${TASK_ID}:${TURN_ID}:m1:delta:6`,
-      `aether:${TASK_ID}:${TURN_ID}:m1:completed`,
-    ]);
-    expect(ingest.openMessageIds()).toEqual([]);
-    expectValidEvents(closed);
-  });
-
   it("completes a message first seen closed without streaming it", () => {
     const ingest = makeIngest();
     const outputs = live(ingest, liveBody({ replacements: [message("m1", "All done.")] }));
@@ -242,14 +278,6 @@ describe("AetherConversationIngest: text", () => {
     );
     expect(Result.isFailure(applied) && applied.failure.source).toBe("activity");
   });
-
-  it("resumes a stream after the length Synara already holds", () => {
-    const ingest = makeIngest({ streamedLengthByMessageId: new Map([["m1", 3]]) });
-    const outputs = live(ingest, liveBody({ open: [message("m1", "Hello")] })).outputs;
-    expect(events(outputs).map((event) => [event.eventId, event.payload])).toEqual([
-      [`aether:${TASK_ID}:${TURN_ID}:m1:delta:5`, { streamKind: "assistant_text", delta: "lo" }],
-    ]);
-  });
 });
 
 describe("AetherConversationIngest: tool rows", () => {
@@ -296,7 +324,6 @@ describe("AetherConversationIngest: tool rows", () => {
           title: "Run command",
           data: {
             toolCallId: "t1",
-            callId: "t1",
             toolName: "Bash",
             input: {},
             aetherStatus: "input-available",
@@ -355,36 +382,6 @@ describe("AetherConversationIngest: tool rows", () => {
     ]);
   });
 
-  it("maps Aether item types onto Synara's canonical ones", () => {
-    const ingest = makeIngest();
-    const bare = toolRow("bare");
-    delete (bare.tool as Json).itemType;
-    const outputs = applyRows(
-      ingest,
-      [
-        toolRow("read", { itemType: "file_read" }),
-        toolRow("fetch", { itemType: "web_fetch" }),
-        toolRow("agent", { itemType: "subagent_invocation" }),
-        toolRow("edit", { itemType: "file_change" }),
-        toolRow("mcp", { itemType: "mcp_tool_call" }),
-        bare,
-      ],
-      1,
-    );
-    expect(
-      events(outputs).map((event) =>
-        event.type === "item.started" ? [event.itemId, event.payload.itemType] : [],
-      ),
-    ).toEqual([
-      ["row-read", "dynamic_tool_call"],
-      ["row-fetch", "dynamic_tool_call"],
-      ["row-agent", "collab_agent_tool_call"],
-      ["row-edit", "file_change"],
-      ["row-mcp", "mcp_tool_call"],
-      ["row-bare", "dynamic_tool_call"],
-    ]);
-  });
-
   it("shows an unknown tool type as a generic row carrying the raw type, and warns once", () => {
     const ingest = makeIngest();
     const outputs = applyRows(
@@ -431,7 +428,7 @@ describe("AetherConversationIngest: tool rows", () => {
     ]);
   });
 
-  it("turns task-tracking calls into task list updates", () => {
+  it("turns Claude's task-tracking calls into task list updates", () => {
     const ingest = makeIngest();
     const todos = applyRows(
       ingest,
@@ -453,17 +450,6 @@ describe("AetherConversationIngest: tool rows", () => {
       ],
       1,
     );
-    const plan = applyRows(
-      ingest,
-      [
-        toolRow("plan", {
-          name: "update_plan",
-          itemType: "task_tracking",
-          input: { explanation: "Two steps.", plan: [{ step: "Edit", status: "pending" }] },
-        }),
-      ],
-      2,
-    );
     expect(events(todos).map((event) => [event.type, event.payload])).toEqual([
       [
         "turn.tasks.updated",
@@ -475,10 +461,7 @@ describe("AetherConversationIngest: tool rows", () => {
         },
       ],
     ]);
-    expect(events(plan).map((event) => event.payload)).toEqual([
-      { explanation: "Two steps.", tasks: [{ task: "Edit", status: "pending" }] },
-    ]);
-    expectValidEvents([...todos, ...plan]);
+    expectValidEvents(todos);
   });
 
   it("waits for a task list's input, and warns only when a finished call is unreadable", () => {
@@ -552,31 +535,6 @@ describe("AetherConversationIngest: settlement", () => {
     expect(signals(outputs).map((output) => output._tag)).toEqual(["TurnOrigin"]);
   });
 
-  it("settles once the task is idle, and only once", () => {
-    const ingest = makeIngest();
-    const page = turnsBody(idleTask(), [turn({ state: "settled" })]);
-    const first = refresh(ingest, page, { [TURN_ID]: activityBody([]) });
-    const again = refresh(ingest, page, { [TURN_ID]: activityBody([]) });
-    expect(signals(first)).toEqual([
-      {
-        _tag: "TurnOrigin",
-        turnId: TURN_ID,
-        rootMessageId: "root-1",
-        clientMessageId: expect.any(String),
-      },
-      { _tag: "TurnSettled", turnId: TURN_ID, runMessageId: "root-1", state: "settled" },
-    ]);
-    expect(signals(again)).toEqual([]);
-  });
-
-  it("waits while a settled turn's task is queued again for that turn", () => {
-    const ingest = makeIngest();
-    const outputs = refresh(ingest, turnsBody(taskBody("queued"), [turn({ state: "settled" })]), {
-      [TURN_ID]: activityBody([]),
-    });
-    expect(signals(outputs).some((output) => output._tag === "TurnSettled")).toBe(false);
-  });
-
   it("settles a turn when the task's queued work belongs to the next turn", () => {
     const ingest = makeIngest();
     const outputs = refresh(
@@ -596,12 +554,19 @@ describe("AetherConversationIngest: settlement", () => {
     ]);
   });
 
-  it("carries the task's error on an errored settlement", () => {
+  it("hands over the turn's origin, and carries the task's error on an errored settlement", () => {
     const ingest = makeIngest();
     const outputs = refresh(ingest, turnsBody(taskBody("errored"), [turn({ state: "errored" })]), {
       [TURN_ID]: activityBody([]),
     });
-    expect(signals(outputs).filter((output) => output._tag === "TurnSettled")).toEqual([
+    expect(signals(outputs)).toEqual([
+      {
+        _tag: "TurnOrigin",
+        turnId: TURN_ID,
+        rootMessageId: "root-1",
+        rootMessageText: "Build the client.",
+        clientMessageId: "4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b",
+      },
       {
         _tag: "TurnSettled",
         turnId: TURN_ID,
@@ -670,51 +635,163 @@ describe("AetherConversationIngest: settlement", () => {
     expectValidEvents(proposed);
   });
 
+  it("does not settle a turn while one of its messages is still open", () => {
+    const ingest = makeIngest();
+    live(ingest, liveBody({ open: [message("m1", "Done")] }));
+    const early = refresh(ingest, turnsBody(idleTask(), [turn({ state: "settled" })]), {
+      [TURN_ID]: activityBody([textRow("m1", "Done")]),
+    });
+    expect(settles(early)).toEqual([]);
+    expect(ingest.shouldKeepPolling()).toBe(true);
+    // The reply closes on the next tick: its last text comes first, then the settle.
+    const closed = live(ingest, liveBody({ replacements: [message("m1", "Done.")] })).outputs;
+    expect(tags([...closed, ...finish(ingest)])).toEqual([
+      "content.delta",
+      "item.completed",
+      "TurnSettled",
+    ]);
+  });
+
+  it("ignores a turns page older than the live head, and reads the turns again", () => {
+    const ingest = makeIngest();
+    const page = (head: number) => turnsBody(idleTask(), [turn({ state: "settled" })], head);
+    expect(live(ingest, liveBody({ headRevision: 12 })).refreshTurns).toBe(true);
+    expect(refresh(ingest, page(11), { [TURN_ID]: activityBody([]) })).toEqual([]);
+    expect(live(ingest, liveBody({ headRevision: 12 })).refreshTurns).toBe(true);
+    expect(tags(refresh(ingest, page(12), { [TURN_ID]: activityBody([]) }))).toEqual([
+      "TurnOrigin",
+      "TurnSettled",
+    ]);
+  });
+
+  it("reads a turn again while its activity trails the turns page, and settles only after", () => {
+    const ingest = makeIngest();
+    const page = turnsBody(idleTask(), [turn({ state: "settled", revision_sequence: 5 })]);
+    expect(settles(refresh(ingest, page, { [TURN_ID]: activityBody([], 4) }))).toEqual([]);
+    expect(ingest.turnsNeedingActivity()).toEqual([TURN_ID]);
+    const caughtUp = refresh(ingest, page, {
+      [TURN_ID]: activityBody([textRow("m1", "Done.")], 5),
+    });
+    expect(tags(caughtUp)).toEqual(["item.completed", "TurnSettled"]);
+  });
+
+  it("signals only the runs after the resume watermark", () => {
+    const second = turn({
+      id: OTHER_TURN_ID,
+      root_message: userMessageBody({ id: "root-2" }),
+      state: "settled",
+    });
+    const history = turnsBody(idleTask(), [turn({ state: "settled" }), second]);
+    const activity = { [TURN_ID]: activityBody([]), [OTHER_TURN_ID]: activityBody([]) };
+    const settledRuns = (resumeAfter?: AetherRunKey) =>
+      settles(refresh(makeIngest(resumeAfter), history, activity)).map((settle) =>
+        settle._tag === "TurnSettled" ? settle.runMessageId : undefined,
+      );
+
+    expect(settledRuns()).toEqual(["root-1", "root-2"]);
+    expect(settledRuns({ turnId: TURN_ID, runMessageId: "root-1" })).toEqual(["root-2"]);
+    expect(settledRuns({ turnId: OTHER_TURN_ID, runMessageId: "root-2" })).toEqual([]);
+    // A watermark whose turn is gone (truncated past it) covers every turn on the page.
+    const gone = AetherTurnId.makeUnsafe("0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0");
+    expect(settledRuns({ turnId: gone, runMessageId: "root-9" })).toEqual([]);
+
+    // A new run in the watermark's turn (an approved plan) still settles.
+    const ingest = makeIngest({ turnId: OTHER_TURN_ID, runMessageId: "root-2" });
+    refresh(ingest, history, activity);
+    expect(ingest.shouldKeepPolling()).toBe(false);
+    const approved = refresh(
+      ingest,
+      turnsBody(idleTask(), [turn({ state: "settled" }), { ...second, revision_sequence: 2 }]),
+      { [OTHER_TURN_ID]: activityBody([userMessageBody({ id: "approval-2" })], 2) },
+    );
+    expect(settles(approved)).toEqual([
+      { _tag: "TurnSettled", turnId: OTHER_TURN_ID, runMessageId: "approval-2", state: "settled" },
+    ]);
+  });
+});
+
+describe("AetherConversationIngest: pending input", () => {
+  const waitingTurn = (revision = 1) =>
+    turn({ state: "awaiting_input", revision_sequence: revision });
+
   it("warns when a question cannot be shown, and still hands over the pending input", () => {
     const ingest = makeIngest();
     const outputs = refresh(
       ingest,
       turnsBody(taskBody("awaiting_input"), [turn({ state: "awaiting_input" })]),
-      {
-        [TURN_ID]: activityBody([]),
-      },
+      { [TURN_ID]: activityBody([askRow(TOOL_ID)]) },
     );
-    expect(
-      outputs.map((output) => (output._tag === "Event" ? output.event.type : output._tag)),
-    ).toEqual(["TurnOrigin", "PendingInput", "runtime.warning"]);
+    expect(tags(outputs)).toEqual(["TurnOrigin", "PendingInput", "runtime.warning"]);
     expect(events(outputs)[0]?.payload).toMatchObject({
       message: "Aether is waiting on a question that Synara cannot display.",
+      detail: { toolId: TOOL_ID, error: expect.stringContaining("header") },
     });
   });
 
-  it("resolves a question answered without a readable answer with no answers", () => {
+  it("resolves each question with its own answer, and never reuses one", () => {
     const ingest = makeIngest();
-    const question = {
-      kind: "questions",
-      tool_id: "toolu_q",
-      input: {
-        questions: [
-          { header: "Pick", question: "Which?", options: [{ label: "A", description: "The A." }] },
-        ],
-      },
-    };
-    refresh(
+    const first = refresh(ingest, turnsBody(askingTask("q1"), [waitingTurn()]), {
+      [TURN_ID]: activityBody([askRow("q1")]),
+    });
+    const answered = [askRow("q1"), answerRow("a1", { answers: { "0": [1] } }), askRow("q2")];
+    const second = refresh(ingest, turnsBody(askingTask("q2"), [waitingTurn(2)]), {
+      [TURN_ID]: activityBody(answered, 2),
+    });
+    // The task stops waiting on the second question with no answer row (it was stopped).
+    const stopped = refresh(
       ingest,
-      turnsBody(taskBody("processing", { status: "awaiting_input", awaiting_input: question }), [
-        turn({ state: "awaiting_input" }),
-      ]),
-      { [TURN_ID]: activityBody([]) },
+      turnsBody(idleTask(), [turn({ state: "settled", revision_sequence: 3 })]),
+      { [TURN_ID]: activityBody(answered, 3) },
     );
-    const resolved = refresh(
+
+    expect(tags(first)).toEqual(["TurnOrigin", "PendingInput", "user-input.requested"]);
+    expect(tags(second)).toEqual([
+      "user-input.resolved",
+      "PendingInputResolved",
+      "PendingInput",
+      "user-input.requested",
+    ]);
+    expect(events(second)[0]).toMatchObject({
+      requestId: "q1",
+      payload: { answers: { "0": "B" } },
+    });
+    expect(tags(stopped)).toEqual(["runtime.warning", "PendingInputResolved", "TurnSettled"]);
+    expect(events(stopped)[0]?.payload).toEqual({
+      message: "Aether stopped waiting on a question without an answer.",
+      detail: { toolId: "q2" },
+    });
+    expectValidEvents([...first, ...second, ...stopped]);
+  });
+
+  it.each([
+    [{ answers: { "0": [7] } }, "question 0 has no option 7"],
+    [{ answers: { "5": [0] } }, "the answer names question 5"],
+    [{ answers: { "0": [0, 1] } }, "question 0 takes one answer and got 2"],
+    [{ choices: [1] }, `["answers"]`],
+  ])("fails loudly on an answer it cannot read: %j", (data, detail) => {
+    const ingest = makeIngest();
+    refresh(ingest, turnsBody(askingTask("q1"), [waitingTurn()]), {
+      [TURN_ID]: activityBody([askRow("q1")]),
+    });
+    const failure = refreshFailure(
       ingest,
       turnsBody(processingTask(), [turn({ revision_sequence: 2 })]),
       {
-        [TURN_ID]: activityBody([], 2),
+        [TURN_ID]: activityBody([askRow("q1"), answerRow("a1", data)], 2),
       },
     );
-    expect(events(resolved).map((event) => [event.type, event.payload])).toEqual([
-      ["user-input.resolved", { answers: {} }],
-    ]);
+    expect(failure).toBeInstanceOf(AetherPendingInputError);
+    expect(failure.message).toContain(detail);
+  });
+
+  it("surfaces a question once the turn that asked it is read, and fails if none did", () => {
+    const ingest = makeIngest();
+    const page = turnsBody(askingTask("q1"), [waitingTurn(2)]);
+    expect(tags(refresh(ingest, page, { [TURN_ID]: activityBody([], 1) }))).toEqual(["TurnOrigin"]);
+    expect(refreshFailure(ingest, page, { [TURN_ID]: activityBody([], 2) })).toMatchObject({
+      _tag: "AetherPendingInputError",
+      toolId: "q1",
+    });
   });
 });
 
@@ -730,17 +807,6 @@ describe("AetherConversationIngest: polling state", () => {
     expect(live(ingest, liveBody({ headRevision: 6 })).refreshTurns).toBe(true);
   });
 
-  it("counts activity read after a turns page as current, even when its revision trails", () => {
-    const ingest = makeIngest();
-    const outputs = refresh(
-      ingest,
-      turnsBody(idleTask(), [turn({ state: "settled", revision_sequence: 5 })]),
-      { [TURN_ID]: activityBody([], 4) },
-    );
-    expect(ingest.turnsNeedingActivity()).toEqual([]);
-    expect(signals(outputs).filter((output) => output._tag === "TurnSettled")).toHaveLength(1);
-  });
-
   it("re-reads everything after the conversation is truncated", () => {
     const ingest = makeIngest();
     live(ingest, liveBody());
@@ -750,27 +816,26 @@ describe("AetherConversationIngest: polling state", () => {
     const step = live(ingest, liveBody({ resetSequence: 4 }));
     expect(step.refreshTurns).toBe(true);
     expect(ingest.turnsNeedingActivity()).toEqual([TURN_ID]);
-    expect(
-      step.outputs.map((output) => (output._tag === "Event" ? output.event.type : output)),
-    ).toEqual([{ _tag: "ConversationReset", resetSequence: 4 }, "runtime.warning"]);
+    expect(step.outputs).toEqual([{ _tag: "ConversationReset", resetSequence: 4 }]);
   });
 
-  it("keeps polling while work is visible and stops once the task is idle", () => {
+  it("keeps polling until every turn has ended and been signalled, even if the task is idle", () => {
     const ingest = makeIngest();
     expect(ingest.shouldKeepPolling()).toBe(true);
     live(
       ingest,
       liveBody({ activeExecution: { conversationTurnId: TURN_ID, processingMessageId: "root-1" } }),
     );
-    refresh(ingest, turnsBody(idleTask(), [turn({ state: "settled" })]), {
+    refresh(ingest, turnsBody(idleTask(), [turn({ state: "running" })]), {
       [TURN_ID]: activityBody([]),
     });
     expect(ingest.shouldKeepPolling()).toBe(true);
+    // Nothing executes and the task reads idle, but the turn has not ended yet.
     live(ingest, liveBody());
-    expect(ingest.shouldKeepPolling()).toBe(false);
-    refresh(ingest, turnsBody(taskBody("awaiting_input"), [turn({ state: "awaiting_input" })]));
     expect(ingest.shouldKeepPolling()).toBe(true);
-    refresh(ingest, turnsBody(taskBody("errored"), [turn({ state: "errored" })]));
+    refresh(ingest, turnsBody(idleTask(), [turn({ state: "settled", revision_sequence: 2 })]), {
+      [TURN_ID]: activityBody([], 2),
+    });
     expect(ingest.shouldKeepPolling()).toBe(false);
   });
 

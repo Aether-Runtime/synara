@@ -122,18 +122,31 @@ As built in P3 (`provider/aether/aetherConversationIngest.ts`, `aetherConversati
 checked against recorded traffic in `provider/aether/testing/recordings/`:
 
 - A turn briefly reads `settled` while an answer is queued to resume it. A settled or errored turn
-  is final only once the task is idle, or the task's queued work belongs to another turn. Each
-  run settles once; a run is keyed by the turn's last user message, so a plan approval that
-  resumes the same Aether turn settles again.
+  is final only once the task is idle, or the task's queued work belongs to another turn, its
+  activity has been read at the turns page's revision, and none of its messages is still open.
+  Each run settles once; a run is keyed by the turn's last user message, so a plan approval that
+  resumes the same Aether turn settles again: `awaiting_input(plan)`, then `settled`. That is
+  intended; P4 maps each settle to its own Synara turn, because approving a plan starts one.
+- After a restart P4 passes one resume watermark, the last run it signalled (`turnId`,
+  `runMessageId`). That run and every turn before it on the first turns page count as signalled,
+  so history does not settle again. A message still streaming across a restart is re-sent from
+  its start (there is no per-message seed).
 - Questions (`awaiting_input.kind = "questions"`) are `user-input.requested` inside the turn and do
   not settle it. A plan (`kind = "plan"`) is `turn.proposed.completed` and settles the run as
   `awaiting_input(plan)`, matching Synara's plan flow. The recordings carry no input digest; the
-  pending input is handed over whole for P4 to fence the answer with.
+  pending input is handed over whole for P4 to fence the answer with. The pending call's turn is
+  the one whose activity holds that call; an answer is the `toolResponse` row that follows the
+  call. An unreadable answer, or a pending call no turn made, stops the loop with a typed error;
+  a question the task stops waiting on with no answer row is not resolved (Synara settles it as
+  stale when the turn ends) and gets a warning.
 - The mapper never emits `turn.completed` or `runtime.error`: Synara's ingestion treats
   `runtime.error` as terminal for the turn, and P4 must mirror-sync first. A task error travels on
   the settlement (`errorMessage`).
+- A tick is applied to a copy of the ingest state and kept only when every read in it succeeded,
+  so a failed tick changes nothing and the next `wake` derives the same events. A turns page older
+  than the live head, or an activity read older than one applied, is dropped and read again.
 - A message first seen closed streams nothing; its completion carries the text, which Synara
-  applies only when nothing streamed. A restart mid-stream resumes from lengths P4 seeds.
+  applies only when nothing streamed.
 
 ### Mirror sync (the key piece)
 

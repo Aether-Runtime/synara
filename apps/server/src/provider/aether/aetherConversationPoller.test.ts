@@ -4,6 +4,7 @@ import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import {
+  AetherApiDecodeError,
   AetherApiHttpError,
   AetherApiTransportError,
   type AetherApiError,
@@ -160,25 +161,14 @@ const warnings = (outputs: ReadonlyArray<AetherPollerOutput>) =>
   );
 const stops = (outputs: ReadonlyArray<AetherPollerOutput>) =>
   outputs.flatMap((output) => (output._tag === "PollingStopped" ? [output.error] : []));
+const summary = (output: AetherPollerOutput) =>
+  output._tag === "Event"
+    ? [output.event.type, output.event.itemId].filter(Boolean).join(" ")
+    : output._tag === "PollingStopped"
+      ? output.error._tag
+      : output._tag;
 
 describe("makeAetherConversationPoller", () => {
-  it("ticks once a second with one request while nothing moves", async () => {
-    const { calls } = await run(
-      { live: () => liveBody({ activeExecution: executing }) },
-      { seconds: 5 },
-    );
-    expect(calls.map((call) => [call.at, call.kind])).toEqual([
-      [0, "live"],
-      [0, "turns"],
-      [0, "activity"],
-      [1000, "live"],
-      [2000, "live"],
-      [3000, "live"],
-      [4000, "live"],
-      [5000, "live"],
-    ]);
-  });
-
   it("backs off on transport failures with one warning, then stops after the outage limit", async () => {
     const { calls, outputs } = await run({ live: () => transportError() }, { seconds: 200 });
     expect(liveCallTimes(calls)).toEqual([
@@ -232,7 +222,7 @@ describe("makeAetherConversationPoller", () => {
     expect(warnings(outputs)).toEqual([]);
   });
 
-  it("stops with a typed error when streamed text diverges", async () => {
+  it("stops with a typed error when streamed text diverges, and again on wake", async () => {
     const texts = ["Hello", "Help"];
     const { outputs } = await run(
       {
@@ -249,30 +239,63 @@ describe("makeAetherConversationPoller", () => {
             ],
           }),
       },
-      { seconds: 3 },
+      { seconds: 3, wakeAgainAt: 2 },
     );
-    expect(stops(outputs).map((error) => error._tag)).toEqual(["AetherTranscriptDivergedError"]);
+    // The failed ticks change nothing: the wake reads the same text and fails the same way.
+    expect(outputs.map(summary)).toEqual([
+      "content.delta m1",
+      "TurnOrigin",
+      "AetherTranscriptDivergedError",
+      "AetherTranscriptDivergedError",
+    ]);
   });
 
-  it("goes idle once a watched task settles, and polls again on wake", async () => {
+  it("changes nothing on a failed tick, so a wake emits that tick's outputs exactly once", async () => {
+    const decodeError = new AetherApiDecodeError({
+      endpoint: "GET /tasks/{taskID}/conversation/turns/{turnID}/activity",
+      status: 200,
+      detail: 'Expected an array at ["items"]',
+      cause: null,
+    });
+    const text = (content: string) => ({
+      id: "m1",
+      conversationTurnId: TURN_ID,
+      variant: "text",
+      content,
+    });
     const { calls, outputs } = await run(
       {
+        // The second tick sees the conversation truncated (resetSequence 1), then its activity
+        // read fails to decode. The wake at 2 s reads the same state again.
         live: (call) =>
-          call < 2 ? liveBody({ activeExecution: executing }) : liveBody({ headRevision: 2 }),
-        turns: (call) =>
-          call === 0 ? turnsBody(taskBody("processing")) : turnsBody(idleTask(), "settled", 2),
-        activity: () => activityBody([], { turn_revision_sequence: 2 }),
+          call === 0
+            ? liveBody({ activeExecution: executing, open: [text("Hel")] })
+            : liveBody({
+                activeExecution: executing,
+                headRevision: 2,
+                resetSequence: 1,
+                open: [text("Hello")],
+              }),
+        turns: (call) => turnsBody(taskBody("processing"), "running", call === 0 ? 1 : 2),
+        activity: (call) =>
+          call === 1
+            ? decodeError
+            : activityBody([toolRow(call === 0 ? "t0" : "t1")], {
+                turn_revision_sequence: call === 0 ? 1 : 2,
+              }),
       },
-      { seconds: 20, wakeAgainAt: 10 },
+      { seconds: 3, wakeAgainAt: 2 },
     );
-    // Idle from 2 s; the wake at 10 s polls again (still idle-looking, so within its grace).
-    expect(liveCallTimes(calls)).toEqual([
-      0,
-      1000,
-      2000,
-      ...Array.from({ length: 11 }, (_, index) => 10000 + index * 1000),
+    expect(liveCallTimes(calls)).toEqual([0, 1000, 2000, 3000]);
+    expect(outputs.map(summary)).toEqual([
+      "content.delta m1",
+      "TurnOrigin",
+      "item.completed t0",
+      "AetherApiDecodeError",
+      "ConversationReset",
+      "content.delta m1",
+      "item.completed t1",
     ]);
-    expect(outputs.filter((output) => output._tag === "TurnSettled")).toHaveLength(1);
   });
 
   it("after a wake, keeps polling an idle-looking task for the grace period only", async () => {

@@ -5,10 +5,12 @@
 // Each tick reads `GET /conversation/live` for the messages open at the previous tick. Only when
 // `headRevision` moves does it read `GET /conversation/turns` (which carries the task), and then
 // `GET /turns/{id}/activity` for each turn whose `revision_sequence` moved. One fiber makes every
-// request in turn, so two requests for the task are never in flight together.
+// request in turn, so two requests for the task are never in flight together. A tick is applied
+// to a fork of the ingest and emitted only once every read in it succeeded: a failed tick
+// changes nothing, so the next tick (or the next `wake`) derives the same outputs again.
 //
-// The loop ticks while a run executes, the task is queued or processing, or a question or plan
-// waits on an answer; otherwise it goes idle until `wake`. A transport failure backs off (1 s,
+// The loop ticks while a run executes, the task is busy, a question or plan waits on an answer,
+// or a turn has not ended and been signalled; otherwise it goes idle until `wake`. A transport failure backs off (1 s,
 // doubling to 10 s) with one warning while degraded; an outage longer than two minutes, or an
 // error retrying cannot fix, stops the loop with a typed failure until the next `wake`.
 
@@ -26,7 +28,8 @@ import {
   makeAetherEventBase,
   type AetherIngestContext,
   type AetherIngestOutput,
-  type AetherIngestSeed,
+  type AetherPendingInputError,
+  type AetherRunKey,
   type AetherTranscriptDivergedError,
 } from "./aetherConversationIngest.ts";
 
@@ -89,6 +92,7 @@ export class AetherPollDefectError extends Schema.TaggedErrorClass<AetherPollDef
 export type AetherConversationPollFailure =
   | AetherApiError
   | AetherTranscriptDivergedError
+  | AetherPendingInputError
   | AetherPollOutageError
   | AetherActivityPagingLimitError
   | AetherPollDefectError;
@@ -107,7 +111,8 @@ export type AetherConversationReader = Pick<
 export interface AetherConversationPollerOptions {
   readonly client: AetherConversationReader;
   readonly context: AetherIngestContext;
-  readonly seed?: AetherIngestSeed;
+  /** The last run the adapter signalled, from its resume cursor. */
+  readonly resumeAfter?: AetherRunKey;
   /** Receives every output in order. The loop waits for it, so a slow consumer slows polling. */
   readonly emit: (output: AetherPollerOutput) => Effect.Effect<void>;
 }
@@ -117,7 +122,11 @@ export interface AetherConversationPoller {
   readonly wake: Effect.Effect<void>;
 }
 
-type TickFailure = AetherApiError | AetherTranscriptDivergedError | AetherActivityPagingLimitError;
+type TickFailure =
+  | AetherApiError
+  | AetherTranscriptDivergedError
+  | AetherPendingInputError
+  | AetherActivityPagingLimitError;
 
 /** Transport trouble and server-side errors may pass; anything else will not. */
 export function isRetryableAetherPollError(error: TickFailure): boolean {
@@ -138,14 +147,11 @@ export const makeAetherConversationPoller = (
 ): Effect.Effect<AetherConversationPoller, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { client, context, emit } = options;
-    const ingest = new AetherConversationIngest(context, options.seed);
+    let ingest = new AetherConversationIngest(context, options.resumeAfter);
     const wakeLatch = yield* Latch.make(false);
     const wakeState = { graceUntil: 0, sawActive: false };
 
-    const emitAll = (outputs: ReadonlyArray<AetherIngestOutput>) =>
-      Effect.forEach(outputs, emit, { discard: true });
-
-    const readActivity = (turnId: AetherTurnId) =>
+    const readActivity = (draft: AetherConversationIngest, turnId: AetherTurnId) =>
       Effect.gen(function* () {
         const pages: AetherTurnActivityPage[] = [];
         const readIds = new Set<string>();
@@ -153,7 +159,7 @@ export const makeAetherConversationPoller = (
         for (;;) {
           pages.push(page);
           for (const item of page.items) readIds.add(item.id);
-          if (!ingest.needsOlderActivity(turnId, page, readIds)) break;
+          if (!draft.needsOlderActivity(turnId, page, readIds)) break;
           if (pages.length >= AETHER_ACTIVITY_MAX_PAGES) {
             return yield* new AetherActivityPagingLimitError({
               taskId: context.taskId,
@@ -169,28 +175,27 @@ export const makeAetherConversationPoller = (
         return { items, revision: pages[0]!.turn_revision_sequence };
       });
 
+    /** One tick on a fork of the ingest; the fork replaces it only when the tick succeeds. */
     const tick = (observedAt: string) =>
       Effect.gen(function* () {
-        const live = yield* client.getLiveConversation(context.taskId, ingest.openMessageIds());
-        const step = yield* ingest.applyLive(live, observedAt);
-        yield* emitAll(step.outputs);
+        const draft = ingest.fork();
+        const outputs: AetherIngestOutput[] = [];
+        const live = yield* client.getLiveConversation(context.taskId, draft.openMessageIds());
+        const step = yield* draft.applyLive(live, observedAt);
+        outputs.push(...step.outputs);
         if (step.refreshTurns) {
           const page = yield* client.getConversationTurns(context.taskId, {
             limit: AETHER_TURNS_PAGE_LIMIT,
           });
-          yield* emitAll(ingest.applyTurns(page));
+          outputs.push(...draft.applyTurns(page));
         }
-        for (const turnId of ingest.turnsNeedingActivity()) {
-          const activity = yield* readActivity(turnId);
-          const outputs = yield* ingest.applyActivity(
-            turnId,
-            activity.items,
-            activity.revision,
-            observedAt,
-          );
-          yield* emitAll(outputs);
+        for (const turnId of draft.turnsNeedingActivity()) {
+          const { items, revision } = yield* readActivity(draft, turnId);
+          outputs.push(...(yield* draft.applyActivity(turnId, items, revision, observedAt)));
         }
-        yield* emitAll(ingest.finishRefresh(observedAt));
+        outputs.push(...(yield* draft.finishRefresh(observedAt)));
+        ingest = draft;
+        return outputs;
       });
 
     const stop = (error: AetherConversationPollFailure) => emit({ _tag: "PollingStopped", error });
@@ -203,6 +208,7 @@ export const makeAetherConversationPoller = (
         const now = yield* Clock.currentTimeMillis;
         const exit = yield* Effect.exit(tick(new Date(now).toISOString()));
         if (exit._tag === "Success") {
+          yield* Effect.forEach(exit.value, emit, { discard: true });
           backoffMs = AETHER_POLL_BACKOFF_INITIAL_MS;
           failingSince = undefined;
           if (ingest.shouldKeepPolling()) {
