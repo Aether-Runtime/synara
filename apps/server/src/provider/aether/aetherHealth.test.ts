@@ -72,6 +72,7 @@ describe("Aether health check", () => {
     expect(request?.method).toBe("GET");
     expect(new Headers(request?.headers).get("authorization")).toBe("Bearer aether-secret");
     expect(request?.policy).toMatchObject({
+      timeoutMs: 10_000,
       allowedOrigins: ["https://api.runaether.dev"],
       maxRedirects: 0,
       requirePublicAddress: true,

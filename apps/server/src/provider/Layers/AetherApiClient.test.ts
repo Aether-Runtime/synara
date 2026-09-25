@@ -285,7 +285,7 @@ describe("AetherApiClient", () => {
     });
   });
 
-  it("rejects a missing field, a malformed id, or an unknown branched-on value", async () => {
+  it("rejects a missing field or a malformed id, naming it", async () => {
     const cases: ReadonlyArray<
       readonly [
         (client: AetherApiClientShape) => Effect.Effect<unknown, AetherApiError>,
@@ -298,16 +298,6 @@ describe("AetherApiClient", () => {
         withoutKey(turnsPageBody(), ["turns", 0, "revision_sequence"]),
         '["turns"][0]["revision_sequence"]',
       ],
-      [
-        (client) => client.getConversationTurns(TASK_ID),
-        turnsPageBody({ turns: [turnBody({ state: "paused" })] }),
-        '"paused"',
-      ],
-      [
-        (client) => client.getTurnActivity(TASK_ID, TURN_ID),
-        activityPageBody({ items: [toolRowBody({ status: "running" })] }),
-        '"running"',
-      ],
       [(client) => client.createTask(createRequest), { id: "not-a-uuid" }, '["id"]'],
     ];
     for (const [call, body, named] of cases) {
@@ -319,6 +309,48 @@ describe("AetherApiClient", () => {
       _tag: "AetherApiDecodeError",
       detail: "The body is not valid JSON.",
     });
+  });
+
+  it("decodes a tool type, tool status or seam reason it does not know as Unknown, keeping the page", async () => {
+    const activity = await succeed(
+      clientWith(
+        json(
+          200,
+          activityPageBody({
+            items: [
+              toolRowBody({ itemType: "notebook_edit", status: "queued" }),
+              { id: "msg_seam_02", role: "assistant", variant: "seam", seam: { reason: "fork" } },
+              toolRowBody(),
+            ],
+          }),
+        ),
+      ).client.getTurnActivity(TASK_ID, TURN_ID),
+    );
+
+    expect(activity.items[0]).toMatchObject({
+      tool: {
+        itemType: { _tag: "Unknown", raw: "notebook_edit" },
+        status: { _tag: "Unknown", raw: "queued" },
+      },
+    });
+    expect(activity.items[1]).toMatchObject({ seam: { reason: { _tag: "Unknown", raw: "fork" } } });
+    // Known values still decode to their literal.
+    expect(activity.items[2]).toMatchObject({
+      tool: { itemType: "command_execution", status: "output-available" },
+    });
+  });
+
+  it("still fails on a turn state it does not know, naming the field", async () => {
+    const error = await fail(
+      clientWith(
+        json(200, turnsPageBody({ turns: [turnBody({ state: "paused" })] })),
+      ).client.getConversationTurns(TASK_ID),
+    );
+
+    expect(error._tag).toBe("AetherApiDecodeError");
+    expect(error._tag === "AetherApiDecodeError" && error.detail).toContain(
+      'got "paused"\n  at ["turns"][0]["state"]',
+    );
   });
 
   it("maps other statuses to one HTTP error, keeping a readable server message", async () => {

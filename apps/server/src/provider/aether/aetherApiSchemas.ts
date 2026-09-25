@@ -8,8 +8,11 @@
 // - Unknown keys are ignored (`Schema.Struct` strips them); Aether adds fields over time.
 // - Only fields a caller reads are declared. Each is required exactly when the OpenAPI requires
 //   it, so a missing one fails the decode, naming it.
-// - An Aether enum is decoded only when a caller branches on it, and then strictly: an unknown
-//   value is a decode error. Enums nobody branches on are not decoded at all.
+// - An Aether enum that drives the protocol (task `status`, turn `state`, `awaiting_input.kind`,
+//   what the client sends next) is strict: an unknown value is a decode error naming the field.
+//   A vocabulary Aether grows and Synara only displays (tool `status` and `itemType`, seam
+//   `reason`) is open: an unknown value decodes to `{ _tag: "Unknown", raw }`, so one new tool type
+//   cannot fail a whole activity page. Enums nobody reads are not decoded at all.
 // - IDs are branded here, once; every client method takes the branded type.
 // - Nothing is defaulted.
 //
@@ -17,7 +20,7 @@
 
 import type { AetherAgentFamily } from "@synara/contracts";
 import { NonNegativeInt, PositiveInt } from "@synara/contracts";
-import { Schema } from "effect";
+import { Schema, SchemaTransformation } from "effect";
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
 const Uuid = Schema.String.check(Schema.isUUID(undefined));
@@ -35,6 +38,27 @@ export const AetherMessageId = NonEmptyString.pipe(Schema.brand("AetherMessageId
 export type AetherMessageId = typeof AetherMessageId.Type;
 export const AetherToolId = NonEmptyString.pipe(Schema.brand("AetherToolId"));
 export type AetherToolId = typeof AetherToolId.Type;
+
+/** A value of an open vocabulary that this client does not know, kept as sent. */
+export interface AetherUnknownValue {
+  readonly _tag: "Unknown";
+  readonly raw: string;
+}
+
+/** A known value decodes to its literal; anything else to `AetherUnknownValue`. */
+const openVocabulary = <const Known extends ReadonlyArray<string>>(known: Known) =>
+  Schema.String.pipe(
+    Schema.decodeTo(
+      Schema.Union([
+        Schema.Literals(known),
+        Schema.Struct({ _tag: Schema.Literal("Unknown"), raw: Schema.String }),
+      ]),
+      SchemaTransformation.transform<Known[number] | AetherUnknownValue, string>({
+        decode: (raw) => (known.includes(raw) ? (raw as Known[number]) : { _tag: "Unknown", raw }),
+        encode: (value) => (typeof value === "string" ? value : value.raw),
+      }),
+    ),
+  );
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -112,7 +136,7 @@ export const AetherTimelineTool = Schema.Struct({
   id: AetherToolId,
   name: NonEmptyString,
   input: Schema.Record(Schema.String, Schema.Unknown),
-  status: Schema.Literals([
+  status: openVocabulary([
     "input-streaming",
     "input-available",
     "output-available",
@@ -123,7 +147,7 @@ export const AetherTimelineTool = Schema.Struct({
   ]),
   display: Schema.Struct({ label: NonEmptyString }),
   itemType: Schema.optionalKey(
-    Schema.Literals([
+    openVocabulary([
       "user_message",
       "assistant_message",
       "reasoning",
@@ -162,7 +186,7 @@ export const AetherTimelineMessage = Schema.Union([
   Schema.Struct({ ...assistantRow("tool"), tool: AetherTimelineTool }),
   Schema.Struct({
     ...assistantRow("seam"),
-    seam: Schema.Struct({ reason: Schema.Literals(["teleport", "compaction"]) }),
+    seam: Schema.Struct({ reason: openVocabulary(["teleport", "compaction"]) }),
   }),
 ]);
 export type AetherTimelineMessage = typeof AetherTimelineMessage.Type;

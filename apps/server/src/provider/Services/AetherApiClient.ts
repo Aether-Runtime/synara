@@ -41,8 +41,10 @@ export interface AetherPageQuery {
 export interface AetherApiClientShape {
   /** The base URL and key, resolved for each call; the workspace socket uses the same. */
   readonly connection: Effect.Effect<AetherApiConnection, AetherApiNotConfiguredError>;
-  /** `GET /profile`. */
-  readonly getProfile: () => Effect.Effect<{ readonly email: string }, AetherApiError>;
+  /** `GET /profile`. `timeoutMs` replaces the default request deadline (the health check's). */
+  readonly getProfile: (options?: {
+    readonly timeoutMs?: number;
+  }) => Effect.Effect<{ readonly email: string }, AetherApiError>;
   /** `GET /projects`. */
   readonly listProjects: () => Effect.Effect<ReadonlyArray<AetherProject>, AetherApiError>;
   /** `POST /tasks` (202). */

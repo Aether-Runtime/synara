@@ -11,6 +11,7 @@ import { Effect } from "effect";
 import type { AetherApiClientShape } from "../Services/AetherApiClient.ts";
 
 const PROVIDER = "aether" as const;
+const AETHER_HEALTH_TIMEOUT_MS = 10_000;
 
 export const checkAetherProviderStatus = (
   client: Pick<AetherApiClientShape, "getProfile">,
@@ -24,7 +25,9 @@ export const checkAetherProviderStatus = (
     const failed = (message: string) =>
       status({ status: "error", available: false, authStatus: "unknown", message });
 
-    const profile = yield* client.getProfile().pipe(Effect.result);
+    const profile = yield* client
+      .getProfile({ timeoutMs: AETHER_HEALTH_TIMEOUT_MS })
+      .pipe(Effect.result);
     if (profile._tag === "Success") {
       const { email } = profile.success;
       return status({

@@ -52,7 +52,10 @@ import {
   type AetherPageQuery,
 } from "../Services/AetherApiClient.ts";
 
-/** One deadline per request, enforced by outboundHttp over DNS, connect and the whole body. */
+/**
+ * The default deadline per request, enforced by outboundHttp over DNS, connect and the whole
+ * body. It is the request's only timeout.
+ */
 export const AETHER_API_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const JSON_LIMITS = { maxDepth: 64, maxNodes: 1_000_000 } as const;
@@ -71,6 +74,7 @@ type Decodable = Schema.Top & { readonly DecodingServices: never };
 type Method = "GET" | "POST";
 
 interface Exchange {
+  readonly timeoutMs?: number;
   readonly query?: Readonly<Record<string, string>>;
   readonly body?: unknown;
   /** The endpoint's 409 bodies; a 409 elsewhere is an `AetherApiHttpError`. */
@@ -104,6 +108,7 @@ export function makeAetherApiClient(options: AetherApiClientOptions): AetherApiC
   const send = (endpoint: string, method: Method, path: string, init: Exchange = {}) =>
     Effect.gen(function* () {
       const { apiBaseUrl, apiKey } = yield* connection;
+      const timeoutMs = init.timeoutMs ?? AETHER_API_TIMEOUT_MS;
       const url = resolveAetherApiUrl(apiBaseUrl, path);
       for (const [name, value] of Object.entries(init.query ?? {})) {
         url.searchParams.set(name, value);
@@ -114,7 +119,7 @@ export function makeAetherApiClient(options: AetherApiClientOptions): AetherApiC
             policy: {
               service: "aether-api",
               allowedOrigins: [url.origin],
-              timeoutMs: AETHER_API_TIMEOUT_MS,
+              timeoutMs,
               maxRequestBytes: MAX_BODY_BYTES,
               maxResponseBytes: MAX_BODY_BYTES,
               // The bearer key must never follow a redirect.
@@ -138,7 +143,7 @@ export function makeAetherApiClient(options: AetherApiClientOptions): AetherApiC
           }),
         catch: (cause) =>
           cause instanceof OutboundHttpError && cause.code === "timeout"
-            ? new AetherApiTimeoutError({ endpoint, timeoutMs: AETHER_API_TIMEOUT_MS })
+            ? new AetherApiTimeoutError({ endpoint, timeoutMs })
             : new AetherApiTransportError({ endpoint, cause }),
       });
       const { status } = response;
@@ -181,7 +186,14 @@ export function makeAetherApiClient(options: AetherApiClientOptions): AetherApiC
 
   return {
     connection,
-    getProfile: () => call("GET", "GET /profile", "/profile", AetherProfile),
+    getProfile: (options) =>
+      call(
+        "GET",
+        "GET /profile",
+        "/profile",
+        AetherProfile,
+        options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs },
+      ),
     listProjects: () =>
       call("GET", "GET /projects", "/projects", AetherProjectList).pipe(
         Effect.map((list) => list.projects),
