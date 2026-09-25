@@ -249,6 +249,9 @@ describe("EnvironmentPullRequestSection", () => {
       expect(getGitStatus).not.toHaveBeenCalled();
       expect(getPullRequestSnapshot).not.toHaveBeenCalled();
       expect(page.getByRole("menuitem", { name: /^Merge/ }).query()).toBeNull();
+      // Synara never read its comments or checks one by one: no rows that would claim it did.
+      expect(page.getByRole("menuitem", { name: /^Comments/ }).query()).toBeNull();
+      expect(page.getByTestId("pr-repair-trigger").query()).toBeNull();
       await expect
         .element(page.getByRole("menuitem", { name: "Status Ready for review" }))
         .toHaveAttribute("data-disabled");

@@ -672,115 +672,123 @@ export function EnvironmentPullRequestSection({
                   />
                 </MenuItem>
               ) : null}
-              <MenuSub keepOpenOnFocusOut>
-                <MenuSubTrigger disabled={loading}>
-                  <MenuRowLabel
-                    icon={<ChatBubbleIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
-                    label="Comments"
-                    trailing={
-                      loading
-                        ? "Loading…"
-                        : failed || commentsError
-                          ? "Unavailable"
-                          : summarizePullRequestComments(comments.length, commentsTruncated)
-                    }
-                  />
-                </MenuSubTrigger>
-                <ComposerPickerMenuSubPopup side={SUBMENU_SIDE} className="w-80 min-w-80">
-                  {failed ? (
-                    <MenuItem onClick={() => void snapshotQuery.refetch()}>
+              {/* Comments and Repair read the PR's comments and checks one by one, which Synara
+                  reads only through gh: a PR its provider reported has none of them to show. */}
+              {reported ? null : (
+                <>
+                  <MenuSub keepOpenOnFocusOut>
+                    <MenuSubTrigger disabled={loading}>
                       <MenuRowLabel
-                        icon={<RefreshCwIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
-                        label="Retry loading comments"
+                        icon={<ChatBubbleIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
+                        label="Comments"
+                        trailing={
+                          loading
+                            ? "Loading…"
+                            : failed || commentsError
+                              ? "Unavailable"
+                              : summarizePullRequestComments(comments.length, commentsTruncated)
+                        }
                       />
-                    </MenuItem>
-                  ) : commentsError ? (
-                    <MenuPlaceholder text={`Couldn't load review comments: ${commentsError}`} />
-                  ) : comments.length === 0 ? (
-                    <MenuPlaceholder
-                      text={
-                        commentsTruncated
-                          ? "Review comments may be hidden by the bounded preview. Open the PR on GitHub."
-                          : "No unresolved review comments."
-                      }
-                    />
-                  ) : (
-                    // shrink-0 children: when the list overflows max-h-64, flex would otherwise
-                    // shrink the rows (their line-clamp overflow-hidden spans have no automatic
-                    // minimum size) and clip the text instead of scrolling.
-                    <div className="flex max-h-64 flex-col gap-0.5 overflow-y-auto [&>*]:shrink-0">
-                      {comments.map((comment) => (
-                        <CommentsMenuRow
-                          key={comment.id}
-                          comment={comment}
-                          onOpenUrl={(url) => {
-                            onOpenUrl(url);
-                            onClose();
-                          }}
+                    </MenuSubTrigger>
+                    <ComposerPickerMenuSubPopup side={SUBMENU_SIDE} className="w-80 min-w-80">
+                      {failed ? (
+                        <MenuItem onClick={() => void snapshotQuery.refetch()}>
+                          <MenuRowLabel
+                            icon={<RefreshCwIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
+                            label="Retry loading comments"
+                          />
+                        </MenuItem>
+                      ) : commentsError ? (
+                        <MenuPlaceholder text={`Couldn't load review comments: ${commentsError}`} />
+                      ) : comments.length === 0 ? (
+                        <MenuPlaceholder
+                          text={
+                            commentsTruncated
+                              ? "Review comments may be hidden by the bounded preview. Open the PR on GitHub."
+                              : "No unresolved review comments."
+                          }
                         />
-                      ))}
-                      {commentsTruncated ? (
-                        <MenuPlaceholder text="More review comments may be available on GitHub." />
-                      ) : null}
-                    </div>
-                  )}
-                </ComposerPickerMenuSubPopup>
-              </MenuSub>
+                      ) : (
+                        // shrink-0 children: when the list overflows max-h-64, flex would otherwise
+                        // shrink the rows (their line-clamp overflow-hidden spans have no automatic
+                        // minimum size) and clip the text instead of scrolling.
+                        <div className="flex max-h-64 flex-col gap-0.5 overflow-y-auto [&>*]:shrink-0">
+                          {comments.map((comment) => (
+                            <CommentsMenuRow
+                              key={comment.id}
+                              comment={comment}
+                              onOpenUrl={(url) => {
+                                onOpenUrl(url);
+                                onClose();
+                              }}
+                            />
+                          ))}
+                          {commentsTruncated ? (
+                            <MenuPlaceholder text="More review comments may be available on GitHub." />
+                          ) : null}
+                        </div>
+                      )}
+                    </ComposerPickerMenuSubPopup>
+                  </MenuSub>
 
-              {/* Repair hands work to the composer as a context card (never pasted text). */}
-              <MenuSub keepOpenOnFocusOut>
-                <MenuSubTrigger disabled={repairDisabled} data-testid="pr-repair-trigger">
-                  <MenuRowLabel
-                    icon={<HammerIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
-                    label="Repair"
-                    trailing={
-                      repairs.total > 0 ? (
-                        <span className={cn(!repairDisabled && "text-destructive")}>
-                          {repairs.total}
-                        </span>
-                      ) : null
-                    }
-                  />
-                </MenuSubTrigger>
-                <ComposerPickerMenuSubPopup side={SUBMENU_SIDE} className="w-60 min-w-60">
-                  <MenuItem
-                    disabled={repairs.comments === 0}
-                    onClick={() => attachContextCard("comments")}
-                  >
-                    <MenuRowLabel
-                      icon={<ChatBubbleIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
-                      label="Comments"
-                      trailing={repairs.comments > 0 ? repairs.comments : null}
-                    />
-                  </MenuItem>
-                  <MenuItem
-                    disabled={repairs.failingChecks === 0}
-                    onClick={() => attachContextCard("checks")}
-                  >
-                    <MenuRowLabel
-                      icon={<CircleAlertIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
-                      label="Failing checks"
-                      trailing={repairs.failingChecks > 0 ? repairs.failingChecks : null}
-                    />
-                  </MenuItem>
-                  <MenuItem
-                    disabled={!repairs.conflicts}
-                    onClick={() => attachContextCard("conflicts")}
-                  >
-                    <MenuRowLabel
-                      icon={<GitMergeConflictIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
-                      label="Merge conflicts"
-                    />
-                  </MenuItem>
-                  <MenuSeparator />
-                  <MenuItem onClick={() => attachContextCard("everything")}>
-                    <MenuRowLabel
-                      icon={<HammerIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
-                      label="Everything"
-                    />
-                  </MenuItem>
-                </ComposerPickerMenuSubPopup>
-              </MenuSub>
+                  {/* Repair hands work to the composer as a context card (never pasted text). */}
+                  <MenuSub keepOpenOnFocusOut>
+                    <MenuSubTrigger disabled={repairDisabled} data-testid="pr-repair-trigger">
+                      <MenuRowLabel
+                        icon={<HammerIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
+                        label="Repair"
+                        trailing={
+                          repairs.total > 0 ? (
+                            <span className={cn(!repairDisabled && "text-destructive")}>
+                              {repairs.total}
+                            </span>
+                          ) : null
+                        }
+                      />
+                    </MenuSubTrigger>
+                    <ComposerPickerMenuSubPopup side={SUBMENU_SIDE} className="w-60 min-w-60">
+                      <MenuItem
+                        disabled={repairs.comments === 0}
+                        onClick={() => attachContextCard("comments")}
+                      >
+                        <MenuRowLabel
+                          icon={<ChatBubbleIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
+                          label="Comments"
+                          trailing={repairs.comments > 0 ? repairs.comments : null}
+                        />
+                      </MenuItem>
+                      <MenuItem
+                        disabled={repairs.failingChecks === 0}
+                        onClick={() => attachContextCard("checks")}
+                      >
+                        <MenuRowLabel
+                          icon={<CircleAlertIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
+                          label="Failing checks"
+                          trailing={repairs.failingChecks > 0 ? repairs.failingChecks : null}
+                        />
+                      </MenuItem>
+                      <MenuItem
+                        disabled={!repairs.conflicts}
+                        onClick={() => attachContextCard("conflicts")}
+                      >
+                        <MenuRowLabel
+                          icon={
+                            <GitMergeConflictIcon className={MENU_ICON_CLASS_NAME} aria-hidden />
+                          }
+                          label="Merge conflicts"
+                        />
+                      </MenuItem>
+                      <MenuSeparator />
+                      <MenuItem onClick={() => attachContextCard("everything")}>
+                        <MenuRowLabel
+                          icon={<HammerIcon className={MENU_ICON_CLASS_NAME} aria-hidden />}
+                          label="Everything"
+                        />
+                      </MenuItem>
+                    </ComposerPickerMenuSubPopup>
+                  </MenuSub>
+                </>
+              )}
 
               {canRunActions ? (
                 <MenuSub keepOpenOnFocusOut>
