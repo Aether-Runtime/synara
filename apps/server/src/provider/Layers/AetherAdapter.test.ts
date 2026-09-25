@@ -309,6 +309,41 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
+    it.effect("bases the task on the project's default branch when others share its tip", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        // Aether's own task branches sit at a past tip of main.
+        yield* git(h.repo, ["push", "origin", "main:aether/task-one", "main:aether/task-two"]);
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        yield* adapter.sendTurn(h.send("Go"));
+        yield* waitFor("turn.completed", () => completions(events)[0]);
+        expect(h.aether.calls.create[0]).toMatchObject({ base_branch: "main" });
+      }),
+    );
+
+    it.effect("matches the project by host, and keeps the remote URL out of errors", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter } = yield* h.launch();
+        yield* h.start(adapter);
+        h.aether.projects.splice(0, 1, {
+          id: PROJECT_ID,
+          repo_url: "https://gitlab.com/acme/widgets",
+          default_branch: "main",
+        });
+        const otherHost = yield* adapter.sendTurn(h.send("Go")).pipe(Effect.flip);
+        expect(otherHost.message).toContain("No Aether project is connected to github.com/acme/widgets");
+
+        yield* git(h.repo, ["remote", "set-url", "origin", "https://user:s3cret@example.com/solo"]);
+        const unreadable = yield* adapter.sendTurn(h.send("Go")).pipe(Effect.flip);
+        expect(unreadable.message).toContain("origin remote");
+        expect(unreadable.message).not.toContain("s3cret");
+        expect(h.aether.calls.create).toEqual([]);
+      }),
+    );
+
     it.effect("declares no conversation rollback, so a rollback is refused, not restarted", () =>
       Effect.gen(function* () {
         const h = yield* makeHarness;

@@ -122,10 +122,7 @@ export function makeFakeAetherTask() {
     connection: Effect.die("the fake has no connection"),
     getProfile: () => Effect.die("unused"),
     listProjects: () =>
-      Effect.succeed(
-        decode(AetherProjectList, { projects: [{ id: PROJECT_ID, repo_url: FAKE_REPO_URL }] })
-          .projects,
-      ),
+      Effect.succeed(decode(AetherProjectList, { projects: fake.projects }).projects),
     createTask: (request) =>
       Effect.suspend((): Effect.Effect<CreatedTask, AetherApiError> => {
         calls.create.push(request);
@@ -274,6 +271,8 @@ export function makeFakeAetherTask() {
 
   const fake = {
     client,
+    /** `GET /projects`: one project on `FAKE_REPO_URL` whose default branch is `main`. */
+    projects: [{ id: PROJECT_ID, repo_url: FAKE_REPO_URL, default_branch: "main" }] as Json[],
     calls,
     faults,
     hooks,

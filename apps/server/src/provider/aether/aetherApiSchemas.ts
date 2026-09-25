@@ -67,10 +67,14 @@ const openVocabulary = <const Known extends ReadonlyArray<string>>(known: Known)
 /** `GET /profile`: the health check reads `email`. */
 export const AetherProfile = Schema.Struct({ email: NonEmptyString });
 
-/** A `GET /projects` entry: a worktree's project is found by its `repo_url`. */
+/**
+ * A `GET /projects` entry: a worktree's project is found by its `repo_url`, and its default
+ * branch is the preferred base branch.
+ */
 export const AetherProject = Schema.Struct({
   id: AetherProjectId,
   repo_url: Schema.optionalKey(Schema.String),
+  default_branch: Schema.optionalKey(NonEmptyString),
 });
 export type AetherProject = typeof AetherProject.Type;
 export const AetherProjectList = Schema.Struct({ projects: Schema.Array(AetherProject) });

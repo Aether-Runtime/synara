@@ -116,8 +116,11 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   task, `sends` and the request: a retry of the same request, even after a restart, reuses it; any
   other request gets a new one. A Synara turn's id is its send's id (the idempotency key for the
   first turn), so a retry after a lost response is the same turn.
-- The base branch is the one branch on origin whose tip is the worktree's HEAD; Synara's worktree
-  creation keeps only the commit. None (unpushed or behind) or several is a loud error.
+- Synara's worktree creation keeps only the commit, not the branch it came from. The base branch
+  is the Aether project's default branch when its tip on origin is the worktree's HEAD (Aether's
+  own task branches often sit at a past tip of it), otherwise the one branch on origin at HEAD.
+  None (unpushed or behind) or several is a loud error. The project is matched by host, owner
+  and repository.
 - Answers are fenced by `expected_tool_id` only: `expected_input_digest` would need Go
   `encoding/json` bytes reproduced exactly. A plan is answered by the next message: implementing it
   (default mode) approves; a message in plan mode is feedback.
