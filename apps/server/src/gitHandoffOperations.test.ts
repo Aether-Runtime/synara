@@ -93,7 +93,10 @@ it.effect(
 
       // Idle: no session and no live worktree claim.
       const refusal = yield* validateGitHandoffTarget(toLocal, aether).pipe(Effect.flip);
-      assert.include(refusal.message, "Aether needs a git repository with a GitHub remote");
+      assert.include(
+        refusal.message,
+        "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+      );
 
       yield* validateGitHandoffTarget(toLocal, thread({ provider: "codex", model: "gpt-5-codex" }));
       yield* validateGitHandoffTarget(input, aether);

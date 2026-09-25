@@ -313,7 +313,7 @@ describe("decider provider capability gating", () => {
           await makeReadModel({ modelSelection: AETHER }),
         ),
       ).toBe(
-        "Orchestration command invariant failed (thread.meta.update): Aether needs a git repository with a GitHub remote: its threads always run in a new worktree that Aether owns, never in the local checkout.",
+        "Orchestration command invariant failed (thread.meta.update): Aether threads run only in a worktree that Aether owns, never in the local checkout.",
       );
     });
 
@@ -348,7 +348,9 @@ describe("decider provider capability gating", () => {
           turnStart("hello"),
           await makeReadModel({ modelSelection: AETHER, worktreePath: null }),
         ),
-      ).toContain("Aether needs a git repository with a GitHub remote");
+      ).toContain(
+        "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+      );
       const events = await decide(
         turnStart("hello"),
         await makeReadModel({ modelSelection: AETHER }),

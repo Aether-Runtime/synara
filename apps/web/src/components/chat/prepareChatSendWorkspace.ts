@@ -343,7 +343,7 @@ export async function prepareChatSendWorkspace({
       threadIdForSend,
       providerSupportsFeature(provider, "local-workspace")
         ? "Select a base branch before sending in New worktree mode."
-        : providerFeatureUnavailableMessage(provider, "local-workspace"),
+        : providerFeatureUnavailableMessage(provider, "non-git-workspace"),
     );
     return false;
   }

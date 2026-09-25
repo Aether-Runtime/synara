@@ -230,6 +230,7 @@ export type ProviderGatedFeature =
   | "automation"
   | "conversation-rollback"
   | "local-workspace"
+  | "non-git-workspace"
   | "copy-changes"
   | "provider-handoff";
 
@@ -249,6 +250,7 @@ export function providerSupportsFeature(
     case "sidechat":
     case "automation":
     case "local-workspace":
+    case "non-git-workspace":
     case "copy-changes":
     case "provider-handoff":
       return !descriptor.managesWorktreeBranch;
@@ -292,7 +294,9 @@ export function providerFeatureUnavailableMessage(
     case "conversation-rollback":
       return `${name} cannot roll back its conversation, so reverting changes or editing earlier messages is unavailable in this thread.`;
     case "local-workspace":
-      return `${name} needs a git repository with a GitHub remote: its threads always run in a new worktree that ${name} owns, never in the local checkout.`;
+      return `${name} threads run only in a worktree that ${name} owns, never in the local checkout.`;
+    case "non-git-workspace":
+      return `${name} needs a git repository with a GitHub remote.`;
     case "copy-changes":
       return `${name} threads cannot copy local changes into their worktree: ${name} clones from origin and resets the worktree on every turn.`;
     case "provider-handoff":
