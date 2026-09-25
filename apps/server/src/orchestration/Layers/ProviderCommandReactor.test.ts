@@ -533,6 +533,9 @@ describe("ProviderCommandReactor", () => {
         }
       }),
     );
+    const releaseThread = vi.fn<NonNullable<ProviderServiceShape["releaseThread"]>>(
+      () => Effect.void,
+    );
     const clearSessionResumeCursor = vi.fn<
       NonNullable<ProviderServiceShape["clearSessionResumeCursor"]>
     >((input) =>
@@ -643,6 +646,7 @@ describe("ProviderCommandReactor", () => {
             >,
           }),
       clearSessionResumeCursor,
+      releaseThread,
       listSessions,
       getCapabilities: (_provider) =>
         Effect.succeed({
@@ -854,6 +858,7 @@ describe("ProviderCommandReactor", () => {
       stopSession,
       stopRuntimeSession,
       clearSessionResumeCursor,
+      releaseThread,
       renameBranch,
       publishBranch,
       ownedWorktrees,
@@ -16530,6 +16535,10 @@ describe("ProviderCommandReactor", () => {
       threadId: ThreadId.makeUnsafe("thread-1"),
     });
     expect(harness.stopSession).not.toHaveBeenCalled();
+    await waitFor(() => harness.releaseThread.mock.calls.length === 1);
+    expect(harness.releaseThread).toHaveBeenCalledWith({
+      threadId: ThreadId.makeUnsafe("thread-1"),
+    });
   });
 
   it("restores computer admission after ordered archive cleanup and before the next provider turn", async () => {

@@ -28,6 +28,12 @@ import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts
 import { ServerConfig } from "../../config.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { ProviderRuntimeEventRepositoryLive } from "../../persistence/Layers/ProviderRuntimeEvents.ts";
+import {
+  ProjectionThreadRepository,
+  type ProjectionThread,
+  type ProjectionThreadRepositoryShape,
+} from "../../persistence/Services/ProjectionThreads.ts";
 import type { PersistedProviderRuntimeEvent } from "../../persistence/Services/ProviderRuntimeEvents.ts";
 import {
   AetherApiConflictError,
@@ -52,7 +58,8 @@ import {
 import { classifyProviderAttemptOutcome } from "../../orchestration/Layers/ProviderCommandReactor.ts";
 import { providerAdapterConformanceIssues } from "../providerAdapterConformance.ts";
 import { planProviderRuntimeReconciliation } from "../providerRuntimeReconciliation.ts";
-import type { AetherAdapterShape } from "../Services/AetherAdapter.ts";
+import { AetherAdapter, type AetherAdapterShape } from "../Services/AetherAdapter.ts";
+import { AetherApiClient } from "../Services/AetherApiClient.ts";
 import type { ProviderRuntimeBinding } from "../Services/ProviderSessionDirectory.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
@@ -60,7 +67,7 @@ import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.t
 import { ProviderUnsupportedError } from "../Errors.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../../persistence/Layers/ProviderSessionRuntime.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { makeAetherAdapter, openRunningWorkspace } from "./AetherAdapter.ts";
+import { AetherAdapterLive, makeAetherAdapter, openRunningWorkspace } from "./AetherAdapter.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 
@@ -1716,6 +1723,95 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(yield* second.adapter.hasSession(THREAD_ID)).toBe(false);
         const reclaimed = yield* gitCore.assertWorktreeNotOwned(h.worktree).pipe(Effect.flip);
         expect(reclaimed._tag).toBe("WorktreeOwnedError");
+      }),
+    );
+
+    it.effect.each(["deleted", "archived"] as const)(
+      "releases the worktree of a thread %s, so it can be removed",
+      (retired) =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const gitCore = yield* GitCore;
+          const { adapter } = yield* h.makeAdapter();
+          h.finishTurns();
+          yield* Effect.gen(function* () {
+            const providerService = yield* ProviderService;
+            const accepted: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(providerService.streamEvents, (event) =>
+              Effect.sync(() => void accepted.push(event)),
+            ).pipe(Effect.forkScoped);
+            yield* providerService.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            yield* providerService.sendTurn({ threadId: THREAD_ID, input: "Go" });
+            yield* waitFor("turn.completed", () => completions(accepted)[0]);
+            // Deleting a thread stops its session and removes its binding; archiving it stops
+            // its runtime, keeping the binding, then releases what the thread held.
+            if (retired === "deleted") {
+              yield* providerService.stopSession({ threadId: THREAD_ID });
+            } else {
+              yield* providerService.stopRuntimeSession!({ threadId: THREAD_ID });
+              yield* providerService.releaseThread!({ threadId: THREAD_ID });
+            }
+          }).pipe(
+            Effect.scoped,
+            Effect.provide(providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer))),
+          );
+
+          yield* gitCore.removeWorktree({ cwd: h.repo, path: h.worktree });
+          expect(yield* h.exists("app.txt")).toBe(false);
+        }),
+    );
+
+    it.effect.each([
+      ["claims the worktree of a live thread", null],
+      ["claims no worktree of an archived thread", "2026-09-25T00:00:00.000Z"],
+    ] as const)("%s at boot", ([, archivedAt]) =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const gitCore = yield* GitCore;
+        const first = yield* h.launch();
+        yield* h.start(first.adapter);
+        h.finishTurns();
+        yield* first.adapter.sendTurn(h.send("Go"));
+        yield* waitFor("turn.completed", () => completions(first.events)[0]);
+        const [session] = yield* first.adapter.listSessions();
+        yield* first.stop;
+
+        const thread = { archivedAt, deletedAt: null } as ProjectionThread;
+        yield* Effect.gen(function* () {
+          yield* (yield* ProviderSessionDirectory).upsert({
+            threadId: THREAD_ID,
+            provider: "aether",
+            runtimeMode: "full-access",
+            status: "stopped",
+            resumeCursor: session!.resumeCursor,
+          });
+          // The adapter claims at construction; the claim lasts while the layer does.
+          const owned = yield* Effect.gen(function* () {
+            yield* AetherAdapter;
+            return yield* Effect.exit(gitCore.assertWorktreeNotOwned(h.worktree));
+          }).pipe(
+            Effect.provide(
+              AetherAdapterLive.pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    Layer.succeed(AetherApiClient, h.aether.client),
+                    Layer.succeed(ProjectionThreadRepository, {
+                      getById: () => Effect.succeed(Option.some(thread)),
+                    } as unknown as ProjectionThreadRepositoryShape),
+                    ProviderRuntimeEventRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+                  ),
+                ),
+              ),
+            ),
+          );
+          expect(Exit.isFailure(owned)).toBe(archivedAt === null);
+        }).pipe(Effect.scoped, Effect.provide(sessionDirectoryLayer));
       }),
     );
 

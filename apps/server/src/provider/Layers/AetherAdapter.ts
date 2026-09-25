@@ -8,9 +8,10 @@
  * checkpoint Synara takes on completion holds them; each Synara turn completes exactly once.
  *
  * The worktree is claimed for the thread's lifetime, not the session's: `stopSession` only stops
- * following the task, which keeps running in the cloud. The resume cursor
- * (`aetherResumeCursor.ts`) carries everything a restart needs: at construction the adapter
- * claims every Aether thread's worktree again, and startup reconciliation reattaches each turn
+ * following the task, which keeps running in the cloud; `releaseThread` (the thread was archived,
+ * or lost its binding) releases the claim. The resume cursor (`aetherResumeCursor.ts`) carries
+ * everything a restart needs: at construction the adapter claims again the worktree of every
+ * Aether thread neither archived nor deleted, and startup reconciliation reattaches each turn
  * still in flight (`reattachTurn`), or fails it with the reason it cannot.
  *
  * @module AetherAdapterLive
@@ -48,6 +49,7 @@ import {
 
 import type { WorktreeOwnedError } from "../../git/Errors.ts";
 import { GitCore, type WorktreeClaim } from "../../git/Services/GitCore.ts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import {
   ProviderRuntimeEventRepository,
   type ProviderRuntimeEventRepositoryShape,
@@ -118,7 +120,10 @@ export interface AetherAdapterOptions {
     ProviderRuntimeEventRepositoryShape,
     "getHighWaterSequence" | "readThreadEvents"
   >;
-  /** Persisted bindings: the worktree of every Aether thread with a task is claimed again. */
+  /**
+   * Persisted bindings of threads neither archived nor deleted: the worktree of every Aether
+   * thread among them with a task is claimed again.
+   */
   readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
 }
 
@@ -352,8 +357,11 @@ export const makeAetherAdapter = (
       PROVIDER_ADAPTER_RUNTIME_EVENT_BUFFER_CAPACITY,
     );
     const sessions = new Map<ThreadId, Session>();
-    /** Held for the thread's lifetime: released only when the adapter shuts down. */
-    const claims = new Map<ThreadId, WorktreeClaim>();
+    /** Held for the thread's lifetime, each in its own scope, until `releaseThread`. */
+    const claims = new Map<
+      ThreadId,
+      { readonly claim: WorktreeClaim; readonly scope: Scope.Closeable }
+    >();
     const nowIso = Effect.map(Clock.currentTimeMillis, (millis) => new Date(millis).toISOString());
 
     const requireTask = (session: Session, operation: string) =>
@@ -732,11 +740,13 @@ export const makeAetherAdapter = (
     const claimWorktree = (threadId: ThreadId, worktreePath: string) =>
       Effect.gen(function* () {
         const held = claims.get(threadId);
-        if (held !== undefined) return held;
+        if (held !== undefined) return held.claim;
+        const scope = yield* Scope.fork(adapterScope, "sequential");
         const claim = yield* gitCore
           .claimWorktree(worktreePath, { threadId, provider: PROVIDER })
           .pipe(
-            Scope.provide(adapterScope),
+            Scope.provide(scope),
+            Effect.onError(() => Scope.close(scope, Exit.void)),
             Effect.mapError((error) =>
               error._tag === "WorktreeOwnedError"
                 ? invalid("startSession", error.message)
@@ -748,7 +758,7 @@ export const makeAetherAdapter = (
                   }),
             ),
           );
-        claims.set(threadId, claim);
+        claims.set(threadId, { claim, scope });
         return claim;
       });
 
@@ -1332,6 +1342,17 @@ export const makeAetherAdapter = (
       rollbackThread: () =>
         notSupported("rollbackThread", "Aether cannot roll back a task's conversation."),
       stopSession,
+      releaseThread: (threadId) =>
+        stopSession(threadId).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const held = claims.get(threadId);
+              if (held === undefined) return Effect.void;
+              claims.delete(threadId);
+              return Scope.close(held.scope, Exit.void);
+            }),
+          ),
+        ),
       stopAll: () => Effect.forEach([...sessions.keys()], stopSession, { discard: true }),
       listSessions: () => Effect.sync(() => [...sessions.values()].map(snapshot)),
       hasSession: (threadId) => Effect.sync(() => sessions.has(threadId)),
@@ -1361,11 +1382,25 @@ export const AetherAdapterLive = Layer.effect(
   Effect.gen(function* () {
     const client = yield* AetherApiClient;
     const directory = yield* ProviderSessionDirectory;
+    const threads = yield* ProjectionThreadRepository;
+    const bindings = yield* directory.listBindings().pipe(Effect.orDie);
     return yield* makeAetherAdapter({
       client,
       openWorkspace: openRunningWorkspace(client),
       journal: yield* ProviderRuntimeEventRepository,
-      bindings: yield* directory.listBindings().pipe(Effect.orDie),
+      // An archived or deleted thread's worktree is left to retention; resuming it claims it.
+      bindings: yield* Effect.filter(
+        bindings.filter((binding) => binding.provider === PROVIDER),
+        (binding) =>
+          threads
+            .getById({ threadId: binding.threadId })
+            .pipe(
+              Effect.map(
+                Option.exists((thread) => thread.archivedAt === null && thread.deletedAt === null),
+              ),
+              Effect.orDie,
+            ),
+      ),
     });
   }),
 );

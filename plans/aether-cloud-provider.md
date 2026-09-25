@@ -166,7 +166,11 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   quarantining the thread; a 5xx, timeout or transport error may have landed and stays
   uncertain. A refused create also replaces the creating cursor's idempotency key. Aether's own
   error messages are shown as they are.
-- At construction the adapter claims every Aether thread's worktree again. Startup
+- At construction the adapter claims again the worktree of every Aether thread neither archived
+  nor deleted. A claim lasts until the thread is archived (the command reactor calls
+  `ProviderService.releaseThread`, which keeps the binding so the thread can resume and claim it
+  again) or loses its binding (`ProviderService.stopSession`, as deleting a thread does); both
+  reach the adapter's `releaseThread`, so retention and deletion can remove the worktree. Startup
   reconciliation asks the provider to follow each turn in flight again
   (`ProviderService.reattachTurn` → the adapter's `reattachTurn`): a reattached turn and its
   requests are left to the adapter, and its binding is marked running with that turn again (a
@@ -276,7 +280,8 @@ wires it into the adapter:
   restore, and the first-turn branch rename, which also pushes. Guard the first two; skip the
   rename+push for Aether threads.
 - Synara's idle reaper stops sessions after 30 minutes. For Aether, `stopSession` detaches (the
-  cloud task keeps running) and must be idempotent; the ownership marker must outlive the session.
+  cloud task keeps running) and must be idempotent; the ownership marker must outlive the session,
+  until the thread is archived or unbound.
 - `startupTurnReconciliation` marks every running turn interrupted at boot. Aether turns must be
   exempt and reconciled from REST instead.
 

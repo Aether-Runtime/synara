@@ -3002,6 +3002,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             clearLiveRuntimeTasks(input.threadId);
             yield* waitForRuntimeIdleStop(input.threadId);
             yield* withBindingWriteLock(input.threadId, directory.remove(input.threadId));
+            // Unbound, the thread keeps nothing it held beyond a session.
+            if (routed.adapter.releaseThread !== undefined) {
+              yield* routed.adapter.releaseThread(input.threadId);
+            }
             providerInterruptionFences.delete(input.threadId);
             lease.retire();
             retireRuntimeIdleGeneration(input.threadId);
@@ -3370,6 +3374,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return true;
       });
 
+    const releaseThread: NonNullable<ProviderServiceShape["releaseThread"]> = (input) =>
+      Effect.gen(function* () {
+        const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+        if (binding === undefined) return;
+        const adapter = yield* registry.getByProvider(binding.provider);
+        if (adapter.releaseThread !== undefined) yield* adapter.releaseThread(input.threadId);
+      });
+
     const rollbackConversation: ProviderServiceShape["rollbackConversation"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -3597,6 +3609,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       clearSessionResumeCursor,
       listSessions,
       reattachTurn,
+      releaseThread,
       getCapabilities,
       getClaudeCacheObservation,
       startClaudeCompaction,

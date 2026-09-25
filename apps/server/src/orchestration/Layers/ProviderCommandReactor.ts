@@ -5712,6 +5712,11 @@ const make = Effect.gen(function* () {
             // Legacy thread.archived events may omit archivedAt; fall back like the projector.
             createdAt: event.payload.archivedAt ?? event.payload.updatedAt ?? event.occurredAt,
           });
+          // The binding stays, so the thread can resume; what it held beyond a session (an
+          // Aether worktree claim) does not, so retention can prune its worktree.
+          if (providerService.releaseThread) {
+            yield* providerService.releaseThread({ threadId: event.payload.threadId });
+          }
           return;
         case "thread.unarchived":
           if (Option.isSome(computerService))

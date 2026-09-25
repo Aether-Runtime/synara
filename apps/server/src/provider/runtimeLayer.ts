@@ -26,6 +26,7 @@ import { ProviderAdapterRegistryLive } from "./Layers/ProviderAdapterRegistry";
 import { ProviderDiscoveryServiceLive } from "./Layers/ProviderDiscoveryService";
 import { makeDurableProviderServiceLive } from "./Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./Layers/ProviderSessionDirectory";
+import { ProjectionThreadRepositoryLive } from "../persistence/Layers/ProjectionThreads";
 import { ProviderSessionRuntimeRepositoryLive } from "../persistence/Layers/ProviderSessionRuntime";
 import { ProviderRuntimeEventRepositoryLive } from "../persistence/Layers/ProviderRuntimeEvents";
 
@@ -109,6 +110,7 @@ export function makeServerProviderLayer(
               AetherApiClientLive.pipe(Layer.provide(ProviderCredentialsLive)),
               GitCoreLive,
               ProviderRuntimeEventRepositoryLive,
+              ProjectionThreadRepositoryLive,
             ),
           ),
         ),
