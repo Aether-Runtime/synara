@@ -322,7 +322,9 @@ As built in P9 (`syncAetherBranch` in `aetherMirrorSync.ts`, `aetherPullRequest.
   Review's latest run on it (`review`), reported as `vcs.state.changed` with `pullRequest`; the
   thread git metadata reactor takes it and never asks `gh` for a provider that owns the branch.
   The poll loop reports each changed task, and once idle reads it once a minute while the PR's CI
-  or review runs. A PR in a state Synara does not know is warned about and not shown.
+  or review runs. The PR, its review and the base branch are decoded apart from the task, so data
+  Synara cannot read (or a state it does not know) is warned about once and not shown, and never
+  stops the poll loop.
 - Git actions (`branch-git` capability): commit, push, pull and branch creation are unavailable
   with the reason; Create PR asks the agent to open one, then View PR opens it.
 - Boot progress: while the task is queued the poll loop reads a one-turn turns page in place of
