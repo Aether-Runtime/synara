@@ -5699,25 +5699,42 @@ const make = Effect.gen(function* () {
           });
           yield* clearThreadRuntimeCaches(event.payload.threadId);
           return;
-        case "thread.archived":
+        case "thread.archived": {
           if (Option.isSome(computerService))
             yield* Effect.promise(() =>
               computerService.value.manager.handleThreadRemoved(event.payload.threadId),
             );
+          // Legacy thread.archived events may omit archivedAt; fall back like the projector.
+          const archivedAt =
+            event.payload.archivedAt ?? event.payload.updatedAt ?? event.occurredAt;
           // Archive cleanup shares this durable, sequence-ordered provider
           // source with later turn-start intents. An immediate unarchive/send
           // therefore cannot race an older archive stop against the new turn.
           yield* processThreadSessionStop({
             threadId: event.payload.threadId,
-            // Legacy thread.archived events may omit archivedAt; fall back like the projector.
-            createdAt: event.payload.archivedAt ?? event.payload.updatedAt ?? event.occurredAt,
+            createdAt: archivedAt,
           });
           // The binding stays, so the thread can resume; what it held beyond a session (an
-          // Aether worktree claim) does not, so retention can prune its worktree.
+          // Aether worktree claim) does not, so retention can prune its worktree. The release
+          // lets go of that even when stopping the turn in flight fails, so the failure is only
+          // shown: failing the archive would block the thread's later messages.
           if (providerService.releaseThread) {
-            yield* providerService.releaseThread({ threadId: event.payload.threadId });
+            yield* providerService.releaseThread({ threadId: event.payload.threadId }).pipe(
+              Effect.catch((error) =>
+                appendProviderFailureActivity({
+                  threadId: event.payload.threadId,
+                  kind: "provider.session.stop.failed",
+                  summary: "Provider session stop failed",
+                  detail: error.message,
+                  turnId: null,
+                  createdAt: archivedAt,
+                  settlementStatus: "uncertain",
+                }),
+              ),
+            );
           }
           return;
+        }
         case "thread.unarchived":
           if (Option.isSome(computerService))
             yield* Effect.promise(() =>

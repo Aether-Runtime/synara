@@ -16541,6 +16541,48 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("records a provider release that fails on archive, and leaves the thread unblocked", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    harness.releaseThread.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "aether",
+          method: "stopTask",
+          detail: "Aether API returned HTTP 503 (POST /tasks/{taskID}/stop).",
+        }),
+      ),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.makeUnsafe("cmd-archive-release-fails"),
+        threadId,
+      }),
+    );
+    await waitFor(async () =>
+      Boolean(
+        (await readHarnessThread(harness))?.activities.some(
+          (activity) => activity.kind === "provider.session.stop.failed",
+        ),
+      ),
+    );
+    await harness.drain();
+    const blocker = await Effect.runPromise(
+      harness.deliveryRepository.firstBlockingDeliveryForThread({
+        consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+        threadId,
+      }),
+    );
+    expect(Option.isSome(blocker)).toBe(false);
+    const failure = (await readHarnessThread(harness))?.activities.find(
+      (activity) => activity.kind === "provider.session.stop.failed",
+    );
+    expect(failure?.payload).toMatchObject({
+      detail: expect.stringContaining("HTTP 503 (POST /tasks/{taskID}/stop)"),
+    });
+  });
+
   it("restores computer admission after ordered archive cleanup and before the next provider turn", async () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const manager = new ComputerManager({ backend: new FakeComputerBackend() });
