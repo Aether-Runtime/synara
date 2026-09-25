@@ -841,6 +841,16 @@ describe("reconcileRestartStuckTurns selection", () => {
         hasPendingUserInput: false,
       },
     ];
+    // A question each: the reattached turn's is still answerable; the interrupted turn's is not.
+    const pendingQuestion = (threadId: string) => ({
+      interactionKind: "userInput" as const,
+      requestId: ApprovalRequestId.makeUnsafe(`question-${threadId}`),
+      threadId,
+      lifecycleGeneration: "generation-1",
+      status: "pending" as const,
+      createdAt: NOW,
+    });
+    const pending = [pendingQuestion("reattached"), pendingQuestion("local")];
     const reattachTurn = vi.fn((input: { readonly threadId: string; readonly provider: string }) =>
       input.threadId === "reattached"
         ? Effect.succeed(true)
@@ -862,11 +872,20 @@ describe("reconcileRestartStuckTurns selection", () => {
           dispatch,
         } as never),
         Effect.provideService(ProjectionSnapshotQuery, {
-          getThreadDetailById: (threadId: string) =>
-            Effect.succeed(Option.fromNullishOr(threads.find((thread) => thread.id === threadId))),
+          getThreadDetailById: (threadId: string) => {
+            const thread = threads.find((candidate) => candidate.id === threadId);
+            return Effect.succeed(
+              thread === undefined
+                ? Option.none()
+                : Option.some({
+                    ...thread,
+                    pendingInteractions: pending.filter((row) => row.threadId === threadId),
+                  }),
+            );
+          },
         } as never),
         Effect.provideService(ProjectionPendingInteractionRepository, {
-          listUnsettled: () => Effect.succeed([]),
+          listUnsettled: () => Effect.succeed(pending),
         } as never),
         Effect.provideService(ProviderService, { reattachTurn } as never),
       ),
@@ -904,6 +923,18 @@ describe("reconcileRestartStuckTurns selection", () => {
         "Provider adapter request failed (aether) for claimWorktree: The worktree /work/tree no longer exists.",
     });
     expect(sessionOf("local")).toMatchObject({ status: "interrupted", lastError: null });
+    expect(
+      commands.filter(
+        (command) => command.threadId === "local" && command.type === "thread.activity.append",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        activity: expect.objectContaining({
+          kind: "provider.user-input.respond.failed",
+          payload: expect.objectContaining({ requestId: "question-local" }),
+        }),
+      }),
+    ]);
     expect(sessionOf("dangling")).toMatchObject({ status: "error", activeTurnId: null });
   });
 });
