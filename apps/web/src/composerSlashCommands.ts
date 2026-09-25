@@ -558,6 +558,7 @@ const SLASH_COMMAND_PROVIDER_FEATURES: Partial<Record<ComposerSlashCommand, Prov
     "computer-use": "computer-control",
     side: "sidechat",
     automation: "automation",
+    fork: "thread-fork",
   };
 
 function providerSupportsSlashCommand(

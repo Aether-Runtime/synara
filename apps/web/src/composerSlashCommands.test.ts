@@ -52,7 +52,7 @@ describe("composerSlashCommands", () => {
       expect(isBuiltInComposerSlashCommand("computer-use")).toBe(true);
     },
   );
-  it("offers no goal, computer or side command for a provider without them", () => {
+  it("offers no goal, computer, side or fork command for a provider without them", () => {
     const commandsFor = (provider: "aether" | "codex" | "claudeAgent") =>
       getAvailableComposerSlashCommands({
         provider,
@@ -65,7 +65,7 @@ describe("composerSlashCommands", () => {
       });
     for (const provider of ["codex", "claudeAgent"] as const) {
       expect(commandsFor(provider)).toEqual(
-        expect.arrayContaining(["goal", "computer-use", "side", "automation"]),
+        expect.arrayContaining(["goal", "computer-use", "side", "automation", "fork"]),
       );
     }
     const aetherCommands = commandsFor("aether");
@@ -73,9 +73,11 @@ describe("composerSlashCommands", () => {
     expect(aetherCommands).not.toContain("goal");
     expect(aetherCommands).not.toContain("computer-use");
     expect(aetherCommands).not.toContain("side");
-    expect(aetherCommands).toEqual(expect.arrayContaining(["fork", "rename", "plan"]));
+    expect(aetherCommands).not.toContain("fork");
+    expect(aetherCommands).toEqual(expect.arrayContaining(["rename", "plan"]));
     // Not offered means not parsed either: typed text is sent as a plain message.
     expect(parseComposerSlashInvocationForCommands("/goal ship it", aetherCommands)).toBeNull();
+    expect(parseComposerSlashInvocationForCommands("/fork", aetherCommands)).toBeNull();
   });
 
   it("recognizes built-in slash commands", () => {

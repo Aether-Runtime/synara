@@ -340,7 +340,7 @@ there — acceptable, documented.
 | Revert / rollback                                | Refused before touching files — add `"unsupported"` to the rollback capability                                                                     |
 | Model switch                                     | `unsupported`: a task's agent and model are fixed when it is created                                                                               |
 | Steering                                         | Native steer via `/respond`                                                                                                                        |
-| Thread fork                                      | Transcript replay (no native `forkThread`); fork starts from the branch, not the mirrored tree                                                     |
+| Thread fork                                      | Disabled: a fork would share the worktree Aether owns, or start from its branch without the mirrored changes                                       |
 | Provider handoff to/from Aether                  | Needs design: to Aether requires a clean pushed tree; from Aether must release ownership first                                                     |
 | Local ↔ worktree git handoff                     | Refused while the mirror owns the checkout (automatic via `withMutation`)                                                                          |
 | Sidechats                                        | Disabled for Aether threads (a cloud sidechat's mirror would reset the parent's checkout)                                                          |

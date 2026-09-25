@@ -366,17 +366,16 @@ describe("decider provider capability gating", () => {
       expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
     });
 
-    it("refuses a fork that would share a worktree with Aether", async () => {
-      const shared =
-        "Orchestration command invariant failed (thread.fork.create): Aether threads cannot share a worktree: Aether owns the worktree and resets it on every turn. Fork into a new worktree instead.";
+    it("refuses a fork of or into Aether, into its worktree or a new one", async () => {
+      const refused =
+        "Orchestration command invariant failed (thread.fork.create): Forking is unavailable in Aether threads: Aether owns the thread's worktree and keeps its changes there, so a fork can neither share that worktree nor start from its changes.";
       const aetherThread = await makeReadModel({ modelSelection: AETHER });
-      expect(await refusal(fork(AETHER, WORKTREE_PATH), aetherThread)).toBe(shared);
-      expect(await refusal(fork(CODEX, WORKTREE_PATH), aetherThread)).toBe(shared);
-      expect(
-        await refusal(fork(AETHER, WORKTREE_PATH), await makeReadModel({ modelSelection: CODEX })),
-      ).toBe(shared);
-      const events = await decide(fork(AETHER, null), aetherThread);
-      expect(events.map((event) => event.type)).toContain("thread.created");
+      const codexThread = await makeReadModel({ modelSelection: CODEX });
+      for (const worktreePath of [WORKTREE_PATH, null]) {
+        expect(await refusal(fork(AETHER, worktreePath), aetherThread)).toBe(refused);
+        expect(await refusal(fork(CODEX, worktreePath), aetherThread)).toBe(refused);
+        expect(await refusal(fork(AETHER, worktreePath), codexThread)).toBe(refused);
+      }
     });
 
     it("refuses a side chat, whichever provider it targets", async () => {
@@ -483,6 +482,7 @@ describe("decider provider capability gating", () => {
         [turnStart("hello", { enableComputerControl: true }), "thread.turn-start-requested"],
         [createFromSource("thread.fork.create", modelSelection), "thread.created"],
         [fork(modelSelection, WORKTREE_PATH), "thread.created"],
+        [fork(modelSelection, null), "thread.created"],
         [createFromSource("thread.handoff.create", CLAUDE), "thread.created"],
         [checkpointRevert("thread"), "thread.checkpoint-revert-requested"],
         [editAndResend(), "thread.message-edit-resend-requested"],

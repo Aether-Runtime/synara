@@ -25,7 +25,7 @@ export interface ProviderDescriptor {
    * True when the provider owns its thread's worktree and branch (Aether mirrors its cloud VM
    * into it). Its threads always start in a new worktree, and nothing that shares, copies into,
    * or branches from the local checkout applies: Local mode, local↔worktree handoff,
-   * copied changes, side chats, automations, and provider handoff. Synara also never renames
+   * copied changes, side chats, forks, automations, and provider handoff. Synara also never renames
    * or pushes that branch on the first turn. The only source of this capability.
    */
   readonly managesWorktreeBranch: boolean;
@@ -234,7 +234,7 @@ export type ProviderGatedFeature =
   | "local-workspace"
   | "non-git-workspace"
   | "worktree-change"
-  | "shared-worktree"
+  | "thread-fork"
   | "copy-changes"
   | "provider-handoff";
 
@@ -257,7 +257,7 @@ export function providerSupportsFeature(
     case "local-workspace":
     case "non-git-workspace":
     case "worktree-change":
-    case "shared-worktree":
+    case "thread-fork":
     case "copy-changes":
     case "provider-handoff":
       return !descriptor.managesWorktreeBranch;
@@ -308,8 +308,8 @@ export function providerFeatureUnavailableMessage(
       return `${name} needs a git repository with a GitHub remote.`;
     case "worktree-change":
       return `${name} owns this thread's worktree, so the thread cannot move to another checkout once a turn has started.`;
-    case "shared-worktree":
-      return `${name} threads cannot share a worktree: ${name} owns the worktree and resets it on every turn. Fork into a new worktree instead.`;
+    case "thread-fork":
+      return `Forking is unavailable in ${name} threads: ${name} owns the thread's worktree and keeps its changes there, so a fork can neither share that worktree nor start from its changes.`;
     case "copy-changes":
       return `${name} threads cannot copy local changes into their worktree: ${name} clones from origin and resets the worktree on every turn.`;
     case "provider-handoff":
