@@ -36,6 +36,11 @@ export interface ProviderDescriptor {
    * `conversationRollback` capability being `"unsupported"`.
    */
   readonly supportsConversationRollback: boolean;
+  /**
+   * How Synara reaches the provider: a CLI installed and launched on this machine, or a
+   * cloud service it connects to with an API key, with nothing installed and no version.
+   */
+  readonly runtime: "cli" | "cloud";
   /** Synara docs page covering install, sign-in, and verification for this runtime. */
   readonly setupDocsHref: string;
   readonly usage: {
@@ -58,6 +63,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "codex",
     displayName: PROVIDER_DISPLAY_NAMES.codex,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/codex",
     supportsNativeTurnSteering: true,
     reachesAgentGateway: true,
@@ -72,6 +78,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "claudeAgent",
     displayName: PROVIDER_DISPLAY_NAMES.claudeAgent,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/claude-code",
     supportsNativeTurnSteering: true,
     reachesAgentGateway: true,
@@ -86,6 +93,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "cursor",
     displayName: PROVIDER_DISPLAY_NAMES.cursor,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/cursor",
     supportsNativeTurnSteering: false,
     reachesAgentGateway: true,
@@ -100,6 +108,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "antigravity",
     displayName: PROVIDER_DISPLAY_NAMES.antigravity,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/antigravity",
     supportsNativeTurnSteering: false,
     reachesAgentGateway: true,
@@ -114,6 +123,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "grok",
     displayName: PROVIDER_DISPLAY_NAMES.grok,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/grok",
     supportsNativeTurnSteering: false,
     reachesAgentGateway: true,
@@ -128,6 +138,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "droid",
     displayName: PROVIDER_DISPLAY_NAMES.droid,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/factory-droid",
     supportsNativeTurnSteering: false,
     reachesAgentGateway: true,
@@ -142,6 +153,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "opencode",
     displayName: PROVIDER_DISPLAY_NAMES.opencode,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/opencode",
     supportsNativeTurnSteering: false,
     reachesAgentGateway: true,
@@ -156,6 +168,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "pi",
     displayName: PROVIDER_DISPLAY_NAMES.pi,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/pi",
     supportsNativeTurnSteering: true,
     reachesAgentGateway: true,
@@ -170,6 +183,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "devin",
     displayName: PROVIDER_DISPLAY_NAMES.devin,
     available: true,
+    runtime: "cli",
     setupDocsHref: "https://trysynara.com/docs/providers/devin",
     supportsNativeTurnSteering: false,
     reachesAgentGateway: true,
@@ -185,6 +199,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "aether",
     displayName: PROVIDER_DISPLAY_NAMES.aether,
     available: true,
+    runtime: "cloud",
     setupDocsHref: "https://runaether.dev",
     supportsNativeTurnSteering: false,
     reachesAgentGateway: false,
@@ -207,6 +222,10 @@ export const providerSupportsNativeTurnSteering = (kind: string): boolean =>
 
 const findProviderDescriptor = (kind: string) =>
   PROVIDER_DESCRIPTORS.find((descriptor) => descriptor.kind === kind);
+
+/** True for a cloud service Synara connects to, rather than a CLI installed locally. */
+export const providerIsCloudService = (kind: string): boolean =>
+  findProviderDescriptor(kind)?.runtime === "cloud";
 
 // The capability checks below also accept plain strings. An unknown provider is not gated
 // here: it cannot start a session, and the adapter registry already fails loudly for it.
@@ -248,6 +267,23 @@ export function providerSupportsFeature(kind: string, feature: ProviderGatedFeat
     case "conversation-rollback":
       return providerSupportsConversationRollback(kind);
   }
+}
+
+/**
+ * The first provider in `providers` that lacks `feature`, or null when every one has it. A
+ * thread can run on its bound session's provider, its selection, or a new selection, so
+ * gates check all of them; absent entries are skipped.
+ */
+export function providerLackingFeature(
+  providers: ReadonlyArray<string | null | undefined>,
+  feature: ProviderGatedFeature,
+): string | null {
+  return (
+    providers.find(
+      (provider): provider is string =>
+        typeof provider === "string" && !providerSupportsFeature(provider, feature),
+    ) ?? null
+  );
 }
 
 /** Why `feature` is unavailable for `kind`; the server's refusal text. */

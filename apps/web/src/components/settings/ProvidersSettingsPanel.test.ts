@@ -5,6 +5,7 @@ import { type AppSettings, AppSettingsSchema } from "~/appSettings";
 import {
   createProviderInstallResetPatch,
   isProviderInstallSettingsDirty,
+  providerPickerStatusLabel,
 } from "./ProvidersSettingsPanel";
 
 const defaults = AppSettingsSchema.makeUnsafe({});
@@ -92,5 +93,34 @@ describe("createProviderInstallResetPatch", () => {
     expect(patch.openCodeServerPassword).toBe("");
     expect(patch.aetherApiKey).toBe("");
     expect(patch.aetherApiBaseUrl).toBe("https://api.runaether.dev");
+  });
+});
+
+describe("providerPickerStatusLabel", () => {
+  const status = (
+    availableProviders: Parameters<typeof providerPickerStatusLabel>[0]["availableProviders"],
+    overrides: Partial<Parameters<typeof providerPickerStatusLabel>[0]> = {},
+  ) =>
+    providerPickerStatusLabel({
+      checking: false,
+      availableProviders,
+      visibleAvailableCount: availableProviders.length,
+      customOrder: false,
+      ...overrides,
+    });
+
+  it("counts a cloud provider apart from installed CLIs", () => {
+    expect(status(["codex", "claudeAgent", "aether"])).toBe("2 installed · 1 cloud");
+    expect(status(["codex", "claudeAgent"])).toBe("2 installed");
+    expect(status(["aether"])).toBe("1 cloud");
+    expect(status(["codex", "aether"], { customOrder: true })).toBe(
+      "1 installed · 1 cloud · custom order",
+    );
+  });
+
+  it("reports checking, empty and partly hidden lists without calling them CLIs", () => {
+    expect(status(["codex"], { checking: true })).toBe("Checking providers");
+    expect(status([])).toBe("No providers available");
+    expect(status(["codex", "aether"], { visibleAvailableCount: 1 })).toBe("1 of 2 shown");
   });
 });

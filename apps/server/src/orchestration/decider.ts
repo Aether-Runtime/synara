@@ -29,7 +29,7 @@ import { collectSubagentDescendants } from "@synara/shared/threadHierarchy";
 import { autoRuntimeModeSelectionIssue } from "@synara/shared/runtimeMode";
 import {
   providerFeatureUnavailableMessage,
-  providerSupportsFeature,
+  providerLackingFeature,
   providerSupportsNativeTurnSteering,
   type ProviderGatedFeature,
 } from "@synara/shared/providerMetadata";
@@ -133,11 +133,8 @@ function validateProviderFeature(
   feature: ProviderGatedFeature,
   providers: ReadonlyArray<string | null | undefined>,
 ) {
-  const refused = providers.find(
-    (provider): provider is string =>
-      typeof provider === "string" && !providerSupportsFeature(provider, feature),
-  );
-  return refused === undefined
+  const refused = providerLackingFeature(providers, feature);
+  return refused === null
     ? Effect.void
     : Effect.fail(
         new OrchestrationCommandInvariantError({
