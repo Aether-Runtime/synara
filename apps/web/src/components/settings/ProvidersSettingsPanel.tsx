@@ -497,7 +497,7 @@ export function createProviderInstallResetPatch(defaults: AppSettings): Partial<
  * Status of the picker's provider list. Installed CLIs and cloud services are counted
  * apart, since a cloud provider is connected to rather than installed.
  */
-export function providerPickerStatusLabel(input: {
+function providerPickerStatusLabel(input: {
   readonly checking: boolean;
   readonly availableProviders: ReadonlyArray<ProviderKind>;
   readonly visibleAvailableCount: number;

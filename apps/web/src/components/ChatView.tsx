@@ -3,7 +3,11 @@ import {
   parseComputerInvocation,
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
-import { providerLackingFeature, providerSupportsFeature } from "@synara/shared/providerMetadata";
+import {
+  providerIsCloudService,
+  providerLackingFeature,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import {
   MessageId,
   OrchestrationThreadActivity,
@@ -290,7 +294,6 @@ import {
 } from "./chat/composerComputerControlHint";
 import { ComposerComputerControlEffortHint } from "./chat/ComposerComputerControlEffortHint";
 import { ComposerCloudProviderHint } from "./chat/ComposerCloudProviderHint";
-import { shouldShowCloudProviderHint } from "./chat/composerCloudProviderHint";
 import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachments";
 import { ComposerSlashStatusDialog } from "./chat/ComposerSlashStatusDialog";
 import { ComposerSubagentStrip } from "./chat/ComposerSubagentStrip";
@@ -5160,11 +5163,11 @@ export default function ChatView({
     provider: selectedProvider,
     traits: composerTraitSelection,
   });
-  const showComposerCloudProviderHint = shouldShowCloudProviderHint({
-    provider: selectedProvider,
-    dismissed: settings.dismissedCloudProviderHint,
-    threadHasMessages: hasNativeUserMessages,
-  });
+  // New chats only, until dismissed once; driven by the descriptor, not the provider name.
+  const showComposerCloudProviderHint =
+    !settings.dismissedCloudProviderHint &&
+    !hasNativeUserMessages &&
+    providerIsCloudService(selectedProvider);
   const startReplacementSidechat = () => {
     const sourceThreadId = activeThread?.sidechatSourceThreadId;
     if (!sourceThreadId) return;
@@ -5323,7 +5326,6 @@ export default function ChatView({
               ) : null}
               {showComposerCloudProviderHint ? (
                 <ComposerCloudProviderHint
-                  provider={selectedProvider}
                   onDismiss={dismissCloudProviderHint}
                   attachedToPrevious={
                     showComposerLiveChangesHeader ||
