@@ -33,8 +33,8 @@ second thread in that worktree are unavailable for them: thread goals, Computer 
 device tools, side chats, forking into the same worktree, automations (including heartbeats on an
 Aether thread), reverting or editing earlier messages, branch picks, and handing a thread off to
 Local or to or from Aether. The app hides these controls and the server refuses them. Local changes
-are never copied into an Aether worktree: the app does not copy them, and the server refuses an
-agent-created Aether thread whose worktree would copy them.
+are never copied into an Aether worktree: neither the app nor the agent gateway copies them, so an
+Aether worktree starts from its base commit alone.
 
 ## What Synara manages
 
