@@ -161,11 +161,11 @@ export const syncAetherMirror = (
           yield* fs.writeFile(file, Buffer.from(read.content, read.encoding));
           files.push(file);
         }
-        const oids = nulList(
-          (yield* git(["hash-object", "-w", "--no-filters", "--stdin-paths"], {
-            stdin: `${files.join("\n")}\n`,
-          })).replaceAll("\n", "\0"),
-        );
+        const oids = (yield* git(["hash-object", "-w", "--no-filters", "--stdin-paths"], {
+          stdin: `${files.join("\n")}\n`,
+        }))
+          .split(/\r?\n/u)
+          .filter((oid) => oid.length > 0);
         if (oids.length !== files.length) {
           return yield* mirrorError(
             "apply-failed",
