@@ -84,6 +84,12 @@ export interface ProviderAdapterCapabilities {
   readonly supportsTurnSteering?: boolean;
   /** True when `turn.diff.updated.payload.unifiedDiff` contains a parseable live patch. */
   readonly supportsLiveTurnDiffPatch?: boolean;
+  /**
+   * True when a turn keeps running while Synara is stopped (the provider runs it remotely) and
+   * the adapter reattaches to it when Synara starts, so startup reconciliation must leave the
+   * thread's running turn and pending requests alone. Defaults to false.
+   */
+  readonly turnsSurviveRestart?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

@@ -41,15 +41,16 @@ import type {
   RuntimeMode,
   ThreadId,
 } from "@synara/contracts";
-import { CommandId, EventId } from "@synara/contracts";
+import { CommandId, EventId, ProviderKind } from "@synara/contracts";
 import { createStalePendingInteractionMatcher } from "@synara/shared/pendingInteractions";
 import {
   derivePendingThreadRequestIds,
   type PendingThreadRequestKind,
 } from "@synara/shared/threadSummary";
-import { Array as Arr, Effect, Option } from "effect";
+import { Array as Arr, Effect, Option, Schema } from "effect";
 import type { ProjectionPendingInteraction } from "../persistence/Services/ProjectionPendingInteractions.ts";
 import { ProjectionPendingInteractionRepository } from "../persistence/Services/ProjectionPendingInteractions.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import {
   CHECKPOINT_REVERT_FAILED_ACTIVITY_KIND,
   threadHasCheckpointRevertInProgress,
@@ -363,14 +364,22 @@ export function planRestartTurnReconciliation(input: {
  * untouched, which is what keeps this safe to run while reactors are already
  * live: nothing in the snapshot can become answerable again, and nothing
  * answerable can enter the snapshot.
+ *
+ * Threads whose provider declares `turnsSurviveRestart` are skipped whole: their
+ * turn is still running remotely, its requests are still answerable, and the
+ * adapter reattaches to it and settles it from the provider's own state.
  */
 export const reconcileRestartStuckTurns: Effect.Effect<
   void,
   never,
-  OrchestrationEngineService | ProjectionSnapshotQuery | ProjectionPendingInteractionRepository
+  | OrchestrationEngineService
+  | ProjectionSnapshotQuery
+  | ProjectionPendingInteractionRepository
+  | ProviderService
 > = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshotQuery = yield* ProjectionSnapshotQuery;
+  const providerService = yield* ProviderService;
   const readModel = yield* engine.getReadModel();
 
   const pendingInteractions = yield* ProjectionPendingInteractionRepository;
@@ -385,13 +394,24 @@ export const reconcileRestartStuckTurns: Effect.Effect<
     );
   const unsettledByThread = new Map(Object.entries(Arr.groupBy(unsettled, (row) => row.threadId)));
   const now = new Date().toISOString();
-  const threadsNeedingRestartCleanup = readModel.threads.filter(
-    (thread) =>
-      needsRestartReconciliation(thread) ||
-      threadHasCheckpointRevertInProgress(thread) ||
-      thread.hasPendingApprovals ||
-      thread.hasPendingUserInput ||
-      unsettledByThread.has(thread.id),
+  const threadsNeedingRestartCleanup = yield* Effect.filter(
+    readModel.threads.filter(
+      (thread) =>
+        needsRestartReconciliation(thread) ||
+        threadHasCheckpointRevertInProgress(thread) ||
+        thread.hasPendingApprovals ||
+        thread.hasPendingUserInput ||
+        unsettledByThread.has(thread.id),
+    ),
+    (thread) => {
+      const provider = thread.session?.providerName;
+      if (!Schema.is(ProviderKind)(provider)) return Effect.succeed(true);
+      // Every provider kind has a registered adapter, so this lookup cannot fail.
+      return providerService.getCapabilities(provider).pipe(
+        Effect.map((capabilities) => capabilities.turnsSurviveRestart !== true),
+        Effect.orDie,
+      );
+    },
   );
   if (threadsNeedingRestartCleanup.length === 0) {
     return;

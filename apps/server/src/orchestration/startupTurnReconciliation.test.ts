@@ -2,6 +2,7 @@ import { Effect, Option } from "effect";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import { ProjectionPendingInteractionRepository } from "../persistence/Services/ProjectionPendingInteractions.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ApprovalRequestId, EventId, ThreadId, TurnId } from "@synara/contracts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -785,6 +786,9 @@ describe("reconcileRestartStuckTurns selection", () => {
           Effect.provideService(ProjectionPendingInteractionRepository, {
             listUnsettled: () => Effect.succeed([row]),
           } as never),
+          Effect.provideService(ProviderService, {
+            getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+          } as never),
         ),
       );
       expect(getThreadDetailById).toHaveBeenCalledExactlyOnceWith(thread.id);
@@ -801,4 +805,43 @@ describe("reconcileRestartStuckTurns selection", () => {
       );
     },
   );
+
+  it("leaves a thread alone when its provider's turns survive a restart", async () => {
+    const running = (id: string, providerName: string) => ({
+      ...makeThread(id, {
+        session: makeSession(id, { providerName }),
+        latestTurn: { state: "running" },
+      }),
+      activities: [],
+      hasPendingApprovals: false,
+      hasPendingUserInput: true,
+    });
+    const dispatch = vi.fn(() => Effect.void);
+    await Effect.runPromise(
+      reconcileRestartStuckTurns.pipe(
+        Effect.provideService(OrchestrationEngineService, {
+          getReadModel: () =>
+            Effect.succeed({ threads: [running("cloud", "aether"), running("local", "grok")] }),
+          dispatch,
+        } as never),
+        Effect.provideService(ProjectionSnapshotQuery, {
+          getThreadDetailById: () => Effect.succeed(Option.none()),
+        } as never),
+        Effect.provideService(ProjectionPendingInteractionRepository, {
+          listUnsettled: () => Effect.succeed([]),
+        } as never),
+        Effect.provideService(ProviderService, {
+          getCapabilities: (provider: string) =>
+            Effect.succeed({
+              sessionModelSwitch: "in-session",
+              turnsSurviveRestart: provider === "aether",
+            }),
+        } as never),
+      ),
+    );
+    const reconciled = dispatch.mock.calls.map(
+      (call) => (call as unknown as [{ readonly threadId: string }])[0].threadId,
+    );
+    expect(reconciled).toEqual(["local"]);
+  });
 });

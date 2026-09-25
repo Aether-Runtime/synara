@@ -21,6 +21,10 @@ import { OrchestrationEventStoreLive } from "../persistence/Layers/Orchestration
 import { ProjectionPendingInteractionRepositoryLive } from "../persistence/Layers/ProjectionPendingInteractions.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionPendingInteractionRepository } from "../persistence/Services/ProjectionPendingInteractions.ts";
+import {
+  ProviderService,
+  type ProviderServiceShape,
+} from "../provider/Services/ProviderService.ts";
 import { OrchestrationEngineLive } from "./Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./Layers/ProjectionSnapshotQuery.ts";
@@ -78,6 +82,11 @@ describe("boot-time pending interaction reconciliation", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(ProjectionPendingInteractionRepositoryLive),
+      Layer.provideMerge(
+        Layer.succeed(ProviderService, {
+          getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+        } as unknown as ProviderServiceShape),
+      ),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
