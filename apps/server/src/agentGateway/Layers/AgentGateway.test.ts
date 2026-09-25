@@ -363,6 +363,7 @@ function makeHarnessLayer(
     readonly dispatchDelayMs?: number;
     readonly interruptedOperations?: ReadonlyArray<AgentGatewayOperationRecord>;
     readonly providerStatuses?: ReadonlyArray<ServerProviderStatus>;
+    readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
     readonly existingBranches?: ReadonlyArray<string>;
     readonly existingWorktrees?: Readonly<Record<string, string>>;
     readonly verifiedOwnershipTokens?: ReadonlyArray<string>;
@@ -1257,7 +1258,7 @@ function makeHarnessLayer(
     Layer.provide(gitManagerLayer),
     Layer.provide(providerDiscoveryLayer),
     Layer.provide(providerHealthLayer),
-    Layer.provide(ServerSettingsService.layerTest()),
+    Layer.provide(ServerSettingsService.layerTest(options.serverSettings)),
     Layer.provide(operationLayer),
     Layer.provide(projectionTurnsLayer),
     Layer.provide(diagnosticsLayer),
@@ -2770,6 +2771,42 @@ describe("AgentGateway", () => {
       );
       assert.equal(resolution?.cwd, "/tmp/caller-worktree");
       assert.equal(harness.worktreeCreates[0]?.copyChangesFrom, "/tmp/caller-worktree");
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("refuses to copy the caller's changes into a worktree its provider owns", () => {
+    const isolatedParent = makeThreadShell("thread-parent", {
+      envMode: "worktree",
+      branch: null,
+      worktreePath: "/tmp/caller-worktree",
+      associatedWorktreePath: "/tmp/caller-worktree",
+      associatedWorktreeBranch: null,
+      associatedWorktreeRef: "0123456789abcdef0123456789abcdef01234567",
+    });
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([isolatedParent], [], {
+      serverSettings: { providers: { aether: { enabled: true } } },
+    });
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_create_thread",
+        args: {
+          requestId: "copy-into-provider-owned-worktree",
+          prompt: "continue from this checkout in the cloud",
+          provider: "aether",
+          environment: "worktree",
+          baseRef: "HEAD",
+        },
+      });
+
+      assert.isTrue(isToolError(response.result));
+      assert.include(
+        toolErrorText(response.result),
+        "Aether threads cannot copy local changes into their worktree",
+      );
+      assert.lengthOf(harness.worktreeCreates, 0);
+      assert.lengthOf(harness.dispatched, 0);
     }).pipe(Effect.provide(gatewayLayer));
   });
 

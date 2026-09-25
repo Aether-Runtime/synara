@@ -643,10 +643,19 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                 Effect.map((result) => result.stdout.trim()),
                 Effect.mapError((error) => new ToolInputError(errorText(error))),
               );
-            copyChangesFrom =
-              sourceHead === worktreeRef && providerSupportsFeature(target.provider, "copy-changes")
-                ? sourceCwd
-                : null;
+            // A worktree based on the source checkout's HEAD carries its changes, which a
+            // provider that owns its worktree cannot take.
+            if (
+              sourceHead === worktreeRef &&
+              !providerSupportsFeature(target.provider, "copy-changes")
+            ) {
+              return yield* Effect.fail(
+                new ToolInputError(
+                  providerFeatureUnavailableMessage(target.provider, "copy-changes"),
+                ),
+              );
+            }
+            copyChangesFrom = sourceHead === worktreeRef ? sourceCwd : null;
             plannedWorktreePath = join(
               serverConfig.worktreesDir,
               stableGatewayDigest({ operationId, index }, 12),
@@ -1054,6 +1063,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                           cwd: entry.workspaceRoot,
                           ref: entry.worktreeRef!,
                           path: entry.plannedWorktreePath,
+                          provider: entry.target.provider,
                           ...(entry.newBranch ? { newBranch: entry.newBranch } : {}),
                           ...(entry.copyChangesFrom
                             ? { copyChangesFrom: entry.copyChangesFrom }

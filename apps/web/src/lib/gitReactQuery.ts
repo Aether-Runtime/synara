@@ -892,7 +892,7 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
       ref: string;
       path?: string | null;
       copyChangesFrom?: string;
-      provider?: ProviderKind;
+      provider: ProviderKind;
       newBranch?: string;
       progressId?: string;
     }) => {
@@ -903,7 +903,7 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
         ref,
         path: path ?? null,
         ...(copyChangesFrom ? { copyChangesFrom } : {}),
-        ...(provider ? { provider } : {}),
+        provider,
         ...(newBranch ? { newBranch } : {}),
         ...(progressId ? { progressId } : {}),
       });

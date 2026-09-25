@@ -1902,7 +1902,12 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* initRepoWithCommit(tmp);
         const core = yield* GitCore;
         const wtPath = path.join(tmp, "wt-detached-owned");
-        yield* core.createDetachedWorktree({ cwd: tmp, ref: "HEAD", path: wtPath });
+        yield* core.createDetachedWorktree({
+          cwd: tmp,
+          ref: "HEAD",
+          path: wtPath,
+          provider: "codex",
+        });
 
         const proof = yield* core.recordWorktreeOwnership({
           path: wtPath,
@@ -1938,6 +1943,7 @@ it.layer(TestLayer)("git integration", (it) => {
           cwd: tmp,
           ref: "HEAD",
           path: wtPath,
+          provider: "codex",
           copyChangesFrom: tmp,
         });
 
@@ -1975,6 +1981,7 @@ it.layer(TestLayer)("git integration", (it) => {
           cwd: tmp,
           ref: "HEAD",
           path: wtPath,
+          provider: "codex",
           newBranch: "synara/abcd1234",
         });
 
@@ -2010,6 +2017,7 @@ it.layer(TestLayer)("git integration", (it) => {
             cwd: tmp,
             ref: "HEAD",
             path: wtPath,
+            provider: "codex",
             newBranch: "synara/ph123456",
             copyChangesFrom: tmp,
           },
@@ -2083,6 +2091,7 @@ it.layer(TestLayer)("git integration", (it) => {
               cwd: tmp,
               ref: "refs/heads/missing",
               path: path.join(tmp, "wt-invalid-ref"),
+              provider: "codex",
               newBranch: "synara/notstarted",
             },
             {
@@ -2115,6 +2124,7 @@ it.layer(TestLayer)("git integration", (it) => {
             cwd: tmp,
             ref: "HEAD",
             path: wtPath,
+            provider: "codex",
             newBranch: "synara/rollback1",
           }),
         );
@@ -2134,6 +2144,7 @@ it.layer(TestLayer)("git integration", (it) => {
           cwd: tmp,
           ref: "HEAD",
           path: wtPath,
+          provider: "codex",
           newBranch: "feature/user-owned",
         });
 

@@ -3586,10 +3586,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         );
         const resolvedRef = refResult.stdout.trim();
         if (input.copyChangesFrom) {
-          if (
-            input.provider !== undefined &&
-            !providerSupportsFeature(input.provider, "copy-changes")
-          ) {
+          if (!providerSupportsFeature(input.provider, "copy-changes")) {
             return yield* createGitCommandError(
               "GitCore.createDetachedWorktree",
               input.cwd,

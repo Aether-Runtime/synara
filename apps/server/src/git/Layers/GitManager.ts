@@ -7,6 +7,7 @@ import type {
   GitActionProgressPhase,
   GitStackedAction,
   ModelSelection,
+  ProviderKind,
   ProviderStartOptions,
 } from "@synara/contracts";
 import {
@@ -1768,6 +1769,7 @@ export const makeGitManager = Effect.gen(function* () {
     cwd: string;
     ref: string;
     path: string | null;
+    provider: ProviderKind;
     name?: string | null;
   }) =>
     Effect.gen(function* () {
@@ -1777,6 +1779,7 @@ export const makeGitManager = Effect.gen(function* () {
         cwd: input.cwd,
         ref: input.ref,
         path: resolvedPath,
+        provider: input.provider,
       });
       return worktree;
     });
@@ -1981,6 +1984,7 @@ The local stash entry was kept for recovery.`,
 
   const restoreRemovedWorktreeAfterFailedLocalCheckout = (input: {
     cwd: string;
+    provider: ProviderKind;
     worktreePath: string | null;
     branch: string | null;
     ref: string | null;
@@ -2008,6 +2012,7 @@ The local stash entry was kept for recovery.`,
                   cwd: input.cwd,
                   ref: input.ref,
                   path: input.worktreePath,
+                  provider: input.provider,
                 }).pipe(Effect.catch(() => Effect.succeed(null)))
               : null;
 
@@ -2047,6 +2052,7 @@ The local stash entry was kept for recovery.`,
 
   const rollbackFailedLocalTransfer = (input: {
     cwd: string;
+    provider: ProviderKind;
     originalBranch: string | null;
     originalHeadRef: string | null;
     currentBranch: string | null;
@@ -2059,6 +2065,7 @@ The local stash entry was kept for recovery.`,
     Effect.gen(function* () {
       const worktreeRecovery = yield* restoreRemovedWorktreeAfterFailedLocalCheckout({
         cwd: input.cwd,
+        provider: input.provider,
         worktreePath: input.worktreePath,
         branch: input.worktreeBranch,
         ref: input.worktreeRef,
@@ -2193,6 +2200,7 @@ The local stash entry was kept for recovery.`,
           Effect.catch((error) =>
             restoreRemovedWorktreeAfterFailedLocalCheckout({
               cwd: input.cwd,
+              provider: input.provider,
               worktreePath: associatedWorktreePath,
               branch: associatedWorktreeBranch,
               ref: associatedWorktreeRef,
@@ -2217,6 +2225,7 @@ The local stash entry was kept for recovery.`,
           Effect.catch((error) =>
             restoreRemovedWorktreeAfterFailedLocalCheckout({
               cwd: input.cwd,
+              provider: input.provider,
               worktreePath: associatedWorktreePath,
               branch: associatedWorktreeBranch,
               ref: associatedWorktreeRef,
@@ -2242,6 +2251,7 @@ The local stash entry was kept for recovery.`,
       if (threadTransfer.conflictsDetected) {
         const recovery = yield* rollbackFailedLocalTransfer({
           cwd: input.cwd,
+          provider: input.provider,
           originalBranch: originalLocalBranch,
           originalHeadRef: originalLocalHeadRef,
           currentBranch: currentLocalBranchAfterPreparation,
@@ -2379,6 +2389,7 @@ The local stash entry was kept for recovery.`,
           cwd: input.cwd,
           ref: targetAssociatedWorktreeRef,
           path: targetAssociatedWorktreePath,
+          provider: input.provider,
         });
       }
       if (targetWorktreeName) {
@@ -2410,6 +2421,7 @@ The local stash entry was kept for recovery.`,
             cwd: input.cwd,
             ref: targetAssociatedWorktreeBranch,
             path: targetAssociatedWorktreePath,
+            provider: input.provider,
           });
         }
         return yield* gitCore.createWorktree({
@@ -2424,12 +2436,14 @@ The local stash entry was kept for recovery.`,
           cwd: input.cwd,
           ref: targetAssociatedWorktreeRef!,
           path: targetAssociatedWorktreePath,
+          provider: input.provider,
         });
       }
       return yield* createDetachedWorktree({
         cwd: input.cwd,
         ref: targetBaseBranch,
         path: targetAssociatedWorktreePath,
+        provider: input.provider,
         ...(targetWorktreeName ? { name: targetWorktreeName } : {}),
       });
     }).pipe(

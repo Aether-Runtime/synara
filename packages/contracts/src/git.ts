@@ -278,7 +278,7 @@ export const GitCreateDetachedWorktreeInput = Schema.Struct({
   copyChangesFrom: Schema.optional(TrimmedNonEmptyStringSchema),
   // The provider the worktree is created for. A provider that owns its worktree (it clones
   // from origin and resets the worktree on every turn) refuses `copyChangesFrom`.
-  provider: Schema.optional(ProviderKind),
+  provider: ProviderKind,
   // When set, the worktree is created on this new branch (pinned at `ref`)
   // instead of a detached HEAD, so threads get a branch attached from birth.
   newBranch: Schema.optional(TrimmedNonEmptyStringSchema),
