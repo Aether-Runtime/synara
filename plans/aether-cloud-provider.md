@@ -162,7 +162,8 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
 - At construction the adapter claims every Aether thread's worktree again. Startup
   reconciliation asks the provider to follow each turn in flight again
   (`ProviderService.reattachTurn` → the adapter's `reattachTurn`): a reattached turn and its
-  requests are left to the adapter; a turn that cannot be reattached (the worktree is gone, the
+  requests are left to the adapter, and its binding is marked running with that turn again (a
+  graceful shutdown cleared it), so it can still be stopped; a turn that cannot be reattached (the worktree is gone, the
   cursor is unreadable) fails with the reason. A cursor still `creating` fails the turn too,
   asking for the message again: the create's request is not persisted, so it cannot be retried,
   but the idempotency key is, so the same message continues any task the lost create made.

@@ -3336,21 +3336,37 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       Effect.gen(function* () {
         const adapter = yield* registry.getByProvider(input.provider);
         // A provider that cannot reattach is left to the usual restart path: nothing is read.
-        if (adapter.reattachTurn === undefined) return false;
-        const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
-        if (binding?.provider !== input.provider) {
-          return yield* toValidationError(
-            "ProviderService.reattachTurn",
-            `Cannot reattach thread '${input.threadId}' without its ${input.provider} provider binding.`,
-          );
-        }
-        yield* adapter.reattachTurn({
-          threadId: input.threadId,
-          turnId: input.turnId,
-          resumeCursor: binding.resumeCursor,
-          runtimeMode: input.runtimeMode,
-          lifecycleGeneration: binding.lifecycleGeneration,
-        });
+        const reattach = adapter.reattachTurn;
+        if (reattach === undefined) return false;
+        // Under the binding lock, so an event from the reattached turn (even its completion)
+        // updates the binding only after the turn is bound again.
+        yield* withBindingWriteLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+            if (binding?.provider !== input.provider) {
+              return yield* toValidationError(
+                "ProviderService.reattachTurn",
+                `Cannot reattach thread '${input.threadId}' without its ${input.provider} provider binding.`,
+              );
+            }
+            yield* reattach({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              resumeCursor: binding.resumeCursor,
+              runtimeMode: input.runtimeMode,
+              lifecycleGeneration: binding.lifecycleGeneration,
+            });
+            // A graceful shutdown left the binding stopped with no active turn; the turn is live
+            // again, so an interrupt can find it.
+            yield* directory.upsert({
+              threadId: input.threadId,
+              provider: input.provider,
+              status: "running",
+              runtimePayload: { activeTurnId: input.turnId },
+            });
+          }),
+        );
         return true;
       });
 

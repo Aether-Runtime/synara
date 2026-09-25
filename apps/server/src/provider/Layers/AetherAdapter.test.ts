@@ -100,6 +100,25 @@ const waitFor = <A>(what: string, read: () => A | undefined) =>
 const completions = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   events.filter((event) => event.type === "turn.completed");
 
+/** A session directory in memory: what a restart keeps. */
+const sessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
+  Layer.provide(ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory))),
+);
+
+/** ProviderService over one Aether adapter, on the session directory it is given. */
+const providerServiceOver = (adapter: AetherAdapterShape) =>
+  makeProviderServiceLive().pipe(
+    Layer.provide(
+      Layer.succeed(ProviderAdapterRegistry, {
+        getByProvider: (provider) =>
+          provider === "aether"
+            ? Effect.succeed(adapter)
+            : Effect.fail(new ProviderUnsupportedError({ provider })),
+        listProviders: () => Effect.succeed(["aether"] as const),
+      }),
+    ),
+  );
+
 /** The thread as the live reconciler reads it: running `turnId` since `since`. */
 const reconcilableThread = (turnId: TurnId, since: string): OrchestrationThreadShell => ({
   id: THREAD_ID,
@@ -1092,18 +1111,6 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         Effect.gen(function* () {
           const h = yield* makeHarness;
           const { adapter } = yield* h.makeAdapter();
-          const registry: typeof ProviderAdapterRegistry.Service = {
-            getByProvider: (provider) =>
-              provider === "aether"
-                ? Effect.succeed(adapter)
-                : Effect.fail(new ProviderUnsupportedError({ provider })),
-            listProviders: () => Effect.succeed(["aether"] as const),
-          };
-          const directoryLayer = ProviderSessionDirectoryLive.pipe(
-            Layer.provide(
-              ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
-            ),
-          );
           yield* Effect.gen(function* () {
             const providerService = yield* ProviderService;
             const directory = yield* ProviderSessionDirectory;
@@ -1162,14 +1169,81 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
             Effect.scoped,
             Effect.provide(
               Layer.mergeAll(
-                makeProviderServiceLive().pipe(
-                  Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
-                  Layer.provide(directoryLayer),
-                ),
-                directoryLayer,
+                providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer)),
+                sessionDirectoryLayer,
               ),
             ),
           );
+        }),
+    );
+
+    it.effect.each(["graceful", "crash"] as const)(
+      "can still stop a turn reattached after a %s restart, which completes after the mirror",
+      (restart) =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          yield* Effect.gen(function* () {
+            const directory = yield* ProviderSessionDirectory;
+            const launchProviderService = (adapter: AetherAdapterShape, scope: Scope.Scope) =>
+              Layer.buildWithScope(providerServiceOver(adapter), scope).pipe(
+                Effect.flatMap((services) =>
+                  Effect.service(ProviderService).pipe(Effect.provide(services)),
+                ),
+              );
+
+            // The first process sends a turn that is still running when it goes away.
+            const first = yield* h.makeAdapter();
+            const firstServices = yield* Scope.make();
+            const before = yield* launchProviderService(first.adapter, firstServices);
+            yield* before.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            h.aether.hooks.onTurn = (turn) =>
+              h.aether.say(turn, "text-live", "Working", { open: true });
+            const turn = yield* before.sendTurn({ threadId: THREAD_ID, input: "Sleep 90" });
+            yield* waitFor("the running turn", () => h.aether.turns[0]);
+            // A graceful stop marks every binding stopped with no active turn; a crash leaves it.
+            if (restart === "graceful") yield* Scope.close(firstServices, Exit.void);
+            yield* Scope.close(first.scope, Exit.void);
+            const [binding] = yield* directory.listBindings();
+            expect(binding?.runtimePayload).toMatchObject({
+              activeTurnId: restart === "graceful" ? null : turn.turnId,
+            });
+
+            // The second process reattaches the turn, and the user stops it.
+            const second = yield* h.makeAdapter([binding!]);
+            const after = yield* launchProviderService(second.adapter, yield* Scope.make());
+            const accepted: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(after.streamEvents, (event) =>
+              Effect.sync(() => void accepted.push(event)),
+            ).pipe(Effect.forkScoped);
+            h.workspace.serve(diffOf(h.baseCommit, added("partial.txt", "made before stop\n")));
+            expect(
+              yield* after.reattachTurn!({
+                threadId: THREAD_ID,
+                provider: "aether",
+                turnId: turn.turnId,
+                runtimeMode: "full-access",
+              }),
+            ).toBe(true);
+            yield* after.interruptTurn({ threadId: THREAD_ID, turnId: turn.turnId });
+
+            const completed = yield* waitFor(
+              "the accepted turn.completed",
+              () => completions(accepted)[0],
+            );
+            expect(completed).toMatchObject({
+              turnId: turn.turnId,
+              payload: { state: "interrupted" },
+            });
+            expect(yield* h.read("partial.txt")).toBe("made before stop\n");
+            yield* Effect.sleep("1500 millis");
+            expect(completions(accepted)).toHaveLength(1);
+          }).pipe(Effect.scoped, Effect.provide(sessionDirectoryLayer));
         }),
     );
   });
