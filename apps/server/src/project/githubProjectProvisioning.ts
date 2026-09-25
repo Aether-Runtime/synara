@@ -13,6 +13,7 @@ import { normalizeProjectDirectoryName } from "@synara/shared/projectDirectoryNa
 import { Effect, FileSystem, Path, PlatformError, Schema, Semaphore } from "effect";
 
 import { GitCommandError, GitHubCliError } from "../git/Errors";
+import { NON_INTERACTIVE_GIT_ENV } from "../git/nonInteractiveGitEnv";
 import type { GitCoreShape } from "../git/Services/GitCore";
 import type { GitHubCliShape } from "../git/Services/GitHubCli";
 
@@ -377,12 +378,7 @@ export const makeGitHubProjectProvisioner = Effect.fn(function* (
         timeoutMs: CLONE_TIMEOUT_MS,
         maxBufferBytes: CLONE_OUTPUT_LIMIT_BYTES,
         outputMode: "truncate",
-        env: {
-          GCM_INTERACTIVE: "never",
-          GIT_TERMINAL_PROMPT: "0",
-          SSH_ASKPASS: "",
-          SSH_ASKPASS_REQUIRE: "never",
-        },
+        env: NON_INTERACTIVE_GIT_ENV,
         onStdoutChunk: publishChunk,
         onStderrChunk: publishChunk,
       });
@@ -396,11 +392,7 @@ export const makeGitHubProjectProvisioner = Effect.fn(function* (
       operation: "clone public GitHub project",
       cwd: parent,
       args: ["clone", "--progress", "--", `https://github.com/${repository}.git`, stagingPath],
-      env: {
-        GCM_INTERACTIVE: "never",
-        GIT_ASKPASS: "",
-        GIT_TERMINAL_PROMPT: "0",
-      },
+      env: NON_INTERACTIVE_GIT_ENV,
       timeoutMs: CLONE_TIMEOUT_MS,
       maxOutputBytes: CLONE_OUTPUT_LIMIT_BYTES,
       outputMode: "truncate",

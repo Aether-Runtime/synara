@@ -50,6 +50,7 @@ import {
 } from "effect";
 
 import type { GitCommandError, WorktreeOwnedError } from "../../git/Errors.ts";
+import { NON_INTERACTIVE_GIT_ENV } from "../../git/nonInteractiveGitEnv.ts";
 import { GitCore, type WorktreeClaim } from "../../git/Services/GitCore.ts";
 import type { AetherTaskId } from "./aetherApiSchemas.ts";
 import { type AetherMirrorError, mirrorError } from "./aetherMirrorErrors.ts";
@@ -129,7 +130,6 @@ const RECORD_FILE = "synara-aether-mirror.json";
 const REMOTE = "origin";
 /** A fetch that takes longer than this is a failure, not a hang (the server never prompts). */
 const REMOTE_TIMEOUT_MS = 60_000;
-const NO_PROMPT = { GIT_TERMINAL_PROMPT: "0" };
 
 const CommitId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u));
 
@@ -641,7 +641,7 @@ export const fetchAetherBranch = (input: {
     const remoteFailure = (detail: string) =>
       mirrorError("fetch", `Synara could not read ${REMOTE}/${branch}: ${detail}`);
     const listed = yield* execute(["ls-remote", "--exit-code", REMOTE, ref], {
-      env: NO_PROMPT,
+      env: NON_INTERACTIVE_GIT_ENV,
       timeoutMs: REMOTE_TIMEOUT_MS,
     });
     // Exit 2: origin has no such branch, since the agent has not pushed yet.
@@ -661,7 +661,7 @@ export const fetchAetherBranch = (input: {
       if (known.code !== 0 || known.stdout.trim() !== remoteTip) {
         const fetched = yield* execute(
           ["fetch", "--quiet", "--no-tags", REMOTE, `+${ref}:${tracking}`],
-          { env: NO_PROMPT, timeoutMs: REMOTE_TIMEOUT_MS },
+          { env: NON_INTERACTIVE_GIT_ENV, timeoutMs: REMOTE_TIMEOUT_MS },
         );
         if (fetched.code !== 0) return yield* remoteFailure(fetched.stderr.trim());
       }

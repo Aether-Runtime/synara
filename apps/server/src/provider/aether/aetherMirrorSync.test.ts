@@ -1279,6 +1279,36 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
       }),
     );
 
+    it.effect("reads origin without letting any credential helper or askpass prompt", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+        const gitCore = yield* GitCore;
+        const remote: Array<{ readonly args: ReadonlyArray<string>; readonly env: unknown }> = [];
+        const recording: GitCoreShape = {
+          ...gitCore,
+          execute: (input) => {
+            if (input.args[0] === "ls-remote" || input.args[0] === "fetch") {
+              remote.push({ args: input.args, env: input.env });
+            }
+            return gitCore.execute(input);
+          },
+        };
+
+        yield* mirror.fetchBranch().pipe(Effect.provideService(GitCore, recording));
+        expect(remote.map((call) => call.args[0])).toEqual(["ls-remote", "fetch"]);
+        for (const call of remote) {
+          expect(call.env).toEqual({
+            GCM_INTERACTIVE: "never",
+            GIT_ASKPASS: "",
+            GIT_TERMINAL_PROMPT: "0",
+            SSH_ASKPASS: "",
+            SSH_ASKPASS_REQUIRE: "never",
+          });
+        }
+      }),
+    );
+
     it.effect("fails loudly on a branch name Git refuses, and when origin cannot be read", () =>
       Effect.gen(function* () {
         const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
