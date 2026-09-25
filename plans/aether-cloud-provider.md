@@ -131,7 +131,12 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   Implement action (a turn carrying `sourceProposedPlan`, which the command reactor hands to the
   provider) approves it with `interaction_mode: "default"`, since Aether keeps the current mode
   when a plan answer omits it; any other message is feedback (`approved: false` with the text),
-  and the task stays in plan mode.
+  and the task stays in plan mode. A plan answer whose response was lost is retried as the same
+  answer (its entry is still in `turns`), though the plan no longer waits: Aether returns the
+  original message for the same `client_message_id` before it checks the fence, so the agent is
+  not asked twice. The run it started is named by that message, which completes the turn at once
+  only if the loop already settled it. Which plan was answered is kept in memory, so a retry after
+  a restart is sent as a new message.
 - `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident.
   `steerTurn` sends without it while the steered turn's Aether run is running; when that run has
   already settled (Synara has not seen it yet) or has not started, the steer runs as a new Aether

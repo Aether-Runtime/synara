@@ -60,6 +60,7 @@ import {
 import type { AetherApiError } from "../aether/aetherApiErrors.ts";
 import type {
   AetherRespondToTaskRequest,
+  AetherToolId,
   AetherTurnId,
   AetherWorkspaceId,
 } from "../aether/aetherApiSchemas.ts";
@@ -160,6 +161,8 @@ interface Task {
   readonly remoteTurns: Set<AetherTurnId>;
   /** The Synara turn an interrupt was sent for: it completes as interrupted. */
   interrupted: TurnId | undefined;
+  /** The plan the last plan answer went to: a retry of one whose response was lost answers it. */
+  answeredPlan: AetherToolId | undefined;
 }
 
 /** The one writer of a task's cursor. Every caller holds the session lock. */
@@ -288,6 +291,24 @@ function askUserAnswer(input: unknown, answers: ProviderUserInputAnswers) {
     answers: chosen,
     ...(Object.keys(customAnswers).length === 0 ? {} : { customAnswers }),
   });
+}
+
+/**
+ * The answer to a proposed plan. Synara's Implement action approves it and leaves plan mode
+ * (Aether keeps the mode a plan answer omits); any other message is feedback, and planning goes on.
+ */
+function planAnswer(
+  turn: TurnRequest,
+  toolId: AetherToolId,
+): Omit<AetherRespondToTaskRequest, "client_message_id"> {
+  const data = turn.implementsPlan
+    ? { approved: true }
+    : { approved: false, feedback: turn.message };
+  return {
+    message: JSON.stringify(data),
+    ...(turn.implementsPlan ? { interaction_mode: "default" as const } : {}),
+    tool_response: { tool_name: "propose_plan", data, expected_tool_id: toolId },
+  };
 }
 
 /** The Aether interaction mode of a Synara turn. */
@@ -699,6 +720,7 @@ export const makeAetherAdapter = (
           replayed,
           remoteTurns: new Set(),
           interrupted: undefined,
+          answeredPlan: undefined,
         };
         return task;
       });
@@ -796,11 +818,12 @@ export const makeAetherAdapter = (
     // -----------------------------------------------------------------------
 
     /**
-     * One respond; returns its `client_message_id`. A send that can start an Aether turn is
-     * recorded before it goes out, so the poll loop binds that turn at once: as a turn of its own
-     * (whose id is the `client_message_id`), or as part of `send.turnId` (a steer). A send Aether
-     * refused is forgotten; one whose response was lost is kept, because it may have landed: its
-     * retry is the same request, so it has the same id and the same turn.
+     * One respond; returns its `client_message_id`, and the id of the message Aether keeps for it.
+     * A send that can start an Aether turn is recorded before it goes out, so the poll loop binds
+     * that turn at once: as a turn of its own (whose id is the `client_message_id`), or as part of
+     * `send.turnId` (a steer). A send Aether refused is forgotten; one whose response was lost is
+     * kept, because it may have landed: its retry is the same request, so it has the same id and
+     * the same turn.
      */
     const respond = (
       task: Task,
@@ -837,7 +860,7 @@ export const makeAetherAdapter = (
                 };
           });
         }
-        yield* client
+        const response = yield* client
           .respondToTask(task.cursor.taskId, { ...body, client_message_id: clientMessageId })
           .pipe(
             Effect.tapError((error) =>
@@ -861,7 +884,7 @@ export const makeAetherAdapter = (
             Effect.mapError(apiFailure(operation)),
           );
         transition(task, (cursor) => ({ ...cursor, sends: cursor.sends + 1 }));
-        return clientMessageId;
+        return { clientMessageId, messageId: response.message_id };
       });
 
     /**
@@ -964,53 +987,59 @@ export const makeAetherAdapter = (
               `Aether waits on a plan approval but ${waiting.length} turns are waiting.`,
             );
           }
-          // Synara's Implement action approves the plan and leaves plan mode (Aether keeps the
-          // mode a plan answer omits); any other message is feedback, and planning goes on.
-          const data = turn.implementsPlan
-            ? { approved: true }
-            : { approved: false, feedback: turn.message };
-          const turnId = TurnId.makeUnsafe(
-            yield* respond(
-              task,
-              "sendTurn",
-              {
-                message: JSON.stringify(data),
-                ...(turn.implementsPlan ? { interaction_mode: "default" as const } : {}),
-                tool_response: {
-                  tool_name: "propose_plan",
-                  data,
-                  expected_tool_id: awaiting.tool_id,
-                },
-              },
-              { aetherTurnId: waiting[0]!.id },
-            ),
-          );
-          return { task, turnId, note, ended: undefined };
+          task.answeredPlan = awaiting.tool_id;
+          const sent = yield* respond(task, "sendTurn", planAnswer(turn, awaiting.tool_id), {
+            aetherTurnId: waiting[0]!.id,
+          });
+          return { task, turnId: TurnId.makeUnsafe(sent.clientMessageId), note, ended: undefined };
         }
-        const body = {
-          message: turn.message,
-          // A message sent while a run is busy waits for it instead of steering it.
-          queue_for_later: true,
-          interaction_mode: turn.mode,
-          ...(turn.effort === undefined ? {} : { reasoning_effort: turn.effort }),
-        };
         // A retry of a send whose response was lost, even across a restart, is the same request
-        // with the same id: its Aether turn may have started, and even settled, meanwhile.
-        const landedAt = page.turns.findIndex(
-          (candidate) =>
-            candidate.root_message.clientMessageId === clientMessageIdFor(task.cursor, body),
+        // with the same id: its Aether turn may have started, and even settled, meanwhile. A lost
+        // plan answer is still recorded; its retry answers again though the plan waits no more
+        // (which plan is kept in memory only), and Aether keeps the original.
+        const answer =
+          task.answeredPlan === undefined ? undefined : planAnswer(turn, task.answeredPlan);
+        const lost =
+          answer === undefined
+            ? undefined
+            : task.cursor.turns.find(
+                (sent) =>
+                  "clientMessageId" in sent &&
+                  sent.clientMessageId === clientMessageIdFor(task.cursor, answer),
+              );
+        const body =
+          answer !== undefined && lost !== undefined
+            ? answer
+            : {
+                message: turn.message,
+                // A message sent while a run is busy waits for it instead of steering it.
+                queue_for_later: true,
+                interaction_mode: turn.mode,
+                ...(turn.effort === undefined ? {} : { reasoning_effort: turn.effort }),
+              };
+        const clientMessageId = clientMessageIdFor(task.cursor, body);
+        const landedAt = page.turns.findIndex((candidate) =>
+          lost === undefined
+            ? candidate.root_message.clientMessageId === clientMessageId
+            : candidate.id === lost.aetherTurnId,
         );
         const landed = page.turns[landedAt];
-        const turnId = TurnId.makeUnsafe(
-          yield* respond(task, "sendTurn", body, { aetherTurnId: landed?.id ?? null }),
-        );
+        const sent = yield* respond(task, "sendTurn", body, { aetherTurnId: landed?.id ?? null });
+        const turnId = TurnId.makeUnsafe(sent.clientMessageId);
         // Only a run the loop has already settled (and mirrored) ends here; nothing settles it
         // again. Otherwise the loop settles it, and the turn completes after its mirror. Runs
-        // settle in page order, as the ingest counts them (`resume.after`).
+        // settle in page order, as the ingest counts them (`resume.after`); in a turn, its root
+        // message's run first, and a plan answer's run is named by the answer.
         const { after } = task.cursor;
         const afterAt = after === null ? -1 : page.turns.findIndex((t) => t.id === after.turnId);
         const settledAlready =
-          landed !== undefined && after !== null && (afterAt === -1 || landedAt <= afterAt);
+          landed !== undefined &&
+          after !== null &&
+          (afterAt === -1 ||
+            landedAt < afterAt ||
+            (landedAt === afterAt &&
+              (sent.messageId === landed.root_message.id ||
+                sent.messageId === after.runMessageId)));
         if (!settledAlready) return { task, turnId, note, ended: undefined };
         if (landed.state === "settled") return { task, turnId, note, ended: [] };
         if (landed.state === "errored") {

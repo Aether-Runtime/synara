@@ -3,6 +3,7 @@
 // real Git worktree whose origin is a local bare repository: task creation, turns, settlement
 // behind the mirror, retries of lost sends, questions, interrupts, restarts and ownership.
 // Layer: Server provider tests (Aether).
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
@@ -1008,6 +1009,61 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(implemented).toMatchObject({ turnId: approving.turnId });
         expect(h.aether.turns).toHaveLength(1);
       }),
+    );
+    it.effect.each(["before", "after"] as const)(
+      "retries a lost Implement as the same plan answer, ingested %s the retry, completing after the mirror",
+      (ingested) =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          h.aether.hooks.onTurn = (turn) => {
+            h.aether.propose(turn, "toolu_plan", "1. Edit");
+            h.finishTurns();
+          };
+          yield* adapter.sendTurn(h.send("Plan it", { interactionMode: "plan" }));
+          yield* waitFor("the plan", () => completions(events)[0]);
+
+          // The approval lands and its run settles, but the response is lost.
+          h.workspace.serve(diffOf(h.baseCommit, added("feature.txt", "hello\n")));
+          h.aether.faults.loseRespond = true;
+          const implement = h.send("PLEASE IMPLEMENT THIS PLAN:\n1. Edit", {
+            sourceProposedPlan: SOURCE_PLAN,
+          });
+          yield* adapter.sendTurn(implement).pipe(Effect.flip);
+          const [planned] = h.aether.turns;
+          expect(planned!.state).toBe("settled");
+          const text = () => events.find((event) => event.itemId === `text-${planned!.id}`);
+          if (ingested === "before") {
+            // The loop reads the task again (as its 15 s look at a waiting plan would), and
+            // settles and mirrors the run before the retry.
+            yield* adapter
+              .respondToUserInput(THREAD_ID, ApprovalRequestId.makeUnsafe("toolu_none"), {})
+              .pipe(Effect.flip);
+            // Written by the settle, which records the run as settled before it lets the retry in.
+            yield* waitFor("the mirror", () =>
+              existsSync(path.join(h.worktree, "feature.txt")) ? true : undefined,
+            );
+          }
+
+          const retry = yield* adapter.sendTurn(implement);
+          const completed = yield* waitFor("the approved run", () => completions(events)[1]);
+          // The same answer again, which Aether keeps once: the agent never gets the prompt.
+          const [lost, retried] = h.aether.calls.respond;
+          expect(retried).toEqual(lost);
+          expect(retry.turnId).toBe(lost!.client_message_id);
+          expect(h.aether.turns).toHaveLength(1);
+          // Mirrored before it completed, and the run's rows belong to the retried turn.
+          expect(yield* h.exists("feature.txt")).toBe(true);
+          expect(completed).toMatchObject({
+            turnId: retry.turnId,
+            payload: { state: "completed" },
+          });
+          expect(text()).toMatchObject({ turnId: retry.turnId });
+          expect(events.indexOf(text()!)).toBeLessThan(events.indexOf(completed));
+          yield* Effect.sleep("1500 millis");
+          expect(completions(events)).toHaveLength(2);
+        }),
     );
   });
 
