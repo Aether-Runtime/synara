@@ -129,8 +129,13 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   provider) approves it with `interaction_mode: "default"`, since Aether keeps the current mode
   when a plan answer omits it; any other message is feedback (`approved: false` with the text),
   and the task stays in plan mode.
-- `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident;
-  `steerTurn` sends without it.
+- `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident.
+  `steerTurn` sends without it while the steered turn's Aether run is running; when that run has
+  already settled (Synara has not seen it yet) or has not started, the steer runs as a new Aether
+  turn of the same Synara turn, which then completes only when that run settles.
+- An Aether turn is Synara's if and only if it is the task's own first turn, or its root message
+  carries a `client_message_id` the adapter derived for this task (a message, a plan answer or a
+  steer, each recorded in `turns`); any other turn is from outside Synara.
 - While a surfaced question or plan waits and nothing runs, the poll loop reads `/live` every
   15 s instead of every second, so an answer given in Aether's own UI shows within 15 s; sending
   an answer wakes it at once.

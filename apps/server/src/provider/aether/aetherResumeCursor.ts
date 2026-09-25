@@ -21,11 +21,16 @@ export const AetherTaskTurn = Schema.Struct({
 });
 export type AetherTaskTurn = typeof AetherTaskTurn.Type;
 
-/** A Synara turn sent with a respond, and the Aether turn it runs in once that is known. */
+/**
+ * A respond that starts or joins a Synara turn: a message, a plan answer, or a steer (which
+ * belongs to the turn it steered). An Aether turn is Synara's if and only if it is the task's
+ * own first turn, or its root message carries one of these `client_message_id`s.
+ */
 export const AetherSentTurn = Schema.Struct({
   turnId: TurnId,
   /** The respond's `client_message_id`. */
   clientMessageId: Uuid,
+  /** The Aether turn it runs in, once known. */
   aetherTurnId: Schema.NullOr(AetherTurnId),
 });
 export type AetherSentTurn = typeof AetherSentTurn.Type;
@@ -74,6 +79,17 @@ export const lastTurn = (cursor: AetherCreatedCursor): AetherTaskTurn | AetherSe
 /** The Synara turn in flight, if any. */
 export const activeTurnId = (cursor: AetherCreatedCursor): TurnId | null =>
   cursor.active ? lastTurn(cursor).turnId : null;
+
+/** The Synara turn an Aether turn belongs to: that of the last send bound to it. */
+export const ownerOf = (cursor: AetherCreatedCursor, aetherTurnId: AetherTurnId) =>
+  cursor.turns.findLast((turn) => turn.aetherTurnId === aetherTurnId)?.turnId;
+
+/**
+ * The Aether turn a Synara turn waits on: that of its last send, null until known. A steer that
+ * starts a new Aether turn (the run it steered had already settled) moves the turn on to it.
+ */
+export const awaitedTurn = (cursor: AetherCreatedCursor, turnId: TurnId) =>
+  cursor.turns.findLast((turn) => turn.turnId === turnId)?.aetherTurnId ?? null;
 
 /** Parses a persisted cursor; anything else is a loud validation error, never a fresh task. */
 export function parseAetherResumeCursor(

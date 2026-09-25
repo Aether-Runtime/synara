@@ -727,6 +727,87 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
     );
   });
 
+  describe("steering", () => {
+    it.effect("hands a steer to the running agent, and completes the turn once", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        let running: FakeTurn | undefined;
+        h.aether.hooks.onTurn = (turn) => {
+          running = turn;
+          h.aether.say(turn, "text-live", "Working", { open: true });
+        };
+        const turn = yield* adapter.sendTurn(h.send("Refactor"));
+        yield* waitFor("streamed text", () =>
+          events.find((event) => event.type === "content.delta"),
+        );
+
+        const steered = yield* adapter.steerTurn!(h.send("Also rename the module"));
+        expect(steered.turnId).toBe(turn.turnId);
+        expect(h.aether.calls.respond.at(-1)).toMatchObject({ message: "Also rename the module" });
+        expect(h.aether.calls.respond.at(-1)).not.toHaveProperty("queue_for_later");
+        expect(running!.items.at(-1)).toMatchObject({ content: "Also rename the module" });
+        expect(h.aether.turns).toHaveLength(1);
+
+        h.aether.close("text-live");
+        h.aether.settle(running!);
+        const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+        expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+        yield* Effect.sleep("1500 millis");
+        expect(completions(events)).toHaveLength(1);
+        expect(events.some((event) => event.type === "runtime.warning")).toBe(false);
+      }),
+    );
+
+    it.effect("runs a steer that arrives after the run settled as the same Synara turn", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        let running: FakeTurn | undefined;
+        h.aether.hooks.onTurn = (turn) => {
+          running = turn;
+          h.aether.say(turn, "text-live", "Working", { open: true });
+        };
+        const turn = yield* adapter.sendTurn(h.send("Refactor"));
+        yield* waitFor("streamed text", () =>
+          events.find((event) => event.type === "content.delta"),
+        );
+
+        // Aether settles the run; Synara has not seen it yet when the user steers.
+        h.aether.close("text-live");
+        h.workspace.serve(diffOf(h.baseCommit, added("steered.txt", "late\n")));
+        h.aether.hooks.onTurn = (late) => {
+          h.aether.say(late, "text-late", "Renamed it.");
+          h.aether.settle(late);
+        };
+        h.aether.settle(running!);
+        const steered = yield* adapter.steerTurn!(h.send("Also rename the module"));
+        expect(steered.turnId).toBe(turn.turnId);
+        // Aether started a new turn with the steer.
+        expect(h.aether.turns).toHaveLength(2);
+
+        yield* waitFor("the steered run", () =>
+          events.find((event) => event.itemId === "text-late"),
+        );
+        const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+        expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+        // Completed after the steered run, with its changes mirrored.
+        expect(events.indexOf(completed)).toBeGreaterThan(
+          events.findIndex((event) => event.itemId === "text-late"),
+        );
+        expect(yield* h.read("steered.txt")).toBe("late\n");
+        expect(events.find((event) => event.itemId === "text-late")).toMatchObject({
+          turnId: turn.turnId,
+        });
+        expect(events.filter((event) => event.type === "runtime.warning")).toEqual([]);
+        yield* Effect.sleep("1500 millis");
+        expect(completions(events)).toHaveLength(1);
+      }),
+    );
+  });
+
   describe("interrupt", () => {
     it.effect("stops the task, surfaces discarded queued text, and completes as interrupted", () =>
       Effect.gen(function* () {

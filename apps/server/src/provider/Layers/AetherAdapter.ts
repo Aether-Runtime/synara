@@ -78,6 +78,8 @@ import type { AetherMirrorError } from "../aether/aetherMirrorErrors.ts";
 import { syncAetherMirror, type AetherMirrorWorkspace } from "../aether/aetherMirrorSync.ts";
 import {
   activeTurnId,
+  awaitedTurn,
+  ownerOf,
   parseAetherResumeCursor,
   type AetherCreatedCursor,
   type AetherCreatingCursor,
@@ -437,26 +439,26 @@ export const makeAetherAdapter = (
     // -----------------------------------------------------------------------
 
     /**
-     * The Synara turn an Aether turn's events belong to: the latest bound to it (an approved plan
-     * moves its Aether turn to the approving turn); for a turn not seen yet, the turn in flight if
-     * it still waits for its own (its text can stream before its turn is listed); otherwise an id
+     * The Synara turn an Aether turn's events belong to: its owner (an approved plan moves its
+     * Aether turn to the approving turn); for a turn not seen yet, the turn in flight if it still
+     * waits for its Aether turn (its text can stream before its turn is listed); otherwise an id
      * of its own, for a turn sent from outside Synara.
      */
     const turnIdFor = (task: Task, aetherTurnId: AetherTurnId): TurnId => {
       const { cursor } = task;
+      const owner = ownerOf(cursor, aetherTurnId);
+      if (owner !== undefined) return owner;
       const active = activeTurnId(cursor);
-      if (!task.remoteTurns.has(aetherTurnId)) {
-        const bound = cursor.turns.findLast((turn) => turn.aetherTurnId === aetherTurnId);
-        if (bound !== undefined) return bound.turnId;
-        const waiting = cursor.turns.find(
-          (turn) => turn.aetherTurnId === null && turn.turnId === active,
-        );
-        if (waiting !== undefined) return waiting.turnId;
+      if (!task.remoteTurns.has(aetherTurnId) && active !== null) {
+        if (awaitedTurn(cursor, active) === null) return active;
       }
       return TurnId.makeUnsafe(`aether-remote:${aetherTurnId}`);
     };
 
-    /** Binds a new Aether turn to the Synara turn that sent it; false when none did. */
+    /**
+     * Binds a new Aether turn to the Synara turn that sent it: the task's own first turn has no
+     * `client_message_id`, every other turn Synara started has one it derived. False otherwise.
+     */
     const bindOrigin = (
       task: Task,
       aetherTurnId: AetherTurnId,
@@ -479,8 +481,7 @@ export const makeAetherAdapter = (
         }));
         return true;
       }
-      // The task's first turn is the one `POST /tasks` started.
-      if (first.aetherTurnId === null) {
+      if (clientMessageId === undefined && first.aetherTurnId === null) {
         transition(task, (current) => ({
           ...current,
           turns: [{ ...first, aetherTurnId }, ...sent],
@@ -539,11 +540,13 @@ export const makeAetherAdapter = (
     /** A run ended: mirror, record it, then complete its Synara turn if it is the one in flight. */
     const settle = (session: SessionBase, task: Task, settled: TurnSettled) =>
       Effect.gen(function* () {
-        const turnId = task.remoteTurns.has(settled.turnId)
-          ? undefined
-          : task.cursor.turns.findLast((turn) => turn.aetherTurnId === settled.turnId)?.turnId;
+        const turnId = ownerOf(task.cursor, settled.turnId);
         const outcome = yield* mirror(session, task);
-        const completes = turnId !== undefined && activeTurnId(task.cursor) === turnId;
+        // The turn in flight completes when the Aether turn it waits on settles.
+        const completes =
+          turnId !== undefined &&
+          activeTurnId(task.cursor) === turnId &&
+          awaitedTurn(task.cursor, turnId) === settled.turnId;
         transition(task, (cursor) => ({
           ...cursor,
           after: { turnId: settled.turnId, runMessageId: settled.runMessageId },
@@ -552,7 +555,13 @@ export const makeAetherAdapter = (
         const failed = outcome._tag === "Failed" ? outcome.note : undefined;
         const note = completes && failed !== undefined ? undefined : outcome.note;
         if (note !== undefined) {
-          yield* warn(session, task, turnId, ["mirror", settled.turnId, settled.runMessageId], note);
+          yield* warn(
+            session,
+            task,
+            turnId,
+            ["mirror", settled.turnId, settled.runMessageId],
+            note,
+          );
         }
         if (turnId === undefined) return;
         const errors = [
@@ -576,7 +585,11 @@ export const makeAetherAdapter = (
       });
 
     /** The loop stopped: fail the turn in flight. The next message, answer or stop wakes it. */
-    const pollingStopped = (session: SessionBase, task: Task, error: AetherConversationPollFailure) =>
+    const pollingStopped = (
+      session: SessionBase,
+      task: Task,
+      error: AetherConversationPollFailure,
+    ) =>
       Effect.gen(function* () {
         const message = `Synara stopped following the Aether task: ${error.message} It follows it again at the next message.`;
         const turnId = activeTurnId(task.cursor);
@@ -776,24 +789,29 @@ export const makeAetherAdapter = (
     // -----------------------------------------------------------------------
 
     /**
-     * One respond; returns the Synara turn it starts, whose id is the send's `client_message_id`.
-     * A new turn is recorded before it goes out, so the poll loop binds its Aether turn at once.
-     * A send Aether refused is forgotten; one whose response was lost is kept, because it may
-     * have landed: its retry is the same request, so it has the same id and the same turn.
+     * One respond; returns its `client_message_id`. A send that can start an Aether turn is
+     * recorded before it goes out, so the poll loop binds that turn at once: as a turn of its own
+     * (whose id is the `client_message_id`), or as part of `send.turnId` (a steer). A send Aether
+     * refused is forgotten; one whose response was lost is kept, because it may have landed: its
+     * retry is the same request, so it has the same id and the same turn.
      */
     const respond = (
       task: Task,
       operation: string,
       body: Omit<AetherRespondToTaskRequest, "client_message_id">,
-      turn?: { readonly aetherTurnId: AetherTurnId | null },
+      send?: { readonly turnId?: TurnId; readonly aetherTurnId: AetherTurnId | null },
     ) =>
       Effect.gen(function* () {
         const clientMessageId = clientMessageIdFor(task.cursor, body);
-        const turnId = TurnId.makeUnsafe(clientMessageId);
-        if (turn !== undefined && !task.cursor.turns.some((sent) => sent.turnId === turnId)) {
+        const [, ...recorded] = task.cursor.turns;
+        if (
+          send !== undefined &&
+          !recorded.some((sent) => sent.clientMessageId === clientMessageId)
+        ) {
+          const turnId = send.turnId ?? TurnId.makeUnsafe(clientMessageId);
           transition(task, (cursor) => ({
             ...cursor,
-            turns: [...cursor.turns, { turnId, clientMessageId, aetherTurnId: turn.aetherTurnId }],
+            turns: [...cursor.turns, { turnId, clientMessageId, aetherTurnId: send.aetherTurnId }],
           }));
         }
         yield* client
@@ -806,7 +824,10 @@ export const makeAetherAdapter = (
                     const [first, ...sent] = cursor.turns;
                     return {
                       ...cursor,
-                      turns: [first, ...sent.filter((other) => other.turnId !== turnId)],
+                      turns: [
+                        first,
+                        ...sent.filter((other) => other.clientMessageId !== clientMessageId),
+                      ],
                     };
                   });
                 }
@@ -817,7 +838,7 @@ export const makeAetherAdapter = (
             Effect.mapError(apiFailure(operation)),
           );
         transition(task, (cursor) => ({ ...cursor, sends: cursor.sends + 1 }));
-        return turnId;
+        return clientMessageId;
       });
 
     /**
@@ -922,33 +943,37 @@ export const makeAetherAdapter = (
           const data = turn.implementsPlan
             ? { approved: true }
             : { approved: false, feedback: turn.message };
-          const turnId = yield* respond(
-            task,
-            "sendTurn",
-            {
-              message: JSON.stringify(data),
-              ...(turn.implementsPlan ? { interaction_mode: "default" as const } : {}),
-              tool_response: {
-                tool_name: "propose_plan",
-                data,
-                expected_tool_id: awaiting.tool_id,
+          const turnId = TurnId.makeUnsafe(
+            yield* respond(
+              task,
+              "sendTurn",
+              {
+                message: JSON.stringify(data),
+                ...(turn.implementsPlan ? { interaction_mode: "default" as const } : {}),
+                tool_response: {
+                  tool_name: "propose_plan",
+                  data,
+                  expected_tool_id: awaiting.tool_id,
+                },
               },
-            },
-            { aetherTurnId: waiting[0]!.id },
+              { aetherTurnId: waiting[0]!.id },
+            ),
           );
           return { task, turnId, note };
         }
-        const turnId = yield* respond(
-          task,
-          "sendTurn",
-          {
-            message: turn.message,
-            // A message sent while a run is busy waits for it instead of steering it.
-            queue_for_later: true,
-            interaction_mode: turn.mode,
-            ...(turn.effort === undefined ? {} : { reasoning_effort: turn.effort }),
-          },
-          { aetherTurnId: null },
+        const turnId = TurnId.makeUnsafe(
+          yield* respond(
+            task,
+            "sendTurn",
+            {
+              message: turn.message,
+              // A message sent while a run is busy waits for it instead of steering it.
+              queue_for_later: true,
+              interaction_mode: turn.mode,
+              ...(turn.effort === undefined ? {} : { reasoning_effort: turn.effort }),
+            },
+            { aetherTurnId: null },
+          ),
         );
         return { task, turnId, note };
       });
@@ -1103,8 +1128,24 @@ export const makeAetherAdapter = (
                 return yield* startTurn(session, input);
               }
               const message = yield* turnText(input, "steerTurn");
-              // Without `queue_for_later`, Aether hands the message to the running agent.
-              yield* respond(task, "steerTurn", { message });
+              const page = yield* client
+                .getConversationTurns(task.cursor.taskId)
+                .pipe(Effect.mapError(apiFailure("getConversationTurns")));
+              const awaited = awaitedTurn(task.cursor, active);
+              const running = page.turns.find(
+                (turn) =>
+                  turn.id === awaited &&
+                  (turn.state === "running" || turn.state === "awaiting_input"),
+              );
+              // Without `queue_for_later`, Aether hands the message to the running agent. When the
+              // turn's run already settled (Synara has not seen it yet) or has not started, the
+              // steer runs as a new Aether turn of the same Synara turn, which then waits on it.
+              yield* respond(
+                task,
+                "steerTurn",
+                running === undefined ? { message, queue_for_later: true } : { message },
+                { turnId: active, aetherTurnId: running?.id ?? null },
+              );
               yield* task.poller.wake;
               return { threadId: session.threadId, turnId: active, resumeCursor: task.cursor };
             }),
@@ -1142,12 +1183,10 @@ export const makeAetherAdapter = (
               }
               if (active !== undefined) {
                 task.interrupted = active;
-                const aetherTurnId = task.cursor.turns.findLast(
-                  (turn) => turn.turnId === active && turn.aetherTurnId !== null,
-                )?.aetherTurnId;
+                const aetherTurnId = awaitedTurn(task.cursor, active);
                 const state = page.turns.find((turn) => turn.id === aetherTurnId)?.state;
                 // Never started, so no run will settle it: it ends now.
-                if (aetherTurnId === undefined || state === "queued") {
+                if (aetherTurnId === null || state === "queued") {
                   yield* complete(session, task, active, "interrupted");
                 }
               }
