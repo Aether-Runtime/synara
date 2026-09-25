@@ -186,7 +186,7 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   with nothing in flight (`keepCursor`), so it is never sent again. One that failed on archive is
   sent again when the thread is unarchived (the command reactor releases it again) and at each
   boot while it stays archived (the adapter's construction, in the background; the thread's next
-  session or release waits for it). The idle reaper and a shutdown only
+  session or release waits for it, and no longer counts the turn it stopped as in flight). The idle reaper and a shutdown only
   detach, and so does a desktop quit: the quit confirmation lists only chats a quit stops, and
   quit-resume (`quitResume.ts`) neither records nor interrupts a cloud provider's thread. Startup
   reconciliation asks the provider to follow each turn in flight again

@@ -2322,7 +2322,12 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
             });
             yield* Effect.gen(function* () {
               const adapter = yield* AetherAdapter;
-              // Unarchived and sent to at once: its session waits for the boot's stop.
+              const events: ProviderRuntimeEvent[] = [];
+              yield* Stream.runForEach(adapter.streamEvents, (event) =>
+                Effect.sync(() => void events.push(event)),
+              ).pipe(Effect.forkScoped);
+              // Unarchived and sent to at once: its session waits for the boot's stop, and then
+              // follows no turn, though its cursor was read before the stop landed.
               const starting = yield* adapter
                 .startSession({
                   threadId: THREAD_ID,
@@ -2341,6 +2346,29 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
               expect(h.aether.turns[0]!.state).toBe("settled");
               const [binding] = yield* directory.listBindings();
               expect(binding?.resumeCursor).toMatchObject({ active: false });
+              expect(yield* adapter.listSessions()).toMatchObject([{ status: "ready" }]);
+              yield* Effect.sleep("1500 millis");
+              expect(completions(events)).toEqual([]);
+
+              // A later turn is not the one the boot stopped.
+              h.aether.hooks.onTurn = (turn) =>
+                h.aether.say(turn, "text-next", "Working", { open: true });
+              yield* adapter.sendTurn(h.send("Next"));
+              yield* waitFor("the next running turn", () => h.aether.turns[1]);
+              const [current] = yield* adapter.listSessions();
+              // A release handed the cursor read before the boot's stop sends no second stop; one
+              // handed the cursor with the later turn in flight stops that turn.
+              yield* adapter.releaseThread!({
+                threadId: THREAD_ID,
+                resumeCursor: session!.resumeCursor,
+              });
+              expect(h.aether.calls.stop).toHaveLength(1);
+              yield* adapter.releaseThread!({
+                threadId: THREAD_ID,
+                resumeCursor: current!.resumeCursor,
+              });
+              expect(h.aether.calls.stop).toHaveLength(2);
+              expect(h.aether.turns[1]!.state).toBe("settled");
             }).pipe(Effect.scoped, Effect.provide(boot));
 
             // The next boot finds nothing in flight.
@@ -2348,7 +2376,7 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
               yield* AetherAdapter;
               yield* Effect.sleep("100 millis");
             }).pipe(Effect.scoped, Effect.provide(boot));
-            expect(h.aether.calls.stop).toHaveLength(1);
+            expect(h.aether.calls.stop).toHaveLength(2);
           }).pipe(Effect.scoped, Effect.provide(sessionDirectoryLayer));
         }),
     );

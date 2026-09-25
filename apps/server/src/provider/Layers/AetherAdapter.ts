@@ -389,14 +389,19 @@ export const makeAetherAdapter = (
       { readonly claim: WorktreeClaim; readonly scope: Scope.Closeable }
     >();
     /**
-     * The stops construction sent for archived threads' turns in flight. The thread's next session
-     * or release waits for its stop, so the stop cannot reach a turn sent after it, and its cursor
-     * is kept before anything else writes it.
+     * The stops construction sent for archived threads' turns in flight, each ending with the turn
+     * it stopped (null when the stop failed). The thread's next session or release waits for its
+     * stop, so the stop cannot reach a turn sent after it, and its cursor is kept before anything
+     * else writes it.
      */
-    const bootStops = new Map<ThreadId, Fiber.Fiber<void>>();
-    const afterBootStop = (threadId: ThreadId): Effect.Effect<void> => {
+    const bootStops = new Map<ThreadId, Fiber.Fiber<TurnId | null>>();
+    /**
+     * Waits for the thread's boot stop, if any, and returns the turn it ended. A cursor its caller
+     * read before that stop landed still has that turn in flight.
+     */
+    const afterBootStop = (threadId: ThreadId): Effect.Effect<TurnId | null> => {
       const stop = bootStops.get(threadId);
-      return stop === undefined ? Effect.void : Fiber.join(stop);
+      return stop === undefined ? Effect.succeed(null) : Fiber.join(stop);
     };
     const nowIso = Effect.map(Clock.currentTimeMillis, (millis) => new Date(millis).toISOString());
 
@@ -807,8 +812,11 @@ export const makeAetherAdapter = (
       readonly lifecycleGeneration: string | undefined;
     }) =>
       Effect.gen(function* () {
-        yield* afterBootStop(input.threadId);
-        const { cursor } = input;
+        const stopped = yield* afterBootStop(input.threadId);
+        const cursor: AetherResumeCursor =
+          input.cursor.status === "created" && activeTurnId(input.cursor) === stopped
+            ? { ...input.cursor, active: false }
+            : input.cursor;
         const claim = yield* claimWorktree(input.threadId, cursor.worktreePath);
         const at = yield* nowIso;
         const base: SessionBase = {
@@ -1181,7 +1189,8 @@ export const makeAetherAdapter = (
         const cursor = yield* parseAetherResumeCursor(binding.resumeCursor);
         if (cursor.status === "creating" || !cursor.active) return;
         const stop = yield* stopInFlight(binding.threadId, cursor).pipe(
-          Effect.catchCause(failed),
+          Effect.as(activeTurnId(cursor)),
+          Effect.catchCause((cause) => failed(cause).pipe(Effect.as(null))),
           Effect.forkIn(adapterScope),
         );
         bootStops.set(binding.threadId, stop);
@@ -1461,10 +1470,12 @@ export const makeAetherAdapter = (
           // Archiving or deleting a thread stops its turn in flight, as it stops a local agent:
           // Synara could not stop the task afterwards. Unarchiving releases the thread again, so
           // a stop that failed when it was archived is sent again.
-          yield* afterBootStop(input.threadId);
+          const stopped = yield* afterBootStop(input.threadId);
           if (input.resumeCursor === undefined || input.resumeCursor === null) return;
           const cursor = yield* parseAetherResumeCursor(input.resumeCursor);
-          if (cursor.status === "creating" || !cursor.active) return;
+          if (cursor.status === "creating" || !cursor.active || activeTurnId(cursor) === stopped) {
+            return;
+          }
           yield* stopInFlight(input.threadId, cursor).pipe(
             Effect.tapError((error) =>
               Effect.logError("aether.release.stop-failed", {
