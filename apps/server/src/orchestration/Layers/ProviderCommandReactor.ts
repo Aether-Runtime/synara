@@ -5585,6 +5585,28 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Releases what an archived thread's provider holds beyond a session, first stopping the turn
+   * its persisted cursor has in flight. The release lets go even when that stop fails, so the
+   * failure is only shown: failing it would block the thread's later messages.
+   */
+  const releaseArchivedThread = (threadId: ThreadId, createdAt: string) =>
+    providerService.releaseThread === undefined
+      ? Effect.void
+      : providerService.releaseThread({ threadId }).pipe(
+          Effect.catch((error) =>
+            appendProviderFailureActivity({
+              threadId,
+              kind: "provider.session.stop.failed",
+              summary: "Provider session stop failed",
+              detail: error.message,
+              turnId: null,
+              createdAt,
+              settlementStatus: "uncertain",
+            }),
+          ),
+        );
+
   const processSessionStopRequested = (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) =>
@@ -5715,24 +5737,8 @@ const make = Effect.gen(function* () {
             createdAt: archivedAt,
           });
           // The binding stays, so the thread can resume; what it held beyond a session (an
-          // Aether worktree claim) does not, so retention can prune its worktree. The release
-          // lets go of that even when stopping the turn in flight fails, so the failure is only
-          // shown: failing the archive would block the thread's later messages.
-          if (providerService.releaseThread) {
-            yield* providerService.releaseThread({ threadId: event.payload.threadId }).pipe(
-              Effect.catch((error) =>
-                appendProviderFailureActivity({
-                  threadId: event.payload.threadId,
-                  kind: "provider.session.stop.failed",
-                  summary: "Provider session stop failed",
-                  detail: error.message,
-                  turnId: null,
-                  createdAt: archivedAt,
-                  settlementStatus: "uncertain",
-                }),
-              ),
-            );
-          }
+          // Aether worktree claim) does not, so retention can prune its worktree.
+          yield* releaseArchivedThread(event.payload.threadId, archivedAt);
           return;
         }
         case "thread.unarchived":
@@ -5740,6 +5746,10 @@ const make = Effect.gen(function* () {
             yield* Effect.promise(() =>
               computerService.value.manager.handleThreadRestored(event.payload.threadId),
             );
+          // Released again, before any later message: a turn the archive failed to stop (an
+          // Aether stop that failed) is stopped now. A release that has nothing left to stop
+          // does nothing.
+          yield* releaseArchivedThread(event.payload.threadId, event.occurredAt);
           return;
         case "thread.meta-updated": {
           const thread = yield* resolveThread(event.payload.threadId);

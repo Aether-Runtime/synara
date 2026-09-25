@@ -16583,6 +16583,43 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("releases a thread again when it is unarchived, recording a release that fails again", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    harness.releaseThread.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "aether",
+          method: "stopTask",
+          detail: "Aether API returned HTTP 503 (POST /tasks/{taskID}/stop).",
+        }),
+      ),
+    );
+    const stopFailures = async () =>
+      (await readHarnessThread(harness))?.activities.filter(
+        (activity) => activity.kind === "provider.session.stop.failed",
+      ).length ?? 0;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.makeUnsafe("cmd-archive-before-unarchive"),
+        threadId,
+      }),
+    );
+    await waitFor(async () => (await stopFailures()) === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.makeUnsafe("cmd-unarchive-retries-release"),
+        threadId,
+      }),
+    );
+    await waitFor(async () => (await stopFailures()) === 2);
+    expect(harness.releaseThread).toHaveBeenCalledTimes(2);
+    expect(harness.releaseThread).toHaveBeenLastCalledWith({ threadId });
+  });
+
   it("restores computer admission after ordered archive cleanup and before the next provider turn", async () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const manager = new ComputerManager({ backend: new FakeComputerBackend() });
