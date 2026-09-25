@@ -80,14 +80,7 @@ import { GitManager } from "./git/Services/GitManager";
 import { GitHubCliError, WorktreeOwnedError } from "./git/Errors";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
-import {
-  beginGitHandoff,
-  completeGitHandoff,
-  discardPendingGitHandoff,
-  gitHandoffMetadataCommand,
-  recordGitHandoffResult,
-  validateGitHandoffTarget,
-} from "./gitHandoffOperations";
+import { runGitHandoff } from "./gitHandoffOperations";
 import { Keybindings } from "./keybindings";
 import { createLocalPreviewGrant } from "./localImageFiles";
 import { listLocalServers, stopLocalServer } from "./localServerMonitor";
@@ -1677,43 +1670,16 @@ const makeWsRpcHandlersLayer = () =>
           ),
         [WS_METHODS.gitHandoffThread]: (input) =>
           rpcEffect(
-            Effect.gen(function* () {
-              const { commandId, threadId, ...gitInput } = input;
-              yield* validateGitHandoffTarget(
-                input,
-                (yield* orchestrationEngine.getReadModel()).threads,
-              );
-              const operation = yield* beginGitHandoff(input);
-              if (operation.phase === "pending" || operation.phase === "uncertain") {
-                return yield* new WsRpcError({
-                  message:
-                    operation.phase === "pending"
-                      ? "This Git handoff is already running."
-                      : "This Git handoff was interrupted before its filesystem result became durable; inspect the repository before retrying.",
-                });
-              }
-              if (operation.phase === "completed") return operation.result;
-
-              const result =
-                operation.phase === "git_applied"
-                  ? operation.result
-                  : yield* refreshGitStatusAfter(
-                      input.cwd,
-                      gitManager.handoffThread(gitInput).pipe(
-                        Effect.catch((error) =>
-                          discardPendingGitHandoff(commandId).pipe(
-                            Effect.catch(() => Effect.void),
-                            Effect.andThen(Effect.fail(error)),
-                          ),
-                        ),
-                      ),
-                    ).pipe(Effect.tap((gitResult) => recordGitHandoffResult(commandId, gitResult)));
-              yield* dispatchOrchestrationCommand(
-                gitHandoffMetadataCommand({ commandId, threadId }, result),
-              );
-              yield* completeGitHandoff(commandId);
-              return result;
-            }),
+            orchestrationEngine.getReadModel().pipe(
+              Effect.flatMap((readModel) =>
+                runGitHandoff(input, {
+                  threads: readModel.threads,
+                  handoffThread: (gitInput) =>
+                    refreshGitStatusAfter(input.cwd, gitManager.handoffThread(gitInput)),
+                  dispatch: dispatchOrchestrationCommand,
+                }),
+              ),
+            ),
             "Failed to hand off thread",
           ),
 

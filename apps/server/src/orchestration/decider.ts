@@ -127,7 +127,7 @@ function validateAutoRuntimeMode(
 }
 
 /** Refuse a feature when any provider the command could run the thread on lacks it. */
-export function validateProviderFeature(
+function validateProviderFeature(
   command: Pick<OrchestrationCommand, "type">,
   feature: ProviderGatedFeature,
   providers: ReadonlyArray<ProviderKind | undefined>,
@@ -150,7 +150,7 @@ const isProviderKind = Schema.is(ProviderKind);
  * selection, and a selection the command brings. The session stores its provider as a plain
  * string, so it is parsed here and an unknown provider is refused.
  */
-export function threadProviders(
+function threadProviders(
   command: Pick<OrchestrationCommand, "type">,
   thread: Pick<OrchestrationThread, "session" | "modelSelection">,
   commandModelSelection?: OrchestrationThread["modelSelection"],
