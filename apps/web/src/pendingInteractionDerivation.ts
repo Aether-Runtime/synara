@@ -276,8 +276,7 @@ function parseUserInputQuestions(
           const optionRecord = option as Record<string, unknown>;
           if (
             typeof optionRecord.label !== "string" ||
-            (optionRecord.description !== undefined &&
-              typeof optionRecord.description !== "string")
+            (optionRecord.description !== undefined && typeof optionRecord.description !== "string")
           ) {
             return null;
           }
