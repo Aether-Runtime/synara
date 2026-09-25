@@ -281,7 +281,8 @@ export function makeFakeAetherTask() {
       Effect.sync(() => {
         const turn = turns.find((candidate) => candidate.id === turnId)!;
         return decode(AetherTurnActivityPage, {
-          items: [turn.root, ...turn.items],
+          // As on real tasks: a turn's activity never holds its root message.
+          items: turn.items,
           turn_revision_sequence: turn.revision,
           has_more_older: false,
           oldest_sequence_loaded: null,

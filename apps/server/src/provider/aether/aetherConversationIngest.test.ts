@@ -747,10 +747,7 @@ describe("AetherConversationIngest: settlement", () => {
       turnsBody(idleTask(), [first, second]),
       {
         [TURN_ID]: activityBody([toolRow("t1", { status: "output-available" })], 7),
-        [OTHER_TURN_ID]: activityBody(
-          [userMessageBody({ id: "root-2" }), textRow("m2", "Done."), toolRow("t2")],
-          2,
-        ),
+        [OTHER_TURN_ID]: activityBody([textRow("m2", "Done."), toolRow("t2")], 2),
       },
     );
     // Synara emitted these before; its journal may no longer hold them.
@@ -768,10 +765,8 @@ describe("AetherConversationIngest: settlement", () => {
       ingest,
       turnsBody(planTask, [turn({ state: "awaiting_input", revision_sequence: 1 })]),
       {
-        [TURN_ID]: activityBody(
-          [userMessageBody({ id: "root-1" }), textRow("m1", "Here is a plan."), planRow],
-          1,
-        ),
+        // As on real tasks, a turn's activity never holds its root message.
+        [TURN_ID]: activityBody([textRow("m1", "Here is a plan."), planRow], 1),
       },
     );
     // The plan was shown before the restart, and is not shown again.
@@ -784,7 +779,6 @@ describe("AetherConversationIngest: settlement", () => {
       {
         [TURN_ID]: activityBody(
           [
-            userMessageBody({ id: "root-1" }),
             textRow("m1", "Here is a plan."),
             planRow,
             userMessageBody({ id: "approval-1" }),

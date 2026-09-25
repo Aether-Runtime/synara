@@ -373,7 +373,8 @@ type RowRecord =
  * How much of a turn `resume.after` covers, row by row: Synara already emitted those rows, and
  * its journal may have pruned them, so they are read for their state but emit nothing. A turn
  * listed before the mark's is covered whole; the mark's turn up to its run's message and the
- * rows of that run (`to-mark`, then `at-mark`), and no longer from the next new user message.
+ * rows of that run (`to-mark`, then `at-mark`), and no longer from the next new user message. A
+ * turn's activity never holds its root message, so a mark on the root starts at `at-mark`.
  */
 type Coverage = "whole" | "to-mark" | "at-mark" | "none";
 
@@ -584,11 +585,14 @@ export class AetherConversationIngest {
         known.revision = turn.revision_sequence;
         continue;
       }
+      const mark = this.resume.after;
       const coverage: Coverage = !resumed.has(turn.id)
         ? "none"
-        : turn.id === this.resume.after?.turnId
-          ? "to-mark"
-          : "whole";
+        : turn.id !== mark?.turnId
+          ? "whole"
+          : mark.runMessageId === turn.root_message.id
+            ? "at-mark"
+            : "to-mark";
       state.turns.set(turn.id, {
         id: turn.id,
         state: turn.state,

@@ -1072,6 +1072,51 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           expect(completions(events)).toHaveLength(2);
         }),
     );
+    it.effect.each(["an idle stop", "a restart"] as const)(
+      "shows the run an Implement starts after %s while the plan waited, and its question",
+      (detach) =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const first = yield* h.launch();
+          yield* h.start(first.adapter);
+          h.aether.hooks.onTurn = (turn) => {
+            h.aether.propose(turn, "toolu_plan", "1. Edit");
+            h.aether.hooks.onTurn = (implementing) => {
+              h.aether.say(implementing, "text-implementing", "Implementing.");
+              h.aether.ask(implementing, "toolu_ask", ["Blue", "Red"]);
+            };
+          };
+          yield* first.adapter.sendTurn(h.send("Plan it", { interactionMode: "plan" }));
+          yield* waitFor("the plan", () => completions(first.events)[0]);
+          const [session] = yield* first.adapter.listSessions();
+
+          // The idle reaper stops the session, or Synara restarts; then the user implements.
+          let second = first;
+          if (detach === "an idle stop") {
+            yield* first.adapter.stopSession(THREAD_ID);
+          } else {
+            yield* first.stop;
+            second = yield* h.launch();
+          }
+          yield* second.adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "aether",
+            cwd: h.worktree,
+            resumeCursor: session!.resumeCursor,
+            runtimeMode: "full-access",
+          });
+          const approving = yield* second.adapter.sendTurn(
+            h.send("PLEASE IMPLEMENT THIS PLAN:\n1. Edit", { sourceProposedPlan: SOURCE_PLAN }),
+          );
+          const asked = yield* waitFor("the question", () =>
+            second.events.find((event) => event.type === "user-input.requested"),
+          );
+          expect(asked).toMatchObject({ turnId: approving.turnId, requestId: "toolu_ask" });
+          expect(second.events.find((event) => event.itemId === "text-implementing")).toMatchObject(
+            { turnId: approving.turnId },
+          );
+        }),
+    );
   });
 
   describe("steering", () => {

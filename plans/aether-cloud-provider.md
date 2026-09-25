@@ -194,7 +194,8 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   but the idempotency key is, so the same message continues any task the lost create made.
   Revert cleanup and the dangling-turn repair apply to every thread.
 - A resumed loop emits nothing for the history `after` covers (every turn before its turn, and
-  its turn up to the run it names): Synara emitted it before, and the runtime event journal
+  its turn up to the run it names, which starts right away when it names the root message, since
+  a turn's activity never holds its root): Synara emitted it before, and the runtime event journal
   prunes the rows of completed turns. It reads those rows only for their state. The journal holds
   every row of the turn in flight, so the adapter reads that turn's events only: their ids, which
   it drops when the loop derives them again, and the text already streamed (`emittedText`).
