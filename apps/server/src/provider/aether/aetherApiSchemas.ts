@@ -394,6 +394,7 @@ export type AetherToolResponse = (
   | {
       readonly tool_name: "ask_user";
       readonly data: {
+        /** Option indexes by question index; `-1` selects that question's `customAnswers` text. */
         readonly answers: Readonly<Record<string, ReadonlyArray<number>>>;
         readonly customAnswers?: Readonly<Record<string, string>>;
       };

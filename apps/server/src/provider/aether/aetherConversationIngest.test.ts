@@ -763,8 +763,25 @@ describe("AetherConversationIngest: pending input", () => {
     expectValidEvents([...first, ...second, ...stopped]);
   });
 
+  it('resolves a custom ("Other") answer, selected with option -1', () => {
+    const ingest = makeIngest();
+    refresh(ingest, turnsBody(askingTask("q1"), [waitingTurn()]), {
+      [TURN_ID]: activityBody([askRow("q1")]),
+    });
+    const answer = answerRow("a1", { answers: { "0": [-1] }, customAnswers: { "0": " C " } });
+    const resolved = refresh(
+      ingest,
+      turnsBody(processingTask(), [turn({ revision_sequence: 2 })]),
+      {
+        [TURN_ID]: activityBody([askRow("q1"), answer], 2),
+      },
+    );
+    expect(events(resolved).map((event) => event.payload)).toEqual([{ answers: { "0": "C" } }]);
+  });
+
   it.each([
     [{ answers: { "0": [7] } }, "question 0 has no option 7"],
+    [{ answers: { "0": [-1] } }, "question 0 selects a custom answer but has none"],
     [{ answers: { "5": [0] } }, "the answer names question 5"],
     [{ answers: { "0": [0, 1] } }, "question 0 takes one answer and got 2"],
     [{ choices: [1] }, `["answers"]`],

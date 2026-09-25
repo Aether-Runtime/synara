@@ -129,8 +129,12 @@ checked against recorded traffic in `provider/aether/testing/recordings/`:
   intended; P4 maps each settle to its own Synara turn, because approving a plan starts one.
 - After a restart P4 passes one resume watermark, the last run it signalled (`turnId`,
   `runMessageId`). That run and every turn before it on the first turns page count as signalled,
-  so history does not settle again. A message still streaming across a restart is re-sent from
-  its start (there is no per-message seed).
+  so history does not settle again. There is no per-message seed, so a message streaming across
+  a restart is not continued safely: Synara appends deltas and uses the completion text only for
+  an empty message. If it is still open, it is re-sent whole under a new delta id (the text
+  repeats); if it closed while Synara was down, only its completion arrives (the text stays cut
+  short). P4's restart-mid-turn test must cover this, and P4 must repair the message on reattach
+  or P3 must take the lengths Synara holds back as a second input.
 - Questions (`awaiting_input.kind = "questions"`) are `user-input.requested` inside the turn and do
   not settle it. A plan (`kind = "plan"`) is `turn.proposed.completed` and settles the run as
   `awaiting_input(plan)`, matching Synara's plan flow. The recordings carry no input digest; the
@@ -259,16 +263,16 @@ order of magnitude, to be re-estimated after P3.
 Sequential merges, each green on Synara's own bar (`bun run fmt:check`, `lint`, `typecheck`,
 affected `bun run test`; `windows-runtime:check` / `migrations:check` where relevant).
 
-| PR  | Scope                                                                                                                                                                                                           | Verify                                                                                        |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| P0  | Fork CI bootstrap: PR CI runs green on the fork; note jobs that need upstream secrets                                                                                                                           | CI green on a no-op PR                                                                        |
-| P1  | Provider skeleton: `"aether"` in every exhaustive site + the silent-misroute list, settings + secret-store API key, `/profile` health check, static catalog (current models), adapter whose methods fail loudly | typecheck; a test per silent-misroute site; settings round-trip                               |
-| P2  | REST client + schemas on current API (or generated from OpenAPI — AS5)                                                                                                                                          | decode tests against recorded current responses                                               |
-| P3  | Ingestion: poll loop + row→event mapper + deterministic ids + truncation                                                                                                                                        | mapper fixture tests; replay idempotence                                                      |
-| P4  | Lifecycle: project resolution, preflight, create/respond/steer/stop, questions/plans, durable settlement, reattach, startup-reconciliation exemption, idempotent detach                                         | adapter tests with a fake API; restart-mid-turn test                                          |
-| P5  | Mirror sync + ownership marker + `withMutation` guard + file-write/revert guards + `GitCore` stdin                                                                                                              | real-git mirror tests; concurrent-mutation refusal tests                                      |
-| P6  | Capability gating (goals, sidechats, computer/browser, automations, rollback) + web UX (icon, settings card, picker, worktree default, hidden handoff items)                                                    | web tests; `uiFontSize` guard                                                                 |
-| P7  | Live E2E against Aether prod from an isolated Synara home                                                                                                                                                       | one real task: stream, question, settle, diff renders, revert refused, reattach after restart |
+| PR  | Scope                                                                                                                                                                                                           | Verify                                                                                                 |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| P0  | Fork CI bootstrap: PR CI runs green on the fork; note jobs that need upstream secrets                                                                                                                           | CI green on a no-op PR                                                                                 |
+| P1  | Provider skeleton: `"aether"` in every exhaustive site + the silent-misroute list, settings + secret-store API key, `/profile` health check, static catalog (current models), adapter whose methods fail loudly | typecheck; a test per silent-misroute site; settings round-trip                                        |
+| P2  | REST client + schemas on current API (or generated from OpenAPI — AS5)                                                                                                                                          | decode tests against recorded current responses                                                        |
+| P3  | Ingestion: poll loop + row→event mapper + deterministic ids + truncation                                                                                                                                        | mapper fixture tests; replay idempotence                                                               |
+| P4  | Lifecycle: project resolution, preflight, create/respond/steer/stop, questions/plans, durable settlement, reattach, startup-reconciliation exemption, idempotent detach                                         | adapter tests with a fake API; restart-mid-turn test, including a message streaming across the restart |
+| P5  | Mirror sync + ownership marker + `withMutation` guard + file-write/revert guards + `GitCore` stdin                                                                                                              | real-git mirror tests; concurrent-mutation refusal tests                                               |
+| P6  | Capability gating (goals, sidechats, computer/browser, automations, rollback) + web UX (icon, settings card, picker, worktree default, hidden handoff items)                                                    | web tests; `uiFontSize` guard                                                                          |
+| P7  | Live E2E against Aether prod from an isolated Synara home                                                                                                                                                       | one real task: stream, question, settle, diff renders, revert refused, reattach after restart          |
 
 v2: cloud terminal, port previews, live subagent transcripts, usage/spend, VM size picker.
 

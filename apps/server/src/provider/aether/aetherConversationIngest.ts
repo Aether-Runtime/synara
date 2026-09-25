@@ -263,7 +263,10 @@ function questionsFromInput(
   return Result.succeed(questions);
 }
 
-/** Answer labels by question id, from the `ask_user` response that answered `questions`. */
+/**
+ * Answer labels by question id, from the `ask_user` response that answered `questions`. Option
+ * index `-1` selects the question's custom ("Other") answer from `customAnswers`.
+ */
 function answersFromResponse(
   questions: ReadonlyArray<UserInputQuestion>,
   response: ToolResponse,
@@ -283,14 +286,17 @@ function answersFromResponse(
   for (const question of questions) {
     const labels: string[] = [];
     for (const choice of choices[question.id] ?? []) {
-      const label = question.options[choice]?.label;
+      const label =
+        choice === -1 ? nonEmpty(customAnswers[question.id]) : question.options[choice]?.label;
       if (label === undefined) {
-        return Result.fail(`question ${question.id} has no option ${choice}`);
+        return Result.fail(
+          choice === -1
+            ? `question ${question.id} selects a custom answer but has none`
+            : `question ${question.id} has no option ${choice}`,
+        );
       }
       labels.push(label);
     }
-    const custom = customAnswers[question.id]?.trim();
-    if (custom !== undefined && custom !== "") labels.push(custom);
     if (!question.multiSelect && labels.length > 1) {
       return Result.fail(`question ${question.id} takes one answer and got ${labels.length}`);
     }
@@ -410,7 +416,8 @@ export class AetherConversationIngest {
    * `resumeAfter` is the last run the adapter signalled before a restart: that run, and every
    * turn listed before its turn on the first turns page, count as signalled, so history does not
    * settle again. If its turn is not on that page (the conversation was truncated past it), every
-   * turn there counts.
+   * turn there counts. There is no per-message seed: a message streaming across a restart repeats
+   * or stays cut short unless the adapter repairs it (see the plan's P4 acceptance).
    */
   constructor(context: AetherIngestContext, resumeAfter?: AetherRunKey) {
     this.context = context;
