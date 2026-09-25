@@ -130,6 +130,11 @@ picker is open) restores the whole combination. A task that has started stays on
 that provider's tab and starred entries are offered. Supported provider executables can be pointed
 at custom binary locations.
 
+A cloud provider's models share their names with the local runtimes, so the model button names the
+provider first, for example `Aether · Claude Opus 5.5`. With the effort slider, picking a model
+keeps the effort the slider showed when the new model offers it; otherwise the slider stays open on
+the model's default.
+
 Starred models absent from the current catalog remain saved and can be removed, but cannot be
 selected. They become selectable again when discovery or custom model settings add them to the
 catalog.

@@ -309,12 +309,26 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
     // the current model again is the "done" gesture, so both close.
     const keepOpen =
       usesEffortSlider && row.preset === null && !row.selected && selection.effortLevels.length > 0;
+    // The footer slider showed the composer's effort while the row was browsed, of any
+    // provider: the pick keeps it when the model offers it, else the model's default shows
+    // on the slider that stays open.
+    const keptEffort =
+      keepOpen && currentTraitSelection.effort !== null
+        ? planComposerEffortChange({
+            provider: row.provider,
+            selection,
+            prompt: promptFor(row.provider),
+            value: currentTraitSelection.effort,
+          })
+        : null;
     commitRow(
       row,
       model,
       row.preset
         ? buildStarredModelOptionsPatch({ provider: row.provider, selection, starred: row.preset })
-        : {},
+        : keptEffort?.kind === "options"
+          ? keptEffort.patch
+          : {},
       keepOpen,
     );
   };

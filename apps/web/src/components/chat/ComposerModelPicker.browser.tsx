@@ -30,6 +30,7 @@ const THREAD_ID = ThreadId.makeUnsafe("thread-composer-model-picker");
 const GPT_5_5 = "gpt-5.5" as ModelSlug;
 const GPT_5_4 = "gpt-5.4" as ModelSlug;
 const SONNET = "claude-sonnet-4-6" as ModelSlug;
+const AETHER_OPUS = "claude-opus-5-5" as ModelSlug;
 
 const EMPTY_BY_PROVIDER: Record<ProviderKind, never[]> = {
   claudeAgent: [],
@@ -51,6 +52,7 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<ProviderKind, ReadonlyArray<ProviderMode
     { slug: GPT_5_4, name: "GPT-5.4", description: "Previous generation" },
   ],
   claudeAgent: [{ slug: SONNET, name: "Claude Sonnet 4.6" }],
+  aether: [{ slug: AETHER_OPUS, name: "Claude Opus 5.5" }],
 };
 
 function readyProvider(provider: ProviderKind): ServerProviderStatus {
@@ -64,6 +66,7 @@ function readyProvider(provider: ProviderKind): ServerProviderStatus {
 }
 
 type HarnessProps = {
+  provider?: ProviderKind;
   lockedProvider?: ProviderKind | null;
   modelOptionsByProvider?: React.ComponentProps<
     typeof ComposerModelPicker
@@ -73,26 +76,27 @@ type HarnessProps = {
 };
 
 function Harness(props: HarnessProps) {
+  const provider = props.provider ?? "codex";
   const prompt = useComposerThreadDraft(THREAD_ID).prompt;
   const setPrompt = useComposerDraftStore((store) => store.setPrompt);
   const { modelOptions, selectedModel } = useEffectiveComposerModelState({
     threadId: THREAD_ID,
-    selectedProvider: "codex",
+    selectedProvider: provider,
     threadModelSelection: null,
     projectModelSelection: null,
     customModelsByProvider: EMPTY_BY_PROVIDER,
   });
   return (
     <ComposerModelPicker
-      provider="codex"
+      provider={provider}
       model={(selectedModel ?? GPT_5_5) as ModelSlug}
       lockedProvider={props.lockedProvider ?? null}
       effortControl={props.effortControl ?? "menu"}
-      providers={[readyProvider("codex"), readyProvider("claudeAgent")]}
+      providers={[readyProvider("codex"), readyProvider("claudeAgent"), readyProvider("aether")]}
       modelOptionsByProvider={props.modelOptionsByProvider ?? MODEL_OPTIONS_BY_PROVIDER}
       onProviderModelChange={props.onProviderModelChange ?? vi.fn()}
       threadId={THREAD_ID}
-      modelOptions={modelOptions?.codex}
+      modelOptions={modelOptions?.[provider]}
       prompt={prompt}
       onPromptChange={(next) => setPrompt(THREAD_ID, next)}
     />
@@ -358,7 +362,10 @@ describe("ComposerModelPicker", () => {
       expect(page.getByRole("menuitemradio").elements()).toHaveLength(0);
 
       await otherModel.click();
-      expect(onProviderModelChange).toHaveBeenCalledWith("codex", GPT_5_4);
+      // The pick keeps the effort the footer showed.
+      expect(onProviderModelChange).toHaveBeenCalledWith("codex", GPT_5_4, {
+        modelOptions: { reasoningEffort: "medium" },
+      });
       const slider = page.getByRole("slider", { name: "Reasoning effort" });
       await expect.element(slider).toBeVisible();
       await expect.element(otherModel).toHaveAttribute("aria-current", "true");
@@ -366,6 +373,57 @@ describe("ComposerModelPicker", () => {
       // Picking the model that is already current is the "done" gesture.
       await otherModel.click();
       await expect.element(slider).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps the footer's effort when a model of another provider is picked in slider mode", async () => {
+    const onProviderModelChange = vi.fn();
+    const screen = await mountPicker(
+      { effortControl: "slider", onProviderModelChange },
+      { reasoningEffort: "medium" },
+    );
+    try {
+      await page.getByRole("tab", { name: "Aether" }).click();
+      const slider = page.getByRole("slider", { name: "Reasoning effort" });
+      await expect.element(slider).toHaveAttribute("aria-valuetext", "Medium");
+
+      await page.getByRole("menuitem", { name: /Claude Opus 5\.5/u }).click();
+      expect(onProviderModelChange).toHaveBeenCalledWith("aether", AETHER_OPUS, {
+        modelOptions: { reasoningEffort: "medium" },
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("names a cloud provider on the trigger, ahead of the model", async () => {
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "aether",
+      model: AETHER_OPUS,
+      options: { reasoningEffort: "high" },
+    });
+    const screen = await render(<Harness provider="aether" lockedProvider="aether" />);
+    try {
+      const trigger = page.getByRole("button", { name: "Change model and reasoning" });
+      await expect.element(trigger).toHaveTextContent("Aether · Claude Opus 5.5");
+      await expect.element(trigger).toHaveTextContent("High");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("names only the model for a local provider", async () => {
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: GPT_5_5,
+    });
+    const screen = await render(<Harness />);
+    try {
+      const trigger = page.getByRole("button", { name: "Change model and reasoning" });
+      await expect.element(trigger).toHaveTextContent("GPT-5.5");
+      expect(trigger.element().textContent).not.toContain("·");
     } finally {
       await screen.unmount();
     }
