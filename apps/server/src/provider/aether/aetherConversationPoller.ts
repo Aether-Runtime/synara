@@ -9,8 +9,10 @@
 // to a fork of the ingest and emitted only once every read in it succeeded: a failed tick
 // changes nothing, so the next tick (or the next `wake`) derives the same outputs again.
 //
-// The loop ticks while a run executes, the task is busy, a question or plan waits on an answer,
-// or a turn has not ended and been signalled; otherwise it goes idle until `wake`. A transport failure backs off (1 s,
+// The loop ticks while a run executes, the task is busy, or a turn has not ended and been
+// signalled; otherwise it goes idle until `wake`. A question or plan waiting on an answer idles
+// it too, once surfaced: the adapter wakes it when it sends the answer or reattaches, so an
+// answer given in Aether's own UI shows at the next wake. A transport failure backs off (1 s,
 // doubling to 10 s) with one warning while degraded; an outage longer than two minutes, or an
 // error retrying cannot fix, stops the loop with a typed failure until the next `wake`.
 

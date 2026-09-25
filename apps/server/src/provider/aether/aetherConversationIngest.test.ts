@@ -918,6 +918,29 @@ describe("AetherConversationIngest: polling state", () => {
     expect(ingest.shouldKeepPolling()).toBe(false);
   });
 
+  it("goes idle while a surfaced question or plan waits on the user, not before", () => {
+    const asking = makeIngest();
+    live(asking, liveBody());
+    const question = turnsBody(askingTask("q1"), [turn({ state: "awaiting_input" })]);
+    asking.applyTurns(Schema.decodeUnknownSync(AetherConversationTurnsPage)(question));
+    // Not surfaced yet: the turn that asked it has not been read.
+    expect(asking.shouldKeepPolling()).toBe(true);
+    refresh(asking, question, { [TURN_ID]: activityBody([askRow("q1")]) });
+    expect(asking.shouldKeepPolling()).toBe(false);
+
+    const planning = makeIngest();
+    live(planning, liveBody());
+    const planTask = taskBody("processing", {
+      status: "awaiting_input",
+      awaiting_input: { kind: "plan", tool_id: "toolu_plan", input: { plan: "1. Edit" } },
+    });
+    const outputs = refresh(planning, turnsBody(planTask, [turn({ state: "awaiting_input" })]), {
+      [TURN_ID]: activityBody([toolRow("toolu_plan", { name: "propose_plan" })]),
+    });
+    expect(tags(outputs)).toContain("TurnSettled");
+    expect(planning.shouldKeepPolling()).toBe(false);
+  });
+
   it("pages back through a turn it never read, and only as far as needed afterwards", () => {
     const ingest = makeIngest();
     ingest.applyTurns(

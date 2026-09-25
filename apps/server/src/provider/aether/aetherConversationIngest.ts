@@ -233,7 +233,8 @@ function toolStatus(status: AetherToolStatus): ToolStatus {
 // Input decoding
 // ---------------------------------------------------------------------------
 
-const AskUserInput = Schema.Struct({
+/** An `ask_user` call's input: the adapter maps answers back onto its option indexes. */
+export const AskUserInput = Schema.Struct({
   questions: Schema.Array(
     Schema.Struct({
       question: Schema.String,
@@ -468,16 +469,23 @@ export class AetherConversationIngest {
   }
 
   /**
-   * Whether the task still has work to watch: an executing run, a busy task, a question or plan
-   * waiting on an answer, a turn still running, a run not signalled yet, or data not read yet.
+   * Whether the task still has work to watch: an executing run, a busy task, a turn still
+   * running, a run not signalled yet, or data not read yet. A question or plan already surfaced
+   * is not: nothing changes on the server until someone answers, so the loop idles until the
+   * adapter wakes it (it sent the answer, or it reattached).
    */
   shouldKeepPolling(): boolean {
     const { executing, open, turnsRefreshPending, task, turnOrder, turns } = this.state;
     if (executing || open.length > 0 || turnsRefreshPending) return true;
-    if (this.turnsNeedingActivity().length > 0 || this.awaitingAnswer() !== undefined) return true;
+    if (this.turnsNeedingActivity().length > 0) return true;
+    const awaiting = this.awaitingAnswer();
+    if (awaiting !== undefined && !this.state.surfacedToolIds.has(awaiting.tool_id)) return true;
     if (task === undefined || task.status === "queued" || task.status === "processing") return true;
     return turnOrder.some((id) => {
       const turn = turns.get(id)!;
+      if (turn.state === "awaiting_input" && awaiting !== undefined) {
+        return awaiting.kind === "plan" && !this.isSignalled(turn);
+      }
       return (turn.state !== "settled" && turn.state !== "errored") || !this.isSignalled(turn);
     });
   }
