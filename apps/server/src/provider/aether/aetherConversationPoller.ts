@@ -18,7 +18,9 @@
 // waits on the user and nothing runs, it reads `/live` every 15 s instead, so an answer given
 // in Aether's own UI shows within one slow tick; `wake` (the adapter sent an answer) ticks at
 // once. Once idle, while the task's open pull request has CI or an Aether Review running, it
-// reads the task (a one-turn page) once a minute, so the thread's PR shows them settle. A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
+// reads the task (a one-turn page) once a minute, so the thread's PR shows them settle. After each
+// tick it hands over the task as the ingest then holds it (`TaskUpdated`): settling a run reads
+// the task again, and hands that newer read back (`noteTask`). A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
 // an outage longer than two minutes, or an error retrying cannot fix, stops the loop with a
 // typed failure until the next `wake`.
 
@@ -26,6 +28,7 @@ import { Cause, Clock, Effect, Latch, Option, Schema, Scope } from "effect";
 
 import type { AetherApiError } from "./aetherApiErrors.ts";
 import type {
+  AetherConversationTurnsPage,
   AetherTask,
   AetherTimelineMessage,
   AetherTurnActivityPage,
@@ -135,6 +138,8 @@ export interface AetherConversationPollerOptions {
 export interface AetherConversationPoller {
   /** Polls now if idle, after a turn is sent or on reattach; keeps an active loop going. */
   readonly wake: Effect.Effect<void>;
+  /** A turns page the consumer read itself: see `AetherConversationIngest.noteTask`. */
+  readonly noteTask: (page: AetherConversationTurnsPage) => Effect.Effect<void>;
 }
 
 type TickFailure =
@@ -165,6 +170,8 @@ export const makeAetherConversationPoller = (
     let ingest = new AetherConversationIngest(context, options.resume);
     const wakeLatch = yield* Latch.make(false);
     const wakeState = { graceUntil: 0, sawActive: false };
+    /** The task last handed over (`TaskUpdated`), as JSON. */
+    let emittedTask: string | undefined;
 
     const readActivity = (draft: AetherConversationIngest, turnId: AetherTurnId) =>
       Effect.gen(function* () {
@@ -195,7 +202,6 @@ export const makeAetherConversationPoller = (
       Effect.gen(function* () {
         const draft = ingest.fork();
         const outputs: AetherPollerOutput[] = [];
-        const before = draft.task();
         const readTurns = client.getConversationTurns(context.taskId, {
           limit: AETHER_TURNS_PAGE_LIMIT,
         });
@@ -215,11 +221,6 @@ export const makeAetherConversationPoller = (
           outputs.push(...(yield* draft.applyActivity(turnId, items, revision, observedAt)));
         }
         outputs.push(...(yield* draft.finishRefresh(observedAt)));
-        // Last: the task as the tick leaves it, after the rows that led to it.
-        const task = draft.task();
-        if (task !== undefined && JSON.stringify(task) !== JSON.stringify(before)) {
-          outputs.push({ _tag: "TaskUpdated", task });
-        }
         ingest = draft;
         return outputs;
       });
@@ -235,6 +236,14 @@ export const makeAetherConversationPoller = (
         const exit = yield* Effect.exit(tick(new Date(now).toISOString()));
         if (exit._tag === "Success") {
           yield* Effect.forEach(exit.value, emit, { discard: true });
+          // Last, and as the ingest holds it after the outputs: settling a run may have handed
+          // over a newer read (`noteTask`) than the tick's own.
+          const task = ingest.task();
+          const taskJson = JSON.stringify(task);
+          if (task !== undefined && taskJson !== emittedTask) {
+            emittedTask = taskJson;
+            yield* emit({ _tag: "TaskUpdated", task });
+          }
           backoffMs = AETHER_POLL_BACKOFF_INITIAL_MS;
           failingSince = undefined;
           if (ingest.shouldKeepPolling()) {
@@ -311,6 +320,7 @@ export const makeAetherConversationPoller = (
     );
 
     return {
+      noteTask: (page) => Effect.sync(() => ingest.noteTask(page)),
       wake: Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         wakeState.graceUntil = now + AETHER_POLL_WAKE_GRACE_MS;

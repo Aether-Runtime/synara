@@ -684,6 +684,8 @@ export const makeAetherAdapter = (
       Effect.gen(function* () {
         const { cursor } = task;
         const page = yield* client.getConversationTurns(cursor.taskId, { limit: 1 });
+        // Newer than the poll loop's own read of the task: it keeps the newer one.
+        yield* task.poller.noteTask(page);
         const outcome = yield* Effect.gen(function* () {
           const workspaceId = page.task.run_context?.workspace_id;
           if (workspaceId === undefined) return deferred("the task has no workspace yet");

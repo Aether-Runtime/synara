@@ -538,6 +538,21 @@ export class AetherConversationIngest {
     this.state.taskReadPending = true;
   }
 
+  /**
+   * A turns page read outside the loop (the adapter's own, while settling a run): its task
+   * replaces the one held when the page is current. A page with a newer head makes the loop
+   * read the turns again; an older one is dropped.
+   */
+  noteTask(page: AetherConversationTurnsPage): void {
+    const state = this.state;
+    if (state.lastLiveHead === undefined || page.head_revision < state.lastLiveHead) return;
+    if (page.head_revision > state.lastLiveHead) {
+      state.turnsRefreshPending = true;
+      return;
+    }
+    state.task = page.task;
+  }
+
   /** Whether a surfaced question or plan waits on the user. */
   waitsOnUser(): boolean {
     const awaiting = this.awaitingAnswer();
