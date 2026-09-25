@@ -54,6 +54,7 @@ import {
   Scope,
   Stream,
 } from "effect";
+import { PROVIDER_DESCRIPTOR_BY_KIND } from "@synara/shared/providerMetadata";
 import { nonEmptyTrimmed } from "@synara/shared/text";
 import { computerApprovalGate } from "../../computer/ComputerApprovalGate.ts";
 
@@ -2724,7 +2725,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               }
             }
 
-            rotationStarted = input.providerThreadId === undefined;
+            // A CLI runtime is stopped after the interrupt and its gateway credential rotated. A
+            // cloud provider's session has neither a local process nor a gateway credential: it
+            // only follows the turn, so it stays and delivers the stopped turn's completion
+            // under the current generation.
+            const rotatesRuntime =
+              input.providerThreadId === undefined &&
+              PROVIDER_DESCRIPTOR_BY_KIND[routed.adapter.provider].runtime === "cli";
+            rotationStarted = rotatesRuntime;
             yield* routed.adapter.interruptTurn(
               input.threadId,
               TurnId.makeUnsafe(providerTurnId),
@@ -2736,6 +2744,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 state: "confirmed",
               });
             }
+            return rotatesRuntime;
           }),
         );
         return yield* Effect.uninterruptible(
@@ -2745,15 +2754,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             // is blocked, deferred interruption must not skip resolve/delete.
             const fence = yield* acquireProviderInterruptionFence(input.threadId);
             const rotationExit = yield* Effect.exit(
-              input.providerThreadId === undefined
-                ? interruptActiveTurn.pipe(
-                    Effect.andThen(
-                      stopRuntimeSessionInternal({ threadId: input.threadId }, undefined, {
+              interruptActiveTurn.pipe(
+                Effect.flatMap((rotatesRuntime) =>
+                  rotatesRuntime
+                    ? stopRuntimeSessionInternal({ threadId: input.threadId }, undefined, {
                         requireAgentGatewayCredentialRotation: true,
-                      }),
-                    ),
-                  )
-                : interruptActiveTurn,
+                      })
+                    : Effect.void,
+                ),
+              ),
             );
             if (Exit.isFailure(rotationExit)) {
               if (rotationStarted) {

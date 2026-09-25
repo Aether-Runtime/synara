@@ -137,11 +137,6 @@ interface SessionBase {
    */
   lifecycleGeneration: string | undefined;
   updatedAt: string;
-  /**
-   * A stop came while a turn was in flight (ProviderService stops the session after every
-   * interrupt): the session keeps following the task until that turn completes, then stops.
-   */
-  stopAfterTurn: boolean;
 }
 
 interface Session extends SessionBase {
@@ -437,8 +432,6 @@ export const makeAetherAdapter = (
           type: "turn.completed",
           payload: { state, ...(errors.length === 0 ? {} : { errorMessage: errors.join("\n\n") }) },
         });
-        // Outside the session's scope: this may run on its poll loop.
-        if (session.stopAfterTurn) yield* detach(session).pipe(Effect.forkIn(adapterScope));
       });
 
     // -----------------------------------------------------------------------
@@ -759,7 +752,6 @@ export const makeAetherAdapter = (
           lock: yield* Semaphore.make(1),
           claim,
           lifecycleGeneration: input.lifecycleGeneration,
-          stopAfterTurn: false,
         };
         const state: Creating | Task =
           cursor.status === "creating"
@@ -787,27 +779,16 @@ export const makeAetherAdapter = (
           : run(session);
       });
 
-    /** Stops following the task; it keeps running in the cloud. */
-    const detach = (session: SessionBase) =>
-      Effect.suspend(() => {
-        if (sessions.get(session.threadId) === session) sessions.delete(session.threadId);
-        return Scope.close(session.scope, Exit.void);
-      });
-
     /**
-     * Detaches, once no turn is in flight: a turn in flight completes only after its run
-     * settles and is mirrored, so until then the session keeps following it and reports it.
+     * Stops following the task; it keeps running in the cloud. ProviderService does not stop a
+     * cloud provider's session after an interrupt, so the stopped turn still completes here.
      */
     const stopSession: AetherAdapterShape["stopSession"] = (threadId) =>
       Effect.suspend(() => {
         const session = sessions.get(threadId);
         if (session === undefined) return Effect.void;
-        const { state } = session;
-        if (state._tag === "Task" && activeTurnId(state.cursor) !== null) {
-          session.stopAfterTurn = true;
-          return Effect.void;
-        }
-        return detach(session);
+        sessions.delete(threadId);
+        return Scope.close(session.scope, Exit.void);
       });
 
     // -----------------------------------------------------------------------
@@ -1096,8 +1077,6 @@ export const makeAetherAdapter = (
             if (input.cwd !== existing.state.cursor.worktreePath) {
               return yield* invalid("startSession", "The Aether thread's worktree changed.");
             }
-            // Wanted again: a stop that waited on the turn in flight no longer applies.
-            existing.stopAfterTurn = false;
             existing.lifecycleGeneration = input.lifecycleGeneration;
             return snapshot(existing);
           }
@@ -1292,7 +1271,7 @@ export const makeAetherAdapter = (
       rollbackThread: () =>
         notSupported("rollbackThread", "Aether cannot roll back a task's conversation."),
       stopSession,
-      stopAll: () => Effect.forEach([...sessions.values()], detach, { discard: true }),
+      stopAll: () => Effect.forEach([...sessions.keys()], stopSession, { discard: true }),
       listSessions: () => Effect.sync(() => [...sessions.values()].map(snapshot)),
       hasSession: (threadId) => Effect.sync(() => sessions.has(threadId)),
       streamEvents: Stream.fromQueue(events),

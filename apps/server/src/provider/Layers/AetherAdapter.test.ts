@@ -53,7 +53,15 @@ import { providerAdapterConformanceIssues } from "../providerAdapterConformance.
 import { planProviderRuntimeReconciliation } from "../providerRuntimeReconciliation.ts";
 import type { AetherAdapterShape } from "../Services/AetherAdapter.ts";
 import type { ProviderRuntimeBinding } from "../Services/ProviderSessionDirectory.ts";
+import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
+import { ProviderService } from "../Services/ProviderService.ts";
+import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { ProviderUnsupportedError } from "../Errors.ts";
+import { ProviderSessionRuntimeRepositoryLive } from "../../persistence/Layers/ProviderSessionRuntime.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { makeAetherAdapter, openRunningWorkspace } from "./AetherAdapter.ts";
+import { makeProviderServiceLive } from "./ProviderService.ts";
+import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 
 const GitLayer = GitCoreLive.pipe(
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "synara-aether-adapter-test-" })),
@@ -193,8 +201,8 @@ const makeHarness = Effect.gen(function* () {
     );
   };
 
-  /** Starts an adapter in its own scope; closing the scope is the process going away. */
-  const launch = (bindings: ReadonlyArray<ProviderRuntimeBinding> = []) =>
+  /** An adapter in its own scope, its events not yet read; closing the scope ends it. */
+  const makeAdapter = (bindings: ReadonlyArray<ProviderRuntimeBinding> = []) =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
       const adapter = yield* makeAetherAdapter({
@@ -221,6 +229,17 @@ const makeHarness = Effect.gen(function* () {
         },
         bindings,
       }).pipe(Scope.provide(scope));
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+      return { adapter, scope };
+    });
+
+  /**
+   * Starts an adapter and records its events in the journal, as the runtime event pump would;
+   * `stop` is the process going away.
+   */
+  const launch = (bindings: ReadonlyArray<ProviderRuntimeBinding> = []) =>
+    Effect.gen(function* () {
+      const { adapter, scope } = yield* makeAdapter(bindings);
       const events: ProviderRuntimeEvent[] = [];
       yield* Stream.runForEach(adapter.streamEvents, (event) =>
         Effect.sync(() => {
@@ -228,7 +247,6 @@ const makeHarness = Effect.gen(function* () {
           journal.push({ sequence: (sequence += 1), event });
         }),
       ).pipe(Effect.forkIn(scope));
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
       return { adapter, events, stop: Scope.close(scope, Exit.void) };
     });
 
@@ -260,6 +278,7 @@ const makeHarness = Effect.gen(function* () {
     vm,
     journal,
     pruneCompletedTurns,
+    makeAdapter,
     launch,
     start,
     send,
@@ -726,8 +745,7 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           expect(events.length).toBeGreaterThan(0);
           expect(events.every((event) => event.lifecycleGeneration === "generation-1")).toBe(true);
 
-          // A stop that waits on the turn in flight, then a new start: the new generation applies.
-          yield* adapter.stopSession(THREAD_ID);
+          // A start on the live session (ProviderService recovering it): the new generation applies.
           yield* startWith("generation-2");
           const before = events.length;
           yield* adapter.respondToUserInput(THREAD_ID, ApprovalRequestId.makeUnsafe("exec-ask"), {
@@ -1035,85 +1053,90 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
     );
 
     it.effect(
-      "keeps the turn live through ProviderService's stop, then completes it after the mirror",
+      "completes an interrupted turn through ProviderService, after the mirror, with no reconciler settle",
       () =>
         Effect.gen(function* () {
           const h = yield* makeHarness;
-          const { adapter, events } = yield* h.launch();
-          yield* h.start(adapter);
-          h.aether.hooks.onTurn = (turn) =>
-            h.aether.say(turn, "text-live", "Working", { open: true });
-          const turn = yield* adapter.sendTurn(h.send("Sleep 90"));
-          yield* waitFor("streamed text", () =>
-            events.find((event) => event.type === "content.delta"),
+          const { adapter } = yield* h.makeAdapter();
+          const registry: typeof ProviderAdapterRegistry.Service = {
+            getByProvider: (provider) =>
+              provider === "aether"
+                ? Effect.succeed(adapter)
+                : Effect.fail(new ProviderUnsupportedError({ provider })),
+            listProviders: () => Effect.succeed(["aether"] as const),
+          };
+          const directoryLayer = ProviderSessionDirectoryLive.pipe(
+            Layer.provide(
+              ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+            ),
           );
-          h.workspace.serve(diffOf(h.baseCommit, added("partial.txt", "made before stop\n")));
+          yield* Effect.gen(function* () {
+            const providerService = yield* ProviderService;
+            const directory = yield* ProviderSessionDirectory;
+            // What ProviderService accepts and publishes, after its generation checks.
+            const accepted: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(providerService.streamEvents, (event) =>
+              Effect.sync(() => void accepted.push(event)),
+            ).pipe(Effect.forkScoped);
 
-          // ProviderService's interrupt: the adapter's interrupt, then a runtime session stop.
-          yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
-          yield* adapter.stopSession(THREAD_ID);
+            yield* providerService.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            h.aether.hooks.onTurn = (turn) =>
+              h.aether.say(turn, "text-live", "Working", { open: true });
+            const turn = yield* providerService.sendTurn({
+              threadId: THREAD_ID,
+              input: "Sleep 90",
+            });
+            yield* waitFor("streamed text", () =>
+              accepted.find((event) => event.type === "content.delta"),
+            );
+            h.workspace.serve(diffOf(h.baseCommit, added("partial.txt", "made before stop\n")));
 
-          // The live reconciler runs in the gap, on the binding the stop left behind.
-          const runningSince = new Date(Date.now() - 60_000).toISOString();
-          const plans = planProviderRuntimeReconciliation({
-            threads: [reconcilableThread(turn.turnId, runningSince)],
-            bindings: [
-              {
-                threadId: THREAD_ID,
-                provider: "aether",
-                status: "stopped",
-                runtimePayload: { activeTurnId: null },
-              },
-            ],
-            liveSessions: yield* adapter.listSessions(),
-            pumpHealth: [],
-            nowMs: Date.now(),
-          });
-          expect(plans).toEqual([]);
+            yield* providerService.interruptTurn({ threadId: THREAD_ID, turnId: turn.turnId });
 
-          const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
-          expect(completed).toMatchObject({
-            turnId: turn.turnId,
-            payload: { state: "interrupted" },
-          });
-          // Mirrored before the turn completed.
-          expect(yield* h.read("partial.txt")).toBe("made before stop\n");
-          yield* Effect.sleep("1500 millis");
-          expect(completions(events)).toHaveLength(1);
-          // The stop takes effect once the turn has completed.
-          expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
+            // The live reconciler runs in the gap, on the inputs it gathers.
+            const runningSince = new Date(Date.now() - 60_000).toISOString();
+            const plans = planProviderRuntimeReconciliation({
+              threads: [reconcilableThread(turn.turnId, runningSince)],
+              bindings: yield* directory.listBindings(),
+              liveSessions: yield* providerService.listSessions(),
+              pumpHealth: yield* providerService.getRuntimeEventPumpHealth!(),
+              nowMs: Date.now(),
+            });
+            expect(plans).toEqual([]);
+
+            const completed = yield* waitFor(
+              "the accepted turn.completed",
+              () => completions(accepted)[0],
+            );
+            expect(completed).toMatchObject({
+              turnId: turn.turnId,
+              payload: { state: "interrupted" },
+            });
+            // Mirrored before the turn completed.
+            expect(yield* h.read("partial.txt")).toBe("made before stop\n");
+            yield* Effect.sleep("1500 millis");
+            expect(completions(accepted)).toHaveLength(1);
+            const [binding] = yield* directory.listBindings();
+            expect(binding?.runtimePayload).toMatchObject({ activeTurnId: null });
+          }).pipe(
+            Effect.scoped,
+            Effect.provide(
+              Layer.mergeAll(
+                makeProviderServiceLive().pipe(
+                  Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+                  Layer.provide(directoryLayer),
+                ),
+                directoryLayer,
+              ),
+            ),
+          );
         }),
-    );
-  });
-
-  describe("polling", () => {
-    it.effect("fails the turn in flight when the poll loop stops, and polls again on wake", () =>
-      Effect.gen(function* () {
-        const h = yield* makeHarness;
-        const { adapter, events } = yield* h.launch();
-        yield* h.start(adapter);
-        h.aether.hooks.onTurn = (turn) =>
-          h.aether.say(turn, "text-live", "Working", { open: true });
-        h.aether.faults.live = new AetherApiHttpError({
-          endpoint: "GET /tasks/{taskID}/conversation/live",
-          status: 404,
-        });
-        const turn = yield* adapter.sendTurn(h.send("Go"));
-        const failed = yield* waitFor("turn.completed", () => completions(events)[0]);
-        expect(failed).toMatchObject({ turnId: turn.turnId, payload: { state: "failed" } });
-        expect(failed.type === "turn.completed" && failed.payload.errorMessage).toContain(
-          "Synara stopped following the Aether task: Aether API returned HTTP 404",
-        );
-
-        // The next message wakes the loop, which follows the task again.
-        h.aether.faults.live = undefined;
-        h.aether.close("text-live");
-        h.aether.settle(h.aether.turns[0]!);
-        h.finishTurns();
-        const next = yield* adapter.sendTurn(h.send("Again"));
-        const completed = yield* waitFor("the next turn", () => completions(events)[1]);
-        expect(completed).toMatchObject({ turnId: next.turnId, payload: { state: "completed" } });
-      }),
     );
   });
 

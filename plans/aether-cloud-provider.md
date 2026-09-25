@@ -142,10 +142,12 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   15 s instead of every second, so an answer given in Aether's own UI shows within 15 s; sending
   an answer wakes it at once.
 - A turn completes exactly once: when its run settles, after the mirror; when the poll loop stops
-  (failed); or on a stop that discards it before it ran (interrupted). `stopSession` detaches at
-  once only when no turn is in flight; otherwise (ProviderService stops the session after every
-  interrupt) the session keeps following the task and reporting the turn as running, so the live
-  reconciler leaves it alone, and detaches once the turn has completed. The settle records `after`
+  (failed); or on a stop that discards it before it ran (interrupted). ProviderService stops a
+  local runtime after every interrupt (and rotates its gateway credential); for a provider whose
+  descriptor says `runtime: "cloud"` it keeps the session and its lifecycle generation instead: the
+  session goes on reporting the stopped turn as running, so the live reconciler leaves it alone,
+  and the turn's `turn.completed(interrupted)` arrives after its mirror under the current
+  generation. The settle records `after`
   and clears `active` in the cursor first. If the workspace is not running (starting, or its
   connect refused for its state) the turn completes and `mirrorPending` mirrors at the next turn
   start, from inside `sendTurn`, after the reactor's start checkpoint; any other mirror failure
