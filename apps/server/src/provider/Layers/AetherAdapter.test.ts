@@ -283,7 +283,7 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         yield* Effect.sleep("1500 millis");
         expect(completions(events)).toHaveLength(1);
         const [idle] = yield* adapter.listSessions();
-        expect(idle).toMatchObject({ status: "ready", resumeCursor: { activeTurnId: null } });
+        expect(idle).toMatchObject({ status: "ready", resumeCursor: { active: false } });
         expect(idle?.activeTurnId).toBeUndefined();
       }),
     );

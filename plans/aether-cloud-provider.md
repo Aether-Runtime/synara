@@ -110,8 +110,10 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
 
 - The resume cursor is `creating` (worktree path, idempotency key) until `POST /tasks` succeeds,
   then `created`: worktree path, task, project, base branch and commit, model, the Synara turns
-  sent (`turns`), the accepted respond count (`sends`), the last settled run (`after`), the turn
-  in flight (`activeTurnId`) and `mirrorPending`. The idempotency key is made at `startSession`,
+  (`turns`: the task's own first, then the ones sent with a respond, never empty), the accepted
+  respond count (`sends`), the last settled run (`after`), whether the last turn is in flight
+  (`active`, so the turn in flight cannot name a turn outside `turns`) and `mirrorPending`. It is
+  parsed strictly: unknown keys are refused. The idempotency key is made at `startSession`,
   so it is persisted before the first send. A respond's `client_message_id` is derived from the
   task, `sends` and the request: a retry of the same request, even after a restart, reuses it; any
   other request gets a new one. A Synara turn's id is its send's id (the idempotency key for the
@@ -134,7 +136,7 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   an answer wakes it at once.
 - A turn completes exactly once: when its run settles, after the mirror; when the poll loop stops
   (failed); or on a stop that discards it before it ran (interrupted). The settle records `after`
-  and clears `activeTurnId` in the cursor first. If the workspace is not running the turn completes
+  and clears `active` in the cursor first. If the workspace is not running the turn completes
   and `mirrorPending` mirrors at the next turn start, from inside `sendTurn`, after the reactor's
   start checkpoint.
 - Startup reconciliation skips threads whose adapter declares `turnsSurviveRestart`. At
