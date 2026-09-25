@@ -1,5 +1,6 @@
 import type { GitStatusResult } from "@synara/contracts";
-import { assert, describe, it } from "vitest";
+import { providerFeatureUnavailableMessage } from "@synara/shared/providerMetadata";
+import { assert, describe, expect, it } from "vitest";
 import {
   buildGitActionProgressStages,
   buildMenuItems,
@@ -18,6 +19,7 @@ import {
   resolveDefaultBranchActionDialogCopy,
   resolveLiveThreadBranchUpdate,
   resolvePromotedPullPresentation,
+  resolveProviderOwnedGitActions,
   resolvePullActionAvailability,
   resolveQuickAction,
   shouldOfferCreateBranchPrompt,
@@ -2113,5 +2115,30 @@ describe("shouldOfferCreateBranchPrompt", () => {
         createBranchFlowCompleted: false,
       }),
     );
+  });
+});
+
+describe("resolveProviderOwnedGitActions", () => {
+  it("asks the agent for a PR while there is none, and opens the reported one after", () => {
+    expect(
+      resolveProviderOwnedGitActions({ owner: "aether", pullRequest: null, isBusy: false }),
+    ).toEqual({
+      quickAction: { label: "Create PR", disabled: false, kind: "run_action", action: "create_pr" },
+      unavailableReason: providerFeatureUnavailableMessage("aether", "branch-git"),
+    });
+    expect(
+      resolveProviderOwnedGitActions({
+        owner: "aether",
+        pullRequest: { url: "https://github.com/Aether-Runtime/acme-checkout/pull/18" },
+        isBusy: true,
+      }).quickAction,
+    ).toEqual({ label: "View PR", disabled: false, kind: "open_pr" });
+  });
+
+  it("explains that the agent owns the branch", () => {
+    expect(
+      resolveProviderOwnedGitActions({ owner: "aether", pullRequest: null, isBusy: false })
+        .unavailableReason,
+    ).toContain("Aether's agent owns this thread's branch");
   });
 });
