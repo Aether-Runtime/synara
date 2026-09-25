@@ -44,6 +44,7 @@ export const AetherGitDiffFile = Schema.Union([
 export type AetherGitDiffFile = typeof AetherGitDiffFile.Type;
 
 export const AetherGitDiffResult = Schema.Struct({
+  /** The merge-base commit the workspace diffed from, as a full object id (Aether `getDiff`). */
   baseRef: Schema.String,
   files: Schema.Array(AetherGitDiffFile),
 });

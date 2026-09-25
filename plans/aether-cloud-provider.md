@@ -131,6 +131,27 @@ diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same me
 - If the VM is suspended at turn end, settle now and sync lazily at the next turn start (viewing
   never boots a VM).
 
+Built in P5b as `syncAetherMirror` (`apps/server/src/provider/aether/aetherMirrorSync.ts`); P4
+wires it into the adapter:
+
+- The diff's `baseRef` is the merge-base the VM computed; it must equal the task base commit. If
+  the agent rebases onto a newer base, the merge-base moves and every later sync fails with
+  `base-mismatch` for the rest of the task: P4 must surface that rather than retry.
+- Before the lock, the diff becomes a target tree in a scratch index built from the base: text via
+  `git apply --cached`, deletions via `update-index --force-remove`, binaries via
+  `hash-object -w` + `update-index --cacheinfo` (Git checks paths with its NTFS and HFS `.git`
+  protections on).
+- Inside `GitCore.withMutation`, with the claim: the worktree and index must hold the tree the
+  last sync wrote (or a clean base checkout), with no untracked files; then
+  `git read-tree -m -u <previous> <target>` moves them. HEAD stays on the base.
+- The record in the worktree's Git directory stores the target tree OID, never a fingerprint of
+  the disk, plus the tree being written until the move is recorded, so a crash in between is safe.
+- Result: `synced {tree, filesChanged, modeOnlyPaths}` or `unchanged {tree}`. Failures are one
+  `AetherMirrorError` with a `reason` (`diff-rebuild`, `apply-failed`, `too-large`, `path-escape`,
+  `local-edits`, `base-mismatch`, `record`, `transport`), or P5a's `WorktreeOwnedError`.
+- Known gap: the wire has no modes or blob ids, so new symlinks and executables, type changes and
+  mode changes land as regular files locally. The pull request pushed from the VM is exact.
+
 ### Worktree ownership and the mirror guard
 
 - Synara creates worktrees from the **web client** on first send and has no server-side "managed"
