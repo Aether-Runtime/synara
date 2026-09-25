@@ -15,7 +15,7 @@ Synara treats provider integrations as adapters behind server-owned orchestratio
 - `droid`
 - `opencode`
 - `pi`
-- `aether` — cloud provider, registered as a skeleton: settings, API-key health check and the vendored model catalog work, while sessions fail with "The Aether provider is not implemented yet" (see `plans/aether-cloud-provider.md`). It declares no agent gateway, a provider-owned worktree and unsupported conversation rollback.
+- `aether` — cloud provider, registered as a skeleton: settings, API-key health check and the vendored model catalog work, while sessions fail with "The Aether provider is not implemented yet" (see `plans/aether-cloud-provider.md`). The REST client is the `AetherApiClient` service (`provider/Services`, `provider/Layers`), which the health check uses; its wire schemas and the workspace WebSocket transport live in `provider/aether/`. The adapter does not use them yet. It declares no agent gateway, a provider-owned worktree and unsupported conversation rollback.
 
 The registry is intentionally small. It maps `ProviderKind` to an adapter and lists the registered providers; it does not own session routing, persistence, or cross-provider orchestration.
 
