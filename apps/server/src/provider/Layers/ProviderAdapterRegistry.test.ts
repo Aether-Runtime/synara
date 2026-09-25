@@ -5,7 +5,7 @@ import { assertFailure } from "@effect/vitest/utils";
 
 import { Effect, Layer, Stream } from "effect";
 
-import { AetherAdapter } from "../Services/AetherAdapter.ts";
+import { AetherAdapter, AetherAdapterShape } from "../Services/AetherAdapter.ts";
 import { AntigravityAdapter, AntigravityAdapterShape } from "../Services/AntigravityAdapter.ts";
 import { ClaudeAdapter, ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { CodexAdapter, CodexAdapterShape } from "../Services/CodexAdapter.ts";
@@ -17,7 +17,6 @@ import { OpenCodeAdapter, OpenCodeAdapterShape } from "../Services/OpenCodeAdapt
 import { PiAdapter, PiAdapterShape } from "../Services/PiAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderAdapterRegistryLive } from "./ProviderAdapterRegistry.ts";
-import { makeAetherAdapter } from "./AetherAdapter.ts";
 import { ProviderUnsupportedError } from "../Errors.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
@@ -178,8 +177,22 @@ const fakeAntigravityAdapter: AntigravityAdapterShape = {
   streamEvents: Stream.empty,
 };
 
-// The real skeleton: registry construction runs the conformance assertion on it.
-const aetherAdapter = makeAetherAdapter();
+const aetherAdapter: AetherAdapterShape = {
+  provider: "aether",
+  capabilities: { sessionModelSwitch: "unsupported" },
+  startSession: vi.fn(),
+  sendTurn: vi.fn(),
+  interruptTurn: vi.fn(),
+  respondToRequest: vi.fn(),
+  respondToUserInput: vi.fn(),
+  stopSession: vi.fn(),
+  listSessions: vi.fn(),
+  hasSession: vi.fn(),
+  readThread: vi.fn(),
+  rollbackThread: vi.fn(),
+  stopAll: vi.fn(),
+  streamEvents: Stream.empty,
+};
 
 const registryLayer = (codexAdapter = fakeCodexAdapter) =>
   Layer.mergeAll(

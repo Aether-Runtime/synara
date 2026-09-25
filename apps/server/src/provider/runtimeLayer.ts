@@ -9,7 +9,9 @@ import {
 } from "../providerCredentials";
 import { ServerSettingsService } from "../serverSettings";
 import { ProviderValidationError } from "./Errors";
+import { GitCoreLive } from "../git/Layers/GitCore";
 import { AetherAdapterLive } from "./Layers/AetherAdapter";
+import { AetherApiClientLive } from "./Layers/AetherApiClient";
 import { makeClaudeAdapterLive } from "./Layers/ClaudeAdapter";
 import { makeCodexAdapterLive } from "./Layers/CodexAdapter";
 import { makeCursorAdapterLive } from "./Layers/CursorAdapter";
@@ -98,7 +100,19 @@ export function makeServerProviderLayer(
       Layer.provide(openCodeAdapterLayer),
       Layer.provide(piAdapterLayer),
       // Cloud adapter: no gateway credentials, the Aether VM cannot reach the local gateway.
-      Layer.provide(AetherAdapterLive),
+      // GitCoreLive is the same layer the rest of the server uses, so the adapter's worktree
+      // claims live in the one ownership registry every git mutation checks.
+      Layer.provide(
+        AetherAdapterLive.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              AetherApiClientLive.pipe(Layer.provide(ProviderCredentialsLive)),
+              GitCoreLive,
+              ProviderRuntimeEventRepositoryLive,
+            ),
+          ),
+        ),
+      ),
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const providerServiceLayer = makeDurableProviderServiceLive({
