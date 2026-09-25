@@ -203,6 +203,8 @@ export interface ProviderAdapterShape<TError> {
     readonly turnId: TurnId;
     readonly resumeCursor: unknown;
     readonly runtimeMode: RuntimeMode;
+    /** The binding's lifecycle generation, which the reattached turn's events carry. */
+    readonly lifecycleGeneration: string | undefined;
   }) => Effect.Effect<void, TError>;
 
   /**

@@ -693,6 +693,52 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(h.aether.calls.respond).toHaveLength(2);
       }),
     );
+    it.effect(
+      "stamps the session's lifecycle generation on every event, and adopts a new one",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          const startWith = (lifecycleGeneration: string) =>
+            adapter.startSession({
+              threadId: THREAD_ID,
+              provider: "aether",
+              lifecycleGeneration,
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+          yield* startWith("generation-1");
+          h.aether.hooks.onTurn = (turn) => {
+            h.aether.ask(turn, "exec-ask", [], {
+              questions: [{ question: "Which color?", options: [{ label: "Red" }] }],
+            });
+            h.aether.hooks.onTurn = (answered) => {
+              h.aether.say(answered, "text-after", "Done.");
+              h.aether.settle(answered);
+            };
+          };
+          yield* adapter.sendTurn(h.send("Paint it"));
+          yield* waitFor("the question", () =>
+            events.find((event) => event.type === "user-input.requested"),
+          );
+          // ProviderService routes an answer by the generation its request was raised in.
+          expect(events.length).toBeGreaterThan(0);
+          expect(events.every((event) => event.lifecycleGeneration === "generation-1")).toBe(true);
+
+          // A stop that waits on the turn in flight, then a new start: the new generation applies.
+          yield* adapter.stopSession(THREAD_ID);
+          yield* startWith("generation-2");
+          const before = events.length;
+          yield* adapter.respondToUserInput(THREAD_ID, ApprovalRequestId.makeUnsafe("exec-ask"), {
+            "0": "Red",
+          });
+          yield* waitFor("turn.completed", () => completions(events)[0]);
+          const after = events.slice(before);
+          expect(after.length).toBeGreaterThan(0);
+          expect(after.every((event) => event.lifecycleGeneration === "generation-2")).toBe(true);
+        }),
+    );
     it.effect("answers Aether's question shape: options by index, free text as custom", () =>
       Effect.gen(function* () {
         const h = yield* makeHarness;
@@ -1256,12 +1302,17 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
             turnId: turn.turnId,
             resumeCursor: binding.resumeCursor,
             runtimeMode: "full-access",
+            lifecycleGeneration: "generation-boot",
           });
           expect(yield* second.adapter.listSessions()).toMatchObject([
             { status: "running", activeTurnId: turn.turnId },
           ]);
           const completed = yield* waitFor("turn.completed", () => completions(second.events)[0]);
-          expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+          expect(completed).toMatchObject({
+            turnId: turn.turnId,
+            lifecycleGeneration: "generation-boot",
+            payload: { state: "completed" },
+          });
           expect(yield* h.read("greeting.txt")).toBe("hi\n");
 
           const all = [...first.events, ...second.events];
@@ -1295,6 +1346,7 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
             turnId: turn.turnId,
             resumeCursor: creating.resumeCursor,
             runtimeMode: "full-access",
+            lifecycleGeneration: undefined,
           }).pipe(Effect.flip);
           expect(unconfirmed.message).toContain(
             "Synara stopped before Aether confirmed creating the task for this thread's first message. Send that message again",
@@ -1309,6 +1361,7 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
             turnId: turn.turnId,
             resumeCursor: running!.resumeCursor,
             runtimeMode: "full-access",
+            lifecycleGeneration: undefined,
           }).pipe(Effect.flip);
           expect(gone.message).toContain(h.worktree);
           expect(yield* third.adapter.hasSession(THREAD_ID)).toBe(false);

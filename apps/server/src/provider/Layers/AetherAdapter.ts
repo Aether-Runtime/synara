@@ -131,6 +131,11 @@ interface SessionBase {
   /** Held by every call that changes the session, and by every poll loop output. */
   readonly lock: Semaphore.Semaphore;
   readonly claim: WorktreeClaim;
+  /**
+   * ProviderService's lifecycle generation for this session, stamped on every event: a request
+   * the thread answers is routed by it, and events of a superseded generation are dropped.
+   */
+  lifecycleGeneration: string | undefined;
   updatedAt: string;
   /**
    * A stop came while a turn was in flight (ProviderService stops the session after every
@@ -367,7 +372,12 @@ export const makeAetherAdapter = (
         ? Effect.void
         : Effect.suspend(() => {
             session.updatedAt = event.createdAt;
-            return Queue.offer(events, event);
+            return Queue.offer(
+              events,
+              session.lifecycleGeneration === undefined
+                ? event
+                : { ...event, lifecycleGeneration: session.lifecycleGeneration },
+            );
           }).pipe(Effect.asVoid);
 
     const base = (
@@ -733,6 +743,7 @@ export const makeAetherAdapter = (
       readonly cursor: AetherResumeCursor;
       readonly runtimeMode: RuntimeMode;
       readonly model: string;
+      readonly lifecycleGeneration: string | undefined;
     }) =>
       Effect.gen(function* () {
         const { cursor } = input;
@@ -747,6 +758,7 @@ export const makeAetherAdapter = (
           scope: yield* Scope.fork(adapterScope, "sequential"),
           lock: yield* Semaphore.make(1),
           claim,
+          lifecycleGeneration: input.lifecycleGeneration,
           stopAfterTurn: false,
         };
         const state: Creating | Task =
@@ -1086,6 +1098,7 @@ export const makeAetherAdapter = (
             }
             // Wanted again: a stop that waited on the turn in flight no longer applies.
             existing.stopAfterTurn = false;
+            existing.lifecycleGeneration = input.lifecycleGeneration;
             return snapshot(existing);
           }
           const cwd = input.cwd;
@@ -1124,6 +1137,7 @@ export const makeAetherAdapter = (
             cursor,
             runtimeMode: input.runtimeMode,
             model,
+            lifecycleGeneration: input.lifecycleGeneration,
           });
           // Reattached: read the task again, including anything answered in Aether meanwhile.
           if (session.state._tag === "Task") yield* session.state.poller.wake;
@@ -1151,6 +1165,7 @@ export const makeAetherAdapter = (
             cursor,
             runtimeMode: input.runtimeMode,
             model: cursor.model,
+            lifecycleGeneration: input.lifecycleGeneration,
           });
           if (session.state._tag === "Task") yield* session.state.poller.wake;
         }),

@@ -3334,6 +3334,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           turnId: input.turnId,
           resumeCursor: binding.resumeCursor,
           runtimeMode: input.runtimeMode,
+          lifecycleGeneration: binding.lifecycleGeneration,
         });
         return true;
       });
