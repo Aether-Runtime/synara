@@ -1075,36 +1075,100 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
   });
 
   describe("steering", () => {
-    it.effect("hands a steer to the running agent, and completes the turn once", () =>
-      Effect.gen(function* () {
-        const h = yield* makeHarness;
-        const { adapter, events } = yield* h.launch();
-        yield* h.start(adapter);
-        let running: FakeTurn | undefined;
-        h.aether.hooks.onTurn = (turn) => {
-          running = turn;
-          h.aether.say(turn, "text-live", "Working", { open: true });
-        };
-        const turn = yield* adapter.sendTurn(h.send("Refactor"));
-        yield* waitFor("streamed text", () =>
-          events.find((event) => event.type === "content.delta"),
-        );
+    it.effect(
+      "runs a steer into a running run as its own Aether turn, and completes after it",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          h.aether.hooks.onTurn = (turn) =>
+            h.aether.say(turn, "text-live", "Working", { open: true });
+          const turn = yield* adapter.sendTurn(h.send("Refactor"));
+          yield* waitFor("streamed text", () =>
+            events.find((event) => event.type === "content.delta"),
+          );
 
-        const steered = yield* adapter.steerTurn!(h.send("Also rename the module"));
-        expect(steered.turnId).toBe(turn.turnId);
-        expect(h.aether.calls.respond.at(-1)).toMatchObject({ message: "Also rename the module" });
-        expect(h.aether.calls.respond.at(-1)).not.toHaveProperty("queue_for_later");
-        expect(running!.items.at(-1)).toMatchObject({ content: "Also rename the module" });
-        expect(h.aether.turns).toHaveLength(1);
+          const steered = yield* adapter.steerTurn!(h.send("Also rename the module"));
+          expect(steered.turnId).toBe(turn.turnId);
+          expect(h.aether.calls.respond.at(-1)).toMatchObject({
+            message: "Also rename the module",
+          });
+          expect(h.aether.calls.respond.at(-1)).not.toHaveProperty("queue_for_later");
+          // Aether gives the steer an Aether turn of its own.
+          const [original, steer] = h.aether.turns;
+          expect(steer).toMatchObject({
+            state: "queued",
+            root: { content: "Also rename the module" },
+          });
 
-        h.aether.close("text-live");
-        h.aether.settle(running!);
-        const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
-        expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
-        yield* Effect.sleep("1500 millis");
-        expect(completions(events)).toHaveLength(1);
-        expect(events.some((event) => event.type === "runtime.warning")).toBe(false);
-      }),
+          // The agent reads the steer: the original turn settles, and the steer's turn runs.
+          h.aether.hooks.onTurn = (next) => h.aether.say(next, "text-steer", "Renamed it.");
+          h.aether.close("text-live");
+          h.aether.settle(original!);
+          const steerRow = yield* waitFor("the steer's rows", () =>
+            events.find((event) => event.itemId === "text-steer"),
+          );
+          expect(steerRow).toMatchObject({ turnId: turn.turnId });
+          yield* Effect.sleep("1500 millis");
+          expect(completions(events)).toEqual([]);
+
+          h.workspace.serve(diffOf(h.baseCommit, added("renamed.txt", "renamed\n")));
+          h.aether.settle(steer!);
+          const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+          expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+          // Mirrored when the steer's run settled, before the turn completed.
+          expect(yield* h.read("renamed.txt")).toBe("renamed\n");
+          expect(events.indexOf(completed)).toBeGreaterThan(events.indexOf(steerRow));
+          expect(events.some((event) => event.type === "runtime.warning")).toBe(false);
+          yield* Effect.sleep("1500 millis");
+          expect(completions(events)).toHaveLength(1);
+        }),
+    );
+
+    it.effect.each(["did not land", "landed"] as const)(
+      "completes the turn with its own run when a steer into it %s and lost its response",
+      (outcome) =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          h.aether.hooks.onTurn = (turn) =>
+            h.aether.say(turn, "text-live", "Working", { open: true });
+          const turn = yield* adapter.sendTurn(h.send("Refactor"));
+          yield* waitFor("streamed text", () =>
+            events.find((event) => event.type === "content.delta"),
+          );
+
+          if (outcome === "landed") {
+            h.aether.faults.loseRespond = true;
+          } else {
+            h.aether.faults.refuseRespond = new AetherApiHttpError({
+              endpoint: "POST /tasks/{taskID}/respond",
+              status: 503,
+            });
+          }
+          const lost = yield* adapter.steerTurn!(h.send("Also rename the module")).pipe(
+            Effect.flip,
+          );
+          expect(lost).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+
+          const [original] = h.aether.turns;
+          h.aether.hooks.onTurn = (steer) => {
+            h.aether.say(steer, "text-steer", "Renamed it.");
+            h.aether.settle(steer);
+          };
+          h.aether.close("text-live");
+          h.aether.settle(original!);
+          const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+          expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+          yield* Effect.sleep("1500 millis");
+          expect(completions(events)).toHaveLength(1);
+          // A steer that landed without Synara knowing is a turn from outside Synara.
+          expect(events.some((event) => event.type === "runtime.warning")).toBe(
+            outcome === "landed",
+          );
+        }),
     );
 
     it.effect(
@@ -1117,28 +1181,35 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           // The poll loop cannot tick: the steer comes before it lists the turn just started.
           const gate = yield* Latch.make(false);
           h.aether.faults.liveGate = gate;
-          let running: FakeTurn | undefined;
-          h.aether.hooks.onTurn = (turn) => {
-            running = turn;
+          h.aether.hooks.onTurn = (turn) =>
             h.aether.say(turn, "text-live", "Working", { open: true });
-          };
           const turn = yield* adapter.sendTurn(h.send("Refactor"));
           const steered = yield* adapter.steerTurn!(h.send("Also rename the module"));
           expect(steered.turnId).toBe(turn.turnId);
           expect(h.aether.calls.respond.at(-1)).not.toHaveProperty("queue_for_later");
-          expect(h.aether.turns).toHaveLength(1);
-          expect(running!.items.at(-1)).toMatchObject({ content: "Also rename the module" });
+          expect(h.aether.turns.map((aetherTurn) => aetherTurn.state)).toEqual([
+            "running",
+            "queued",
+          ]);
 
-          // A stop now waits for the running run to settle and be mirrored.
+          // A stop before the agent reads the steer discards it, and waits for the running run
+          // to settle and be mirrored.
           yield* gate.open;
           h.workspace.serve(diffOf(h.baseCommit, added("partial.txt", "made before stop\n")));
           yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
-          const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+          let mirroredFirst = false;
+          const completed = yield* waitFor("turn.completed", () => {
+            const first = completions(events)[0];
+            if (first !== undefined) {
+              mirroredFirst = existsSync(path.join(h.worktree, "partial.txt"));
+            }
+            return first;
+          });
           expect(completed).toMatchObject({
             turnId: turn.turnId,
             payload: { state: "interrupted" },
           });
-          expect(yield* h.read("partial.txt")).toBe("made before stop\n");
+          expect(mirroredFirst).toBe(true);
           yield* Effect.sleep("1500 millis");
           expect(completions(events)).toHaveLength(1);
         }),

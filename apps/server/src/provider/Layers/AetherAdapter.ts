@@ -1249,31 +1249,28 @@ export const makeAetherAdapter = (
                 bindOrigin(task, turn.id, turn.root_message.clientMessageId);
               }
               const awaited = awaitedTurn(task.cursor, active);
-              const running = page.turns.find(
+              const running = page.turns.some(
                 (turn) =>
                   turn.id === awaited &&
                   (turn.state === "running" || turn.state === "awaiting_input"),
               );
-              // Without `queue_for_later`, Aether hands the message to the running agent. When the
-              // turn's run already settled (Synara has not seen it yet) or has not started, the
-              // steer runs as a new Aether turn of the same Synara turn, which then waits on it.
-              const body = running === undefined ? { message, queue_for_later: true } : { message };
+              // Without `queue_for_later`, Aether hands the message to the running agent; otherwise
+              // (the turn's run already settled, and Synara has not seen it yet, or has not
+              // started) it waits for the next run. Either way it is an Aether turn of its own,
+              // bound by its `client_message_id`, and the Synara turn then waits on it.
+              const body = running ? { message } : { message, queue_for_later: true };
               const clientMessageId = clientMessageIdFor(task.cursor, body);
-              // Sent again after its response was lost, a queued steer joins the turn it started.
+              // Sent again after its response was lost, a steer joins the turn it started.
               const landed = page.turns.find(
                 (turn) => turn.root_message.clientMessageId === clientMessageId,
               );
               yield* respond(task, "steerTurn", body, {
                 turnId: active,
-                aetherTurnId: running?.id ?? landed?.id ?? null,
+                aetherTurnId: landed?.id ?? null,
               }).pipe(
                 // One whose response was lost is forgotten, so the turn goes on waiting on its own
                 // run; if it did land, its turn is from outside Synara until it is sent again.
-                Effect.tapError(() =>
-                  Effect.sync(() => {
-                    if (running === undefined) forget(task, clientMessageId);
-                  }),
-                ),
+                Effect.tapError(() => Effect.sync(() => forget(task, clientMessageId))),
               );
               yield* task.poller.wake;
               return { threadId: session.threadId, turnId: active, resumeCursor: task.cursor };
@@ -1312,11 +1309,35 @@ export const makeAetherAdapter = (
               }
               if (active !== undefined) {
                 task.interrupted = active;
-                const aetherTurnId = awaitedTurn(task.cursor, active);
-                const state = page.turns.find((turn) => turn.id === aetherTurnId)?.state;
-                // Never started, so no run will settle it: it ends now.
-                if (aetherTurnId === null || state === "queued") {
-                  yield* complete(session, task, active, "interrupted");
+                const stateOf = (id: AetherTurnId | null) =>
+                  page.turns.find((turn) => turn.id === id)?.state;
+                const unstarted = (id: AetherTurnId | null) =>
+                  id === null || stateOf(id) === "queued";
+                const { turns } = task.cursor;
+                if (unstarted(awaitedTurn(task.cursor, active))) {
+                  const executing = turns.some(
+                    (turn) =>
+                      turn.turnId === active &&
+                      (stateOf(turn.aetherTurnId) === "running" ||
+                        stateOf(turn.aetherTurnId) === "awaiting_input"),
+                  );
+                  if (executing) {
+                    // The stop discards the steers the agent has not read: the turn waits on the
+                    // run that is executing.
+                    for (const sent of turns) {
+                      if (
+                        "clientMessageId" in sent &&
+                        sent.turnId === active &&
+                        sent.clientMessageId !== active &&
+                        unstarted(sent.aetherTurnId)
+                      ) {
+                        forget(task, sent.clientMessageId);
+                      }
+                    }
+                  } else {
+                    // Never started, so no run will settle it: it ends now.
+                    yield* complete(session, task, active, "interrupted");
+                  }
                 }
               }
               yield* task.poller.wake;

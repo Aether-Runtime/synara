@@ -138,11 +138,17 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   only if the loop already settled it. Which plan was answered is kept in memory, so a retry after
   a restart is sent as a new message.
 - `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident.
-  `steerTurn` sends without it while the steered turn's Aether run is running; when that run has
-  already settled (Synara has not seen it yet) or has not started, the steer runs as a new Aether
-  turn of the same Synara turn, which then completes only when that run settles. Such a steer whose
-  response was lost is forgotten, so the turn goes on waiting on its own run; if it did land, its
-  turn is from outside Synara until the steer is sent again, which binds it.
+  `steerTurn` sends without it while the steered turn's Aether run is running, and Aether hands it
+  to the running agent; when that run has already settled (Synara has not seen it yet) or has not
+  started, it sends it queued. Either way Aether gives the steer a turn of its own (a turns-page
+  root: since Aether #5637 a message is never bundled into another turn, and a steered one keeps
+  its own conversation turn), bound by its `client_message_id` to the Synara turn, which then
+  completes only when that turn settles and is mirrored. When the agent reads a steer, the turn it
+  steered reads `settled` while the steer's turn runs, so it is mirrored without completing
+  anything. A stop discards a steer the agent has not read; the Synara turn then waits on its run
+  that is executing, if any. A steer whose response was lost is forgotten, so the turn goes on
+  waiting on its own run; if it did land, its turn is from outside Synara until the steer is sent
+  again, which binds it.
 - An Aether turn is Synara's if and only if it is the task's own first turn, or its root message
   carries a `client_message_id` the adapter derived for this task (a message, a plan answer or a
   steer, each recorded in `turns`); any other turn is from outside Synara.

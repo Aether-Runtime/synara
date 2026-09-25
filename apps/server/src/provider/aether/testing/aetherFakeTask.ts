@@ -228,10 +228,10 @@ export function makeFakeAetherTask() {
             task = { status: "processing", awaiting: {} };
             bump(current);
             hooks.onTurn(current);
-          } else if (current !== undefined && request.queue_for_later !== true) {
-            current.items.push(row);
-            bump(current);
           } else {
+            // Every other message is a turn of its own, queued behind a running one. Without
+            // `queue_for_later` Aether hands it to the running agent, and the running turn
+            // settles when the agent reads it; `settle` models that.
             startTurn(row, current !== undefined);
           }
         }
