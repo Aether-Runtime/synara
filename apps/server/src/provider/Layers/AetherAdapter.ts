@@ -9,9 +9,9 @@
  *
  * The worktree is claimed for the thread's lifetime, not the session's: `stopSession` only stops
  * following the task, which keeps running in the cloud. The resume cursor
- * (`aetherResumeCursor.ts`) carries everything a restart needs; at construction the adapter
- * claims every Aether thread's worktree again and reattaches to a turn still in flight, which
- * startup reconciliation leaves alone (`turnsSurviveRestart`).
+ * (`aetherResumeCursor.ts`) carries everything a restart needs: at construction the adapter
+ * claims every Aether thread's worktree again, and startup reconciliation reattaches each turn
+ * still in flight (`reattachTurn`), or fails it with the reason it cannot.
  *
  * @module AetherAdapterLive
  */
@@ -117,7 +117,7 @@ export interface AetherAdapterOptions {
     ProviderRuntimeEventRepositoryShape,
     "getHighWaterSequence" | "readThreadEvents"
   >;
-  /** Persisted bindings: every Aether thread with a task is claimed and, mid-turn, reattached. */
+  /** Persisted bindings: the worktree of every Aether thread with a task is claimed again. */
   readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
 }
 
@@ -1036,29 +1036,20 @@ export const makeAetherAdapter = (
       });
 
     // -----------------------------------------------------------------------
-    // Construction: claim again, and reattach to turns in flight
+    // Construction: claim every task's worktree again
     // -----------------------------------------------------------------------
 
+    // A claim that fails here fails loudly again when the thread is next used (`attach`).
     for (const binding of options.bindings) {
       if (binding.provider !== PROVIDER) continue;
       yield* Effect.gen(function* () {
         const cursor = yield* parseAetherResumeCursor(binding.resumeCursor);
-        if (cursor.status !== "created") return;
-        yield* claimWorktree(binding.threadId, cursor.worktreePath);
-        if (!cursor.active) return;
-        if (binding.runtimeMode === undefined) {
-          return yield* invalid("reattach", "The thread's provider binding has no runtime mode.");
+        if (cursor.status === "created") {
+          yield* claimWorktree(binding.threadId, cursor.worktreePath);
         }
-        const session = yield* attach({
-          threadId: binding.threadId,
-          cursor,
-          runtimeMode: binding.runtimeMode,
-          model: cursor.model,
-        });
-        if (session.state._tag === "Task") yield* session.state.poller.wake;
       }).pipe(
         Effect.catchCause((cause) =>
-          Effect.logError("aether.reattach.failed", {
+          Effect.logError("aether.claim.failed", {
             threadId: binding.threadId,
             cause: Cause.pretty(cause),
           }),
@@ -1085,7 +1076,6 @@ export const makeAetherAdapter = (
         supportsTurnSteering: true,
         supportsLiveTurnDiffPatch: false,
         managesWorktreeBranch: true,
-        turnsSurviveRestart: true,
       },
       startSession: (input) =>
         Effect.gen(function* () {
@@ -1138,6 +1128,31 @@ export const makeAetherAdapter = (
           // Reattached: read the task again, including anything answered in Aether meanwhile.
           if (session.state._tag === "Task") yield* session.state.poller.wake;
           return snapshot(session);
+        }),
+      reattachTurn: (input) =>
+        Effect.gen(function* () {
+          const cursor = yield* parseAetherResumeCursor(input.resumeCursor);
+          if (cursor.status === "creating") {
+            // Its request (the message) is not persisted, so the create cannot be retried here;
+            // the key is, so sending the same message again continues any task it created.
+            return yield* invalid(
+              "reattachTurn",
+              "Synara stopped before Aether confirmed creating the task for this thread's first message. Send that message again: if Aether created the task, it continues it.",
+            );
+          }
+          if (activeTurnId(cursor) !== input.turnId) {
+            return yield* invalid(
+              "reattachTurn",
+              `The Aether task has no turn ${input.turnId} in flight.`,
+            );
+          }
+          const session = yield* attach({
+            threadId: input.threadId,
+            cursor,
+            runtimeMode: input.runtimeMode,
+            model: cursor.model,
+          });
+          if (session.state._tag === "Task") yield* session.state.poller.wake;
         }),
       sendTurn: (input) =>
         withSession(input.threadId, (session) =>

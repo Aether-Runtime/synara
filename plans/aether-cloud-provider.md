@@ -149,9 +149,14 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   and clears `active` in the cursor first. If the workspace is not running the turn completes
   and `mirrorPending` mirrors at the next turn start, from inside `sendTurn`, after the reactor's
   start checkpoint.
-- Startup reconciliation skips threads whose adapter declares `turnsSurviveRestart`. At
-  construction the adapter claims every Aether thread's worktree again and reattaches a thread with
-  a turn in flight.
+- At construction the adapter claims every Aether thread's worktree again. Startup
+  reconciliation asks the provider to follow each turn in flight again
+  (`ProviderService.reattachTurn` → the adapter's `reattachTurn`): a reattached turn and its
+  requests are left to the adapter; a turn that cannot be reattached (the worktree is gone, the
+  cursor is unreadable) fails with the reason. A cursor still `creating` fails the turn too,
+  asking for the message again: the create's request is not persisted, so it cannot be retried,
+  but the idempotency key is, so the same message continues any task the lost create made.
+  Revert cleanup and the dangling-turn repair apply to every thread.
 - A resumed loop emits nothing for the history `after` covers (every turn before its turn, and
   its turn up to the run it names): Synara emitted it before, and the runtime event journal
   prunes the rows of completed turns. It reads those rows only for their state. The journal holds

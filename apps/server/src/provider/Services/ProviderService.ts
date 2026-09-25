@@ -226,6 +226,17 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Follow the thread's turn in flight again after a restart, when its provider runs turns
+   * remotely (the adapter implements `reattachTurn`). True when it reattached; false when the
+   * thread's provider cannot, or the thread has no binding.
+   */
+  readonly reattachTurn?: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly runtimeMode: RuntimeMode;
+  }) => Effect.Effect<boolean, ProviderServiceError>;
+
+  /**
    * List active provider sessions.
    *
    * Aggregates runtime session lists from all registered adapters.

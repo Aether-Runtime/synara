@@ -10,7 +10,6 @@ type CapabilityFlag = Exclude<
   | "supportsSkillMentions"
   | "supportsPluginMentions"
   | "supportsLiveTurnDiffPatch"
-  | "turnsSurviveRestart"
 >;
 
 type OptionalAdapterMethod =

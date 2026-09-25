@@ -82,11 +82,7 @@ describe("boot-time pending interaction reconciliation", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(ProjectionPendingInteractionRepositoryLive),
-      Layer.provideMerge(
-        Layer.succeed(ProviderService, {
-          getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
-        } as unknown as ProviderServiceShape),
-      ),
+      Layer.provideMerge(Layer.succeed(ProviderService, {} as ProviderServiceShape)),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),

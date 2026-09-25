@@ -2,10 +2,15 @@ import { Effect, Option } from "effect";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import { ProjectionPendingInteractionRepository } from "../persistence/Services/ProjectionPendingInteractions.ts";
+import { ProviderAdapterRequestError } from "../provider/Errors.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ApprovalRequestId, EventId, ThreadId, TurnId } from "@synara/contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  CHECKPOINT_REVERT_FAILED_ACTIVITY_KIND,
+  CHECKPOINT_REVERT_STARTED_ACTIVITY_KIND,
+} from "./commandInvariants.ts";
 import {
   planRestartTurnReconciliation,
   reconcileRestartStuckTurns,
@@ -786,9 +791,7 @@ describe("reconcileRestartStuckTurns selection", () => {
           Effect.provideService(ProjectionPendingInteractionRepository, {
             listUnsettled: () => Effect.succeed([row]),
           } as never),
-          Effect.provideService(ProviderService, {
-            getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
-          } as never),
+          Effect.provideService(ProviderService, {} as never),
         ),
       );
       expect(getThreadDetailById).toHaveBeenCalledExactlyOnceWith(thread.id);
@@ -806,42 +809,101 @@ describe("reconcileRestartStuckTurns selection", () => {
     },
   );
 
-  it("leaves a thread alone when its provider's turns survive a restart", async () => {
-    const running = (id: string, providerName: string) => ({
+  it("leaves only a reattached turn running, and fails a turn its reattach could not follow", async () => {
+    const running = (
+      id: string,
+      providerName: string,
+      activities: ReadonlyArray<unknown> = [],
+    ) => ({
       ...makeThread(id, {
         session: makeSession(id, { providerName }),
         latestTurn: { state: "running" },
       }),
-      activities: [],
+      activities,
       hasPendingApprovals: false,
       hasPendingUserInput: true,
     });
-    const dispatch = vi.fn(() => Effect.void);
+    const revertInterrupted = [
+      makeActivity("revert-started", CHECKPOINT_REVERT_STARTED_ACTIVITY_KIND, {}, 1),
+    ];
+    const threads = [
+      running("reattached", "aether", revertInterrupted),
+      running("reattach-failed", "aether"),
+      running("local", "grok"),
+      {
+        // A dangling turn pointer on a failed session.
+        ...makeThread("dangling", {
+          session: makeSession("dangling", { providerName: "aether", status: "error" }),
+          latestTurn: { state: "completed" },
+        }),
+        activities: [],
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      },
+    ];
+    const reattachTurn = vi.fn((input: { readonly threadId: string }) =>
+      input.threadId === "reattached"
+        ? Effect.succeed(true)
+        : input.threadId === "reattach-failed"
+          ? Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "aether",
+                method: "claimWorktree",
+                detail: "The worktree /work/tree no longer exists.",
+              }),
+            )
+          : Effect.succeed(false),
+    );
+    const dispatch = vi.fn((_command: unknown) => Effect.void);
     await Effect.runPromise(
       reconcileRestartStuckTurns.pipe(
         Effect.provideService(OrchestrationEngineService, {
-          getReadModel: () =>
-            Effect.succeed({ threads: [running("cloud", "aether"), running("local", "grok")] }),
+          getReadModel: () => Effect.succeed({ threads }),
           dispatch,
         } as never),
         Effect.provideService(ProjectionSnapshotQuery, {
-          getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadDetailById: (threadId: string) =>
+            Effect.succeed(Option.fromNullishOr(threads.find((thread) => thread.id === threadId))),
         } as never),
         Effect.provideService(ProjectionPendingInteractionRepository, {
           listUnsettled: () => Effect.succeed([]),
         } as never),
-        Effect.provideService(ProviderService, {
-          getCapabilities: (provider: string) =>
-            Effect.succeed({
-              sessionModelSwitch: "in-session",
-              turnsSurviveRestart: provider === "aether",
-            }),
-        } as never),
+        Effect.provideService(ProviderService, { reattachTurn } as never),
       ),
     );
-    const reconciled = dispatch.mock.calls.map(
-      (call) => (call as unknown as [{ readonly threadId: string }])[0].threadId,
+    expect(reattachTurn.mock.calls.map(([input]) => input.threadId)).toEqual([
+      "reattached",
+      "reattach-failed",
+      "local",
+    ]);
+    const commands = dispatch.mock.calls.map(
+      ([command]) =>
+        command as {
+          readonly type: string;
+          readonly threadId: string;
+          readonly session?: {
+            readonly status: string;
+            readonly lastError: string | null;
+            readonly activeTurnId: string | null;
+          };
+          readonly activity?: { readonly kind: string };
+        },
     );
-    expect(reconciled).toEqual(["local"]);
+    const sessionOf = (threadId: string) =>
+      commands.find((command) => command.threadId === threadId && command.session)?.session;
+    // The reattached turn keeps running, but a revert the restart cut short still fails.
+    expect(commands.filter((command) => command.threadId === "reattached")).toEqual([
+      expect.objectContaining({
+        type: "thread.activity.append",
+        activity: expect.objectContaining({ kind: CHECKPOINT_REVERT_FAILED_ACTIVITY_KIND }),
+      }),
+    ]);
+    expect(sessionOf("reattach-failed")).toMatchObject({
+      status: "error",
+      lastError:
+        "Provider adapter request failed (aether) for claimWorktree: The worktree /work/tree no longer exists.",
+    });
+    expect(sessionOf("local")).toMatchObject({ status: "interrupted", lastError: null });
+    expect(sessionOf("dangling")).toMatchObject({ status: "error", activeTurnId: null });
   });
 });

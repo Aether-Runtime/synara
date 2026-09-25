@@ -41,13 +41,13 @@ import type {
   RuntimeMode,
   ThreadId,
 } from "@synara/contracts";
-import { CommandId, EventId, ProviderKind } from "@synara/contracts";
+import { CommandId, EventId } from "@synara/contracts";
 import { createStalePendingInteractionMatcher } from "@synara/shared/pendingInteractions";
 import {
   derivePendingThreadRequestIds,
   type PendingThreadRequestKind,
 } from "@synara/shared/threadSummary";
-import { Array as Arr, Effect, Option, Schema } from "effect";
+import { Array as Arr, Cause, Effect, Option } from "effect";
 import type { ProjectionPendingInteraction } from "../persistence/Services/ProjectionPendingInteractions.ts";
 import { ProjectionPendingInteractionRepository } from "../persistence/Services/ProjectionPendingInteractions.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
@@ -274,6 +274,10 @@ function buildStalePendingRequestCommand(input: {
 export function planRestartTurnReconciliation(input: {
   readonly threads: ReadonlyArray<ReconcilableThread>;
   readonly pendingInteractions?: ReadonlyArray<ReconcilablePendingInteraction>;
+  /** Threads whose turn in flight its provider follows again (`reattachTurn`): left running. */
+  readonly reattached?: ReadonlySet<ThreadId>;
+  /** Threads whose turn in flight could not be followed again, and why: that turn fails. */
+  readonly reattachFailures?: ReadonlyMap<ThreadId, string>;
   readonly now: string;
 }): ReadonlyArray<RestartReconciliationCommand> {
   const pendingInteractions = input.pendingInteractions ?? [];
@@ -286,13 +290,17 @@ export function planRestartTurnReconciliation(input: {
   const commands: RestartReconciliationCommand[] = [];
   for (const thread of input.threads) {
     const hasInFlightTurn = threadHasInFlightTurn(thread);
-    commands.push(
-      ...planStalePendingRequestCommands({
-        thread,
-        pendingInteractions: pendingByThread.get(thread.id) ?? [],
-        now: input.now,
-      }),
-    );
+    // A reattached turn is still running, and its requests are still answerable.
+    const reattached = input.reattached?.has(thread.id) === true;
+    if (!reattached) {
+      commands.push(
+        ...planStalePendingRequestCommands({
+          thread,
+          pendingInteractions: pendingByThread.get(thread.id) ?? [],
+          now: input.now,
+        }),
+      );
+    }
     const staleCheckpointRevertCommand = planStaleCheckpointRevertCommand({
       thread,
       now: input.now,
@@ -323,20 +331,23 @@ export function planRestartTurnReconciliation(input: {
       });
       continue;
     }
+    if (reattached) continue;
+    const reattachFailure = input.reattachFailures?.get(thread.id);
     commands.push({
       type: "thread.session.set",
       commandId: CommandId.makeUnsafe(`restart-reconcile:${thread.id}:${input.now}`),
       threadId: thread.id,
       session: {
         threadId: thread.id,
-        status: "interrupted",
+        // A turn its provider could not follow again fails with the reason; any other is a
+        // clean stop, not an error: no lastError banner.
+        status: reattachFailure === undefined ? "interrupted" : "error",
         providerName: thread.session?.providerName ?? null,
         // Prefer the session's own mode; fall back to the thread default when the
         // thread never had a materialized session row.
         runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
         activeTurnId: null,
-        // "interrupted" is a clean stop, not an error: no lastError banner.
-        lastError: null,
+        lastError: reattachFailure ?? null,
         updatedAt: input.now,
       },
       createdAt: input.now,
@@ -365,9 +376,11 @@ export function planRestartTurnReconciliation(input: {
  * live: nothing in the snapshot can become answerable again, and nothing
  * answerable can enter the snapshot.
  *
- * Threads whose provider declares `turnsSurviveRestart` are skipped whole: their
- * turn is still running remotely, its requests are still answerable, and the
- * adapter reattaches to it and settles it from the provider's own state.
+ * A turn in flight whose provider runs it remotely is followed again first
+ * (`ProviderService.reattachTurn`): a reattached turn and its requests are left
+ * to the adapter, which settles them from the provider's own state; a turn that
+ * could not be reattached fails with the reason. Revert and dangling-turn
+ * cleanup apply to every thread.
  */
 export const reconcileRestartStuckTurns: Effect.Effect<
   void,
@@ -394,27 +407,52 @@ export const reconcileRestartStuckTurns: Effect.Effect<
     );
   const unsettledByThread = new Map(Object.entries(Arr.groupBy(unsettled, (row) => row.threadId)));
   const now = new Date().toISOString();
-  const threadsNeedingRestartCleanup = yield* Effect.filter(
-    readModel.threads.filter(
-      (thread) =>
-        needsRestartReconciliation(thread) ||
-        threadHasCheckpointRevertInProgress(thread) ||
-        thread.hasPendingApprovals ||
-        thread.hasPendingUserInput ||
-        unsettledByThread.has(thread.id),
-    ),
-    (thread) => {
-      const provider = thread.session?.providerName;
-      if (!Schema.is(ProviderKind)(provider)) return Effect.succeed(true);
-      // Every provider kind has a registered adapter, so this lookup cannot fail.
-      return providerService.getCapabilities(provider).pipe(
-        Effect.map((capabilities) => capabilities.turnsSurviveRestart !== true),
-        Effect.orDie,
-      );
-    },
+  const threadsNeedingRestartCleanup = readModel.threads.filter(
+    (thread) =>
+      needsRestartReconciliation(thread) ||
+      threadHasCheckpointRevertInProgress(thread) ||
+      thread.hasPendingApprovals ||
+      thread.hasPendingUserInput ||
+      unsettledByThread.has(thread.id),
   );
   if (threadsNeedingRestartCleanup.length === 0) {
     return;
+  }
+
+  const reattached = new Set<ThreadId>();
+  const reattachFailures = new Map<ThreadId, string>();
+  const reattachTurn = providerService.reattachTurn;
+  if (reattachTurn !== undefined) {
+    yield* Effect.forEach(
+      threadsNeedingRestartCleanup,
+      (thread) => {
+        const turnId = thread.session?.activeTurnId;
+        if (!threadHasInFlightTurn(thread) || turnId == null) return Effect.void;
+        return reattachTurn({
+          threadId: thread.id,
+          turnId,
+          runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+        }).pipe(
+          Effect.flatMap((followed) =>
+            Effect.sync(() => {
+              if (followed) reattached.add(thread.id);
+            }),
+          ),
+          Effect.catchCause((cause) => {
+            const failure = Cause.findErrorOption(cause);
+            reattachFailures.set(
+              thread.id,
+              Option.isSome(failure) ? failure.value.message : Cause.pretty(cause),
+            );
+            return Effect.logError("restart reconciliation could not reattach a turn", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            });
+          }),
+        );
+      },
+      { discard: true },
+    );
   }
 
   const reconcilableThreads = yield* Effect.forEach(
@@ -438,6 +476,8 @@ export const reconcileRestartStuckTurns: Effect.Effect<
   const commands = planRestartTurnReconciliation({
     threads: reconcilableThreads,
     pendingInteractions: unsettled,
+    reattached,
+    reattachFailures,
     now,
   });
   if (commands.length === 0) {

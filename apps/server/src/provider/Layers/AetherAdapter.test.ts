@@ -290,8 +290,8 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           managesWorktreeBranch: true,
           supportsTurnSteering: true,
           sessionModelSwitch: "unsupported",
-          turnsSurviveRestart: true,
         });
+        expect(adapter.reattachTurn).toBeDefined();
 
         const session = yield* h.start(adapter);
         // Persisted with the session, before anything is sent.
@@ -1179,15 +1179,21 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           h.workspace.serve(diffOf(h.baseCommit, added("greeting.txt", "hi\n")));
           h.aether.settle(running!);
 
-          const second = yield* h.launch([
-            {
-              threadId: THREAD_ID,
-              provider: "aether",
-              runtimeMode: "full-access",
-              status: "stopped",
-              resumeCursor: session!.resumeCursor,
-            },
-          ]);
+          const binding: ProviderRuntimeBinding = {
+            threadId: THREAD_ID,
+            provider: "aether",
+            runtimeMode: "full-access",
+            status: "stopped",
+            resumeCursor: session!.resumeCursor,
+          };
+          const second = yield* h.launch([binding]);
+          // Startup reconciliation reattaches the turn in flight.
+          yield* second.adapter.reattachTurn!({
+            threadId: THREAD_ID,
+            turnId: turn.turnId,
+            resumeCursor: binding.resumeCursor,
+            runtimeMode: "full-access",
+          });
           expect(yield* second.adapter.listSessions()).toMatchObject([
             { status: "running", activeTurnId: turn.turnId },
           ]);
@@ -1204,6 +1210,45 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
             event.type === "content.delta" ? [event.payload.delta] : [],
           );
           expect(streamed.join("")).toBe("Hello, world");
+        }),
+    );
+
+    it.effect(
+      "fails a reattach loudly with its cause: a worktree gone, or a task never confirmed",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const first = yield* h.launch();
+          const creating = yield* h.start(first.adapter);
+          h.aether.hooks.onTurn = (turn) => h.aether.say(turn, "text-live", "Hi", { open: true });
+          const turn = yield* first.adapter.sendTurn(h.send("Greet"));
+          const [running] = yield* first.adapter.listSessions();
+          yield* first.stop;
+
+          // Synara stopped before it persisted the created cursor.
+          const second = yield* h.launch();
+          const unconfirmed = yield* second.adapter.reattachTurn!({
+            threadId: THREAD_ID,
+            turnId: turn.turnId,
+            resumeCursor: creating.resumeCursor,
+            runtimeMode: "full-access",
+          }).pipe(Effect.flip);
+          expect(unconfirmed.message).toContain(
+            "Synara stopped before Aether confirmed creating the task for this thread's first message. Send that message again",
+          );
+          yield* second.stop;
+
+          // The worktree was removed while Synara was down.
+          yield* git(h.repo, ["worktree", "remove", "--force", h.worktree]);
+          const third = yield* h.launch();
+          const gone = yield* third.adapter.reattachTurn!({
+            threadId: THREAD_ID,
+            turnId: turn.turnId,
+            resumeCursor: running!.resumeCursor,
+            runtimeMode: "full-access",
+          }).pipe(Effect.flip);
+          expect(gone.message).toContain(h.worktree);
+          expect(yield* third.adapter.hasSession(THREAD_ID)).toBe(false);
         }),
     );
 

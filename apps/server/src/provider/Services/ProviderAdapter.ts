@@ -35,6 +35,7 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStartOptions,
+  RuntimeMode,
   ServerVoicePrewarmInput,
   ServerVoicePrewarmResult,
   ServerVoiceTranscriptionInput,
@@ -84,12 +85,6 @@ export interface ProviderAdapterCapabilities {
   readonly supportsTurnSteering?: boolean;
   /** True when `turn.diff.updated.payload.unifiedDiff` contains a parseable live patch. */
   readonly supportsLiveTurnDiffPatch?: boolean;
-  /**
-   * True when a turn keeps running while Synara is stopped (the provider runs it remotely) and
-   * the adapter reattaches to it when Synara starts, so startup reconciliation must leave the
-   * thread's running turn and pending requests alone. Defaults to false.
-   */
-  readonly turnsSurviveRestart?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -196,6 +191,19 @@ export interface ProviderAdapterShape<TError> {
     requestId: ApprovalRequestId,
     answers: ProviderUserInputAnswers,
   ) => Effect.Effect<void, TError>;
+
+  /**
+   * Follow a turn again that kept running while Synara was stopped, because the provider runs
+   * it remotely, from the thread's persisted resume cursor. Startup reconciliation calls it for
+   * each thread whose turn was in flight: success leaves the turn and its requests to the
+   * adapter; a failure fails the turn with the error's message.
+   */
+  readonly reattachTurn?: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly resumeCursor: unknown;
+    readonly runtimeMode: RuntimeMode;
+  }) => Effect.Effect<void, TError>;
 
   /**
    * Stop one provider session.

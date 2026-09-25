@@ -3323,6 +3323,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const getCapabilities: ProviderServiceShape["getCapabilities"] = (provider) =>
       registry.getByProvider(provider).pipe(Effect.map((adapter) => adapter.capabilities));
 
+    const reattachTurn: NonNullable<ProviderServiceShape["reattachTurn"]> = (input) =>
+      Effect.gen(function* () {
+        const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+        if (binding === undefined) return false;
+        const adapter = yield* registry.getByProvider(binding.provider);
+        if (adapter.reattachTurn === undefined) return false;
+        yield* adapter.reattachTurn({
+          threadId: input.threadId,
+          turnId: input.turnId,
+          resumeCursor: binding.resumeCursor,
+          runtimeMode: input.runtimeMode,
+        });
+        return true;
+      });
+
     const rollbackConversation: ProviderServiceShape["rollbackConversation"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -3549,6 +3564,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       hasLiveRuntimeTasks,
       clearSessionResumeCursor,
       listSessions,
+      reattachTurn,
       getCapabilities,
       getClaudeCacheObservation,
       startClaudeCompaction,
