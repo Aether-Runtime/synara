@@ -117,12 +117,23 @@ export const AetherTask = Schema.Union([
 ]);
 export type AetherTask = typeof AetherTask.Type;
 
+/**
+ * The answer a user message carried to a pending question or plan. `data` is the answer as sent
+ * (`{ answers, customAnswers? }` for `ask_user`); ingestion decodes it where it reads it.
+ */
+export const AetherToolResponseRow = Schema.Struct({
+  tool_name: Schema.String,
+  data: Schema.Unknown,
+});
+
 export const AetherUserMessage = Schema.Struct({
   id: AetherMessageId,
   role: Schema.Literal("user"),
   content: Schema.String,
   /** Present on messages sent with `client_message_id`: tells Synara's turns from others'. */
   clientMessageId: Schema.optionalKey(Schema.String),
+  /** Present on the message that answered a question or plan. */
+  toolResponse: Schema.optionalKey(AetherToolResponseRow),
 });
 export type AetherUserMessage = typeof AetherUserMessage.Type;
 
@@ -145,7 +156,8 @@ export const AetherTimelineTool = Schema.Struct({
     "approval-responded",
     "approval-requested",
   ]),
-  display: Schema.Struct({ label: NonEmptyString }),
+  /** `primary` is the call's subject: the command, or the file path. */
+  display: Schema.Struct({ label: NonEmptyString, primary: Schema.optionalKey(Schema.String) }),
   itemType: Schema.optionalKey(
     openVocabulary([
       "user_message",
@@ -233,6 +245,14 @@ const AetherLiveMessage = Schema.Struct({
 
 /** `GET /tasks/{taskID}/conversation/live`. */
 export const AetherLiveConversationSnapshot = Schema.Struct({
+  /** Present while an agent run is executing, absent otherwise. */
+  activeExecution: Schema.optionalKey(
+    Schema.Struct({
+      conversationTurnId: AetherTurnId,
+      /** The user message the run is answering. */
+      processingMessageId: AetherMessageId,
+    }),
+  ),
   headRevision: NonNegativeInt,
   /** Moves when the conversation was truncated; cached rows past it are gone. */
   resetSequence: NonNegativeInt,
