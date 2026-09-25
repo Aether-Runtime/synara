@@ -232,6 +232,7 @@ export type ProviderGatedFeature =
   | "local-workspace"
   | "non-git-workspace"
   | "worktree-change"
+  | "shared-worktree"
   | "copy-changes"
   | "provider-handoff";
 
@@ -253,6 +254,7 @@ export function providerSupportsFeature(
     case "local-workspace":
     case "non-git-workspace":
     case "worktree-change":
+    case "shared-worktree":
     case "copy-changes":
     case "provider-handoff":
       return !descriptor.managesWorktreeBranch;
@@ -301,6 +303,8 @@ export function providerFeatureUnavailableMessage(
       return `${name} needs a git repository with a GitHub remote.`;
     case "worktree-change":
       return `${name} owns this thread's worktree, so the thread cannot move to another checkout once a turn has started.`;
+    case "shared-worktree":
+      return `${name} threads cannot share a worktree: ${name} owns the worktree and resets it on every turn. Fork into a new worktree instead.`;
     case "copy-changes":
       return `${name} threads cannot copy local changes into their worktree: ${name} clones from origin and resets the worktree on every turn.`;
     case "provider-handoff":

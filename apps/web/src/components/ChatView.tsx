@@ -1308,6 +1308,9 @@ export default function ChatView({
     providerLackingFeature(threadGateProviders, "conversation-rollback") === null;
   const localWorkspaceAvailable =
     providerLackingFeature(threadGateProviders, "local-workspace") === null;
+  // "Fork Into Local" and forking from a turn reuse this thread's worktree.
+  const sharedWorktreeAvailable =
+    providerLackingFeature(threadGateProviders, "shared-worktree") === null;
   const {
     selectedComposerSkills,
     selectedComposerMentions,
@@ -2139,16 +2142,20 @@ export default function ChatView({
           label: "Fork Into New Worktree",
           description: "Continue in a new worktree",
         },
-        {
-          id: "fork-target:local",
-          type: "fork-target" as const,
-          target: "local" as const,
-          label: "Fork Into Local",
-          description:
-            activeThread?.worktreePath || activeThread?.envMode === "worktree"
-              ? "Continue in this local worktree"
-              : "Continue in the current local thread",
-        },
+        ...(sharedWorktreeAvailable
+          ? [
+              {
+                id: "fork-target:local",
+                type: "fork-target" as const,
+                target: "local" as const,
+                label: "Fork Into Local",
+                description:
+                  activeThread?.worktreePath || activeThread?.envMode === "worktree"
+                    ? "Continue in this local worktree"
+                    : "Continue in the current local thread",
+              },
+            ]
+          : []),
       ];
     }
     if (composerCommandPicker === "review-target") {
@@ -2176,6 +2183,7 @@ export default function ChatView({
     activeThread?.worktreePath,
     composerCommandPicker,
     normalComposerMenuItems,
+    sharedWorktreeAvailable,
   ]);
   const composerMenuOpen = Boolean(composerTrigger || composerCommandPicker);
   // The `+` panel yields the floating slot to the slash/mention menu as soon as a
@@ -6005,7 +6013,9 @@ export default function ChatView({
                     pinnedMessageIds={pinnedMessageIds}
                     canPinMessage={canPinMessage}
                     onTogglePinMessage={handleTogglePinMessageGuarded}
-                    onForkFromMessage={handleForkFromMessage}
+                    {...(sharedWorktreeAvailable
+                      ? { onForkFromMessage: handleForkFromMessage }
+                      : {})}
                     goalAchievements={goalAchievements}
                     enteringUserMessageIds={enteringUserMessageIds}
                     tailAnchorMessageId={

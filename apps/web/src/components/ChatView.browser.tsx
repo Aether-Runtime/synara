@@ -8567,11 +8567,15 @@ describe("ChatView transcript geometry (full app)", () => {
         // Edit and resend (conversation rollback). An existing goal stays visible so it can
         // always be cleared, whatever the provider.
         const editButton = page.getByRole("button", { name: "Edit message" });
+        // Forking from a turn stays in this thread's worktree, which Aether cannot share.
+        const forkButton = page.getByRole("button", { name: "Fork thread from this turn" });
         await expect.element(page.getByRole("button", { name: "Edit goal" })).toBeInTheDocument();
         if (expectsGatedControls) {
           await expect.element(editButton.first()).toBeInTheDocument();
+          await expect.element(forkButton.first()).toBeInTheDocument();
         } else {
           await expect.element(editButton).not.toBeInTheDocument();
+          await expect.element(forkButton).not.toBeInTheDocument();
         }
         await page.getByLabelText("Composer extras").click();
         const goalRow = page.getByText("Set a goal to keep pursuing");

@@ -214,6 +214,18 @@ const createFromSource = (
   createdAt: NOW,
 });
 
+/** A plain fork (not a side chat) into `worktreePath`: the source's worktree, or null for new. */
+const fork = (
+  modelSelection: ModelSelection,
+  worktreePath: string | null,
+): OrchestrationCommand => {
+  const { sidechatSourceThreadId: _sidechat, ...command } = createFromSource(
+    "thread.fork.create",
+    modelSelection,
+  ) as Extract<OrchestrationCommand, { type: "thread.fork.create" }>;
+  return { ...command, worktreePath };
+};
+
 const checkpointRevert = (scope: "thread" | "files"): OrchestrationCommand => ({
   type: "thread.checkpoint.revert",
   commandId: commandId(`revert-${scope}`),
@@ -420,6 +432,19 @@ describe("decider provider capability gating", () => {
       expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
     });
 
+    it("refuses a fork that would share a worktree with Aether", async () => {
+      const shared =
+        "Orchestration command invariant failed (thread.fork.create): Aether threads cannot share a worktree: Aether owns the worktree and resets it on every turn. Fork into a new worktree instead.";
+      const aetherThread = await makeReadModel({ modelSelection: AETHER });
+      expect(await refusal(fork(AETHER, WORKTREE_PATH), aetherThread)).toBe(shared);
+      expect(await refusal(fork(CODEX, WORKTREE_PATH), aetherThread)).toBe(shared);
+      expect(
+        await refusal(fork(AETHER, WORKTREE_PATH), await makeReadModel({ modelSelection: CODEX })),
+      ).toBe(shared);
+      const events = await decide(fork(AETHER, null), aetherThread);
+      expect(events.map((event) => event.type)).toContain("thread.created");
+    });
+
     it("refuses a side chat, whichever provider it targets", async () => {
       const readModel = await makeReadModel({ modelSelection: AETHER });
       for (const target of [AETHER, CLAUDE]) {
@@ -523,6 +548,7 @@ describe("decider provider capability gating", () => {
         ],
         [turnStart("hello", { enableComputerControl: true }), "thread.turn-start-requested"],
         [createFromSource("thread.fork.create", modelSelection), "thread.created"],
+        [fork(modelSelection, WORKTREE_PATH), "thread.created"],
         [createFromSource("thread.handoff.create", CLAUDE), "thread.created"],
         [checkpointRevert("thread"), "thread.checkpoint-revert-requested"],
         [editAndResend(), "thread.message-edit-resend-requested"],
