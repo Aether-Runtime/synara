@@ -226,8 +226,9 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
-   * The thread was archived: its provider releases what it holds for the thread's lifetime (the
-   * adapter's `releaseThread`). The binding stays, so the thread can resume.
+   * The thread was archived: its provider stops the turn in flight and releases what it holds
+   * for the thread's lifetime (the adapter's `releaseThread`). The binding stays, so the thread
+   * can resume.
    */
   readonly releaseThread?: (input: {
     readonly threadId: ThreadId;

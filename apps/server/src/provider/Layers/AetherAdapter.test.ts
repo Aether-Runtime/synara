@@ -1837,20 +1837,17 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
-    it.effect.each(["deleted", "archived"] as const)(
-      "releases the worktree of a thread %s, so it can be removed",
+    it.effect.each(["deleted", "archived", "archived, whose stop fails,"] as const)(
+      "stops the turn in flight of a thread %s and releases its worktree",
       (retired) =>
         Effect.gen(function* () {
           const h = yield* makeHarness;
           const gitCore = yield* GitCore;
           const { adapter } = yield* h.makeAdapter();
-          h.finishTurns();
+          h.aether.hooks.onTurn = (turn) =>
+            h.aether.say(turn, "text-live", "Working", { open: true });
           yield* Effect.gen(function* () {
             const providerService = yield* ProviderService;
-            const accepted: ProviderRuntimeEvent[] = [];
-            yield* Stream.runForEach(providerService.streamEvents, (event) =>
-              Effect.sync(() => void accepted.push(event)),
-            ).pipe(Effect.forkScoped);
             yield* providerService.startSession(THREAD_ID, {
               threadId: THREAD_ID,
               provider: "aether",
@@ -1859,22 +1856,70 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
               runtimeMode: "full-access",
             });
             yield* providerService.sendTurn({ threadId: THREAD_ID, input: "Go" });
-            yield* waitFor("turn.completed", () => completions(accepted)[0]);
+            yield* waitFor("the running turn", () => h.aether.turns[0]);
             // Deleting a thread stops its session and removes its binding; archiving it stops
             // its runtime, keeping the binding, then releases what the thread held.
             if (retired === "deleted") {
               yield* providerService.stopSession({ threadId: THREAD_ID });
             } else {
               yield* providerService.stopRuntimeSession!({ threadId: THREAD_ID });
-              yield* providerService.releaseThread!({ threadId: THREAD_ID });
+              if (retired === "archived") {
+                yield* providerService.releaseThread!({ threadId: THREAD_ID });
+              } else {
+                h.aether.faults.refuseStop = new AetherApiHttpError({
+                  endpoint: "POST /tasks/{taskID}/stop",
+                  status: 503,
+                });
+                const failed = yield* providerService.releaseThread!({ threadId: THREAD_ID }).pipe(
+                  Effect.flip,
+                );
+                expect(failed).toMatchObject({
+                  _tag: "ProviderAdapterRequestError",
+                  method: "stopTask",
+                });
+              }
             }
           }).pipe(
             Effect.scoped,
             Effect.provide(providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer))),
           );
 
+          expect(h.aether.calls.stop).toEqual([{ discard_queued_messages: true }]);
           yield* gitCore.removeWorktree({ cwd: h.repo, path: h.worktree });
           expect(yield* h.exists("app.txt")).toBe(false);
+        }),
+    );
+
+    it.effect.each(["stops it as idle", "shuts down"] as const)(
+      "leaves the turn in flight running when Synara %s",
+      (detach) =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter } = yield* h.makeAdapter();
+          h.aether.hooks.onTurn = (turn) =>
+            h.aether.say(turn, "text-live", "Working", { open: true });
+          yield* Effect.gen(function* () {
+            const providerService = yield* ProviderService;
+            yield* providerService.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            yield* providerService.sendTurn({ threadId: THREAD_ID, input: "Go" });
+            yield* waitFor("the running turn", () => h.aether.turns[0]);
+            // The idle reaper stops the runtime; closing the scope shuts the service down.
+            if (detach === "stops it as idle") {
+              yield* providerService.stopRuntimeSession!({ threadId: THREAD_ID });
+            }
+          }).pipe(
+            Effect.scoped,
+            Effect.provide(providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer))),
+          );
+
+          expect(h.aether.calls.stop).toEqual([]);
+          expect(h.aether.turns[0]!.state).toBe("running");
         }),
     );
 

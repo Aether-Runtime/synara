@@ -172,7 +172,11 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   nor deleted. A claim lasts until the thread is archived (the command reactor calls
   `ProviderService.releaseThread`, which keeps the binding so the thread can resume and claim it
   again) or loses its binding (`ProviderService.stopSession`, as deleting a thread does); both
-  reach the adapter's `releaseThread`, so retention and deletion can remove the worktree. Startup
+  reach the adapter's `releaseThread`, so retention and deletion can remove the worktree. It first
+  stops (`POST /stop`, discarding queued messages) the turn the thread's persisted cursor says is
+  in flight, since Synara could not stop it afterwards; a failed stop is logged with the task id
+  and fails the call, and the worktree is released anyway. The idle reaper and a shutdown only
+  detach. Startup
   reconciliation asks the provider to follow each turn in flight again
   (`ProviderService.reattachTurn` → the adapter's `reattachTurn`): a reattached turn and its
   requests are left to the adapter, and its binding is marked running with that turn again (a

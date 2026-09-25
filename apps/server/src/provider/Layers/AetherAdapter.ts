@@ -827,7 +827,7 @@ export const makeAetherAdapter = (
      * Stops following the task; it keeps running in the cloud. ProviderService does not stop a
      * cloud provider's session after an interrupt, so the stopped turn still completes here.
      */
-    const stopSession: AetherAdapterShape["stopSession"] = (threadId) =>
+    const stopSession = (threadId: ThreadId): Effect.Effect<void> =>
       Effect.suspend(() => {
         const session = sessions.get(threadId);
         if (session === undefined) return Effect.void;
@@ -1366,15 +1366,36 @@ export const makeAetherAdapter = (
       rollbackThread: () =>
         notSupported("rollbackThread", "Aether cannot roll back a task's conversation."),
       stopSession,
-      releaseThread: (threadId) =>
-        stopSession(threadId).pipe(
-          Effect.andThen(
-            Effect.suspend(() => {
-              const held = claims.get(threadId);
-              if (held === undefined) return Effect.void;
-              claims.delete(threadId);
-              return Scope.close(held.scope, Exit.void);
-            }),
+      releaseThread: (input) =>
+        Effect.gen(function* () {
+          // Archiving or deleting a thread stops its turn in flight, as it stops a local agent:
+          // Synara could not stop the task afterwards.
+          if (input.resumeCursor === undefined || input.resumeCursor === null) return;
+          const cursor = yield* parseAetherResumeCursor(input.resumeCursor);
+          if (cursor.status === "creating" || !cursor.active) return;
+          yield* client.stopTask(cursor.taskId, { discard_queued_messages: true }).pipe(
+            Effect.tapError((error) =>
+              Effect.logError("aether.release.stop-failed", {
+                threadId: input.threadId,
+                taskId: cursor.taskId,
+                error: error.message,
+              }),
+            ),
+            Effect.mapError(apiFailure("stopTask")),
+          );
+        }).pipe(
+          // The thread is gone either way: its worktree is released even if the stop failed.
+          Effect.ensuring(
+            stopSession(input.threadId).pipe(
+              Effect.andThen(
+                Effect.suspend(() => {
+                  const held = claims.get(input.threadId);
+                  if (held === undefined) return Effect.void;
+                  claims.delete(input.threadId);
+                  return Scope.close(held.scope, Exit.void);
+                }),
+              ),
+            ),
           ),
         ),
       stopAll: () => Effect.forEach([...sessions.keys()], stopSession, { discard: true }),

@@ -69,9 +69,10 @@ export function makeFakeAetherTask() {
     loseRespond: boolean;
     staleAnswer: boolean;
     payment: boolean;
-    /** The next create, or respond, fails with this and changes nothing. */
+    /** The next create, respond or stop fails with this and changes nothing. */
     refuseCreate: AetherApiError | undefined;
     refuseRespond: AetherApiError | undefined;
+    refuseStop: AetherApiError | undefined;
     /** Every live read fails with this while it is set. */
     live: AetherApiError | undefined;
     /** Every live read waits for this latch while it is set: the poll loop cannot tick. */
@@ -83,6 +84,7 @@ export function makeFakeAetherTask() {
     payment: false,
     refuseCreate: undefined,
     refuseRespond: undefined,
+    refuseStop: undefined,
     live: undefined,
     liveGate: undefined,
   };
@@ -240,8 +242,13 @@ export function makeFakeAetherTask() {
         return Effect.succeed(decode(AetherRespondToTaskResponse, { message_id: id }));
       }),
     stopTask: (_taskId, request) =>
-      Effect.sync(() => {
+      Effect.suspend((): Effect.Effect<void, AetherApiError> => {
         calls.stop.push({ ...request });
+        const refused = faults.refuseStop;
+        if (refused !== undefined) {
+          faults.refuseStop = undefined;
+          return Effect.fail(refused);
+        }
         for (const message of open.values()) fake.close(String(message.id));
         turns.splice(0, turns.length, ...turns.filter((turn) => turn.state !== "queued"));
         for (const turn of turns) {
@@ -251,6 +258,7 @@ export function makeFakeAetherTask() {
           }
         }
         idle();
+        return Effect.void;
       }),
     removeFromQueue: () => Effect.die("unused"),
     getConversationTurns: (_taskId, page) =>

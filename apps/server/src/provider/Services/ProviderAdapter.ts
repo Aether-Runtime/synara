@@ -220,11 +220,15 @@ export interface ProviderAdapterShape<TError> {
   readonly stopSession: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
-   * Stop the thread's session and release what the adapter holds for the thread's lifetime
-   * rather than a session's (a cloud provider's worktree claim): the thread was archived, or lost
-   * its binding. Idempotent.
+   * The thread was archived, or lost its binding: stop the turn its persisted resume cursor says
+   * is in flight (as archiving or deleting stops a local agent), stop its session, and release
+   * what the adapter holds for the thread's lifetime rather than a session's (a cloud provider's
+   * worktree claim), even when stopping the turn fails. Idempotent.
    */
-  readonly releaseThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+  readonly releaseThread?: (input: {
+    readonly threadId: ThreadId;
+    readonly resumeCursor: unknown;
+  }) => Effect.Effect<void, TError>;
 
   /** Validate and retire before generation rotation; the returned start retains per-attempt preflight. */
   readonly prepareSessionReplacement?: (input: ProviderSessionStartInput) => Effect.Effect<
