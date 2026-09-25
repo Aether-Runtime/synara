@@ -1190,6 +1190,86 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(completions(events)).toHaveLength(1);
       }),
     );
+    it.effect("completes the turn with its own run when a late steer fails before it lands", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        let running: FakeTurn | undefined;
+        h.aether.hooks.onTurn = (turn) => {
+          running = turn;
+          h.aether.say(turn, "text-live", "Working", { open: true });
+        };
+        const turn = yield* adapter.sendTurn(h.send("Refactor"));
+        yield* waitFor("streamed text", () =>
+          events.find((event) => event.type === "content.delta"),
+        );
+
+        // Aether settles the run; the steer that follows fails with nothing sent.
+        h.aether.close("text-live");
+        h.aether.settle(running!);
+        h.aether.faults.refuseRespond = new AetherApiHttpError({
+          endpoint: "POST /tasks/{taskID}/respond",
+          status: 503,
+        });
+        const lost = yield* adapter.steerTurn!(h.send("Also rename the module")).pipe(Effect.flip);
+        expect(lost).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+
+        const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+        expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+        yield* Effect.sleep("1500 millis");
+        expect(completions(events)).toHaveLength(1);
+      }),
+    );
+
+    it.effect(
+      "binds a late steer sent again after its response was lost to the turn it started",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          let running: FakeTurn | undefined;
+          h.aether.hooks.onTurn = (turn) => {
+            running = turn;
+            h.aether.say(turn, "text-live", "Working", { open: true });
+          };
+          const turn = yield* adapter.sendTurn(h.send("Refactor"));
+          yield* waitFor("streamed text", () =>
+            events.find((event) => event.type === "content.delta"),
+          );
+
+          // The loop cannot tick: Synara sees nothing of what follows until the gate opens.
+          const gate = yield* Latch.make(false);
+          h.aether.faults.liveGate = gate;
+          h.aether.close("text-live");
+          h.workspace.serve(diffOf(h.baseCommit, added("steered.txt", "late\n")));
+          h.aether.hooks.onTurn = (late) => {
+            h.aether.say(late, "text-late", "Renamed it.");
+            h.aether.settle(late);
+          };
+          h.aether.settle(running!);
+          // The steer lands as a new turn, but its response is lost; the user sends it again.
+          h.aether.faults.loseRespond = true;
+          const steer = h.send("Also rename the module");
+          yield* adapter.steerTurn!(steer).pipe(Effect.flip);
+          const steered = yield* adapter.steerTurn!(steer);
+          expect(steered.turnId).toBe(turn.turnId);
+          expect(h.aether.turns).toHaveLength(2);
+          h.aether.faults.liveGate = undefined;
+          yield* gate.open;
+
+          const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+          expect(completed).toMatchObject({ turnId: turn.turnId, payload: { state: "completed" } });
+          const late = events.find((event) => event.itemId === "text-late");
+          expect(late).toMatchObject({ turnId: turn.turnId });
+          expect(events.indexOf(completed)).toBeGreaterThan(events.indexOf(late!));
+          expect(yield* h.read("steered.txt")).toBe("late\n");
+          expect(events.filter((event) => event.type === "runtime.warning")).toEqual([]);
+          yield* Effect.sleep("1500 millis");
+          expect(completions(events)).toHaveLength(1);
+        }),
+    );
   });
 
   describe("interrupt", () => {

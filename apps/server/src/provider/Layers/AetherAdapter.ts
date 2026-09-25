@@ -175,6 +175,17 @@ function transition(task: Task, change: (cursor: AetherCreatedCursor) => AetherC
   task.cursor = change(task.cursor);
 }
 
+/** Forgets a recorded send (see `respond`). */
+function forget(task: Task, clientMessageId: string) {
+  transition(task, (cursor) => {
+    const [first, ...sent] = cursor.turns;
+    return {
+      ...cursor,
+      turns: [first, ...sent.filter((other) => other.clientMessageId !== clientMessageId)],
+    };
+  });
+}
+
 type MirrorOutcome =
   | { readonly _tag: "Mirrored"; readonly note: string | undefined }
   /** The workspace is not running: mirror when the next turn starts or settles. */
@@ -875,18 +886,7 @@ export const makeAetherAdapter = (
           .pipe(
             Effect.tapError((error) =>
               Effect.gen(function* () {
-                if (sendRefused(error)) {
-                  transition(task, (cursor) => {
-                    const [first, ...sent] = cursor.turns;
-                    return {
-                      ...cursor,
-                      turns: [
-                        first,
-                        ...sent.filter((other) => other.clientMessageId !== clientMessageId),
-                      ],
-                    };
-                  });
-                }
+                if (sendRefused(error)) forget(task, clientMessageId);
                 // A stale answer: read the task again rather than retry.
                 if (error._tag === "AetherApiConflictError") yield* task.poller.wake;
               }),
@@ -1255,11 +1255,23 @@ export const makeAetherAdapter = (
               // Without `queue_for_later`, Aether hands the message to the running agent. When the
               // turn's run already settled (Synara has not seen it yet) or has not started, the
               // steer runs as a new Aether turn of the same Synara turn, which then waits on it.
-              yield* respond(
-                task,
-                "steerTurn",
-                running === undefined ? { message, queue_for_later: true } : { message },
-                { turnId: active, aetherTurnId: running?.id ?? null },
+              const body = running === undefined ? { message, queue_for_later: true } : { message };
+              const clientMessageId = clientMessageIdFor(task.cursor, body);
+              // Sent again after its response was lost, a queued steer joins the turn it started.
+              const landed = page.turns.find(
+                (turn) => turn.root_message.clientMessageId === clientMessageId,
+              );
+              yield* respond(task, "steerTurn", body, {
+                turnId: active,
+                aetherTurnId: running?.id ?? landed?.id ?? null,
+              }).pipe(
+                // One whose response was lost is forgotten, so the turn goes on waiting on its own
+                // run; if it did land, its turn is from outside Synara until it is sent again.
+                Effect.tapError(() =>
+                  Effect.sync(() => {
+                    if (running === undefined) forget(task, clientMessageId);
+                  }),
+                ),
               );
               yield* task.poller.wake;
               return { threadId: session.threadId, turnId: active, resumeCursor: task.cursor };

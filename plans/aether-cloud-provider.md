@@ -140,7 +140,9 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
 - `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident.
   `steerTurn` sends without it while the steered turn's Aether run is running; when that run has
   already settled (Synara has not seen it yet) or has not started, the steer runs as a new Aether
-  turn of the same Synara turn, which then completes only when that run settles.
+  turn of the same Synara turn, which then completes only when that run settles. Such a steer whose
+  response was lost is forgotten, so the turn goes on waiting on its own run; if it did land, its
+  turn is from outside Synara until the steer is sent again, which binds it.
 - An Aether turn is Synara's if and only if it is the task's own first turn, or its root message
   carries a `client_message_id` the adapter derived for this task (a message, a plan answer or a
   steer, each recorded in `turns`); any other turn is from outside Synara.
