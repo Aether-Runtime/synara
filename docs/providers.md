@@ -31,9 +31,10 @@ in Aether. Its threads always run in a new worktree that Aether owns and, once a
 never leave it. The features that need Synara's local agent gateway, the local checkout, or a
 second thread in that worktree are unavailable for them: thread goals, Computer Use, browser and
 device tools, side chats, forking into the same worktree, automations (including heartbeats on an
-Aether thread), reverting or editing earlier messages, copying local changes into the worktree,
-branch picks, and handing a thread off to Local or to or from Aether. The app hides these controls
-and the server refuses them.
+Aether thread), reverting or editing earlier messages, branch picks, and handing a thread off to
+Local or to or from Aether. The app hides these controls and the server refuses them. Local changes
+are never copied into an Aether worktree: the app does not copy them, and the server refuses an
+agent-created Aether thread whose worktree would copy them.
 
 ## What Synara manages
 
