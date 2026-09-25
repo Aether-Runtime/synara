@@ -192,6 +192,26 @@ describe("decider provider capability gating", () => {
       ).toContain("Thread goals are unavailable with Aether");
     });
 
+    it("lets a thread with a paused goal switch to Aether through thread.meta.update", async () => {
+      // The web persists the new selection with thread.meta.update before the turn starts.
+      const paused = await makeReadModel({
+        modelSelection: CODEX,
+        goal: "Ship it",
+        goalPaused: true,
+      });
+      const switchToAether = {
+        type: "thread.meta.update" as const,
+        commandId: commandId("switch-to-aether"),
+        threadId: THREAD_ID,
+        modelSelection: AETHER,
+      };
+      expect((await decide(switchToAether, paused))[0]?.type).toBe("thread.meta-updated");
+      // Resuming that goal in the same update would leave it active on Aether.
+      expect(await refusal({ ...switchToAether, goalPaused: false }, paused)).toContain(
+        "Thread goals are unavailable with Aether",
+      );
+    });
+
     it("refuses a first turn that would carry an active goal onto Aether", async () => {
       const readModel = await makeReadModel({ modelSelection: CODEX, goal: "Ship it" });
       expect(await refusal(turnStart("hello", { modelSelection: AETHER }), readModel)).toBe(

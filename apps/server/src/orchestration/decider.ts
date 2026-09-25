@@ -1585,11 +1585,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         yield* validateAutoRuntimeMode(command, command.modelSelection, thread.runtimeMode);
       }
       // A goal ends only when the agent calls synara_set_thread_goal on the local gateway, so
-      // setting, resuming or carrying one onto a provider that cannot reach it would loop.
-      const nextGoal =
-        command.goalAchieved === true ? "" : (command.goal ?? thread.goal ?? "").trim();
+      // setting, resuming or carrying an active one onto a provider that cannot reach it would
+      // loop. The goal this update leaves behind is judged like a turn's: a paused one is never
+      // sent to the provider.
+      const occurredAt = nowIso();
+      const activeGoalAfterUpdate = activeThreadGoal({
+        ...thread,
+        ...resolveThreadGoalPatch(command, thread, occurredAt),
+      });
       if (
-        nextGoal.length > 0 &&
+        (activeGoalAfterUpdate ?? "").trim().length > 0 &&
         (command.goal !== undefined ||
           command.goalPaused === false ||
           command.modelSelection !== undefined)
@@ -1614,7 +1619,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           yield* threadProviders(command, thread, command.modelSelection),
         );
       }
-      const occurredAt = nowIso();
       return {
         ...withEventBase({
           aggregateKind: "thread",
