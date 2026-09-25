@@ -7,6 +7,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
+  TurnId,
   type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationReadModel,
@@ -248,6 +249,40 @@ describe("decider provider capability gating", () => {
       ).toBe(
         "Orchestration command invariant failed (thread.meta.update): Aether threads run only in a worktree that Aether owns, never in the local checkout.",
       );
+    });
+
+    it("refuses moving a thread off its worktree after a turn, with no session left", async () => {
+      // A stopped or released session is gone, but the thread has still started.
+      const readModel = await makeReadModel({ modelSelection: AETHER });
+      const [thread] = readModel.threads;
+      const turnWithoutSession = {
+        ...readModel,
+        threads: [
+          {
+            ...thread!,
+            session: null,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("turn-without-session"),
+              state: "completed" as const,
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: null,
+            },
+          },
+        ],
+      };
+      expect(
+        await refusal(
+          {
+            type: "thread.meta.update",
+            commandId: commandId("move-worktree"),
+            threadId: THREAD_ID,
+            worktreePath: null,
+          },
+          turnWithoutSession,
+        ),
+      ).toContain("cannot move to another checkout once a turn has started");
     });
 
     it("refuses moving a started thread off its worktree", async () => {
