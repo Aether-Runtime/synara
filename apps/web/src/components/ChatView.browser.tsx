@@ -8762,87 +8762,99 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
-  it("refuses an Aether send from the chats container before creating a folder", async () => {
-    useComposerDraftStore.setState({
-      draftThreadsByThreadId: {
-        [THREAD_ID]: {
-          projectId: HOME_PROJECT_ID,
-          createdAt: NOW_ISO,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          entryPoint: "chat",
-          branch: null,
-          worktreePath: null,
-          envMode: "local",
+  it.each([
+    // A new chat folder is not a git repository.
+    ["a new chat folder", null, "Aether needs a git repository with a GitHub remote."],
+    // A picked folder (maybe a git repository) would run in its local checkout.
+    [
+      "a picked folder",
+      "/Users/tester/code/app",
+      "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+    ],
+  ] as const)(
+    "refuses an Aether send from the chats container into %s before creating it",
+    async (_target, pickedFolder, refusal) => {
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: HOME_PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            entryPoint: "chat",
+            branch: null,
+            worktreePath: pickedFolder,
+            envMode: "local",
+          },
         },
-      },
-      projectDraftThreadIdByProjectId: {
-        [HOME_PROJECT_ID]: THREAD_ID,
-      },
-    });
-    const restoreNativeApi = installDeterministicSendNativeApi();
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: withHomeChatProject(createDraftOnlySnapshot()),
-      configureFixture: (nextFixture) => {
-        nextFixture.welcome = {
-          ...nextFixture.welcome,
-          homeDir: "/Users/tester",
-          chatWorkspaceRoot: "/Users/tester/Documents/Synara",
-        };
-        const providers: ServerConfig["providers"] = [
-          ...nextFixture.serverConfig.providers,
-          {
-            provider: "aether",
-            status: "ready",
-            available: true,
-            authStatus: "authenticated",
-            checkedAt: NOW_ISO,
-          },
-        ];
-        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
-        nextFixture.providerStatusesSnapshot = providers;
-        const settings = createBrowserTestServerSettings(NOW_ISO);
-        nextFixture.serverSettings = {
-          ...settings,
-          providers: {
-            ...settings.providers,
-            aether: { ...settings.providers.aether, enabled: true },
-          },
-        };
-      },
-    });
-
-    try {
-      await waitForComposerEditor();
-      useComposerDraftStore
-        .getState()
-        .setModelSelection(THREAD_ID, { provider: "aether", model: "claude-opus-5-5" });
-      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Ship it in the cloud");
-      const sendButton = await waitForSendButton();
-      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
-        timeout: 8_000,
-        interval: 16,
+        projectDraftThreadIdByProjectId: {
+          [HOME_PROJECT_ID]: THREAD_ID,
+        },
       });
-      wsRequests.length = 0;
-      sendButton.click();
-
-      await vi.waitFor(
-        () => {
-          expect(
-            document.querySelector('[data-slot="toast-viewport"]')?.textContent ?? "",
-          ).toContain("Aether needs a git repository with a GitHub remote.");
+      const restoreNativeApi = installDeterministicSendNativeApi();
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: withHomeChatProject(createDraftOnlySnapshot()),
+        configureFixture: (nextFixture) => {
+          nextFixture.welcome = {
+            ...nextFixture.welcome,
+            homeDir: "/Users/tester",
+            chatWorkspaceRoot: "/Users/tester/Documents/Synara",
+          };
+          const providers: ServerConfig["providers"] = [
+            ...nextFixture.serverConfig.providers,
+            {
+              provider: "aether",
+              status: "ready",
+              available: true,
+              authStatus: "authenticated",
+              checkedAt: NOW_ISO,
+            },
+          ];
+          nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+          nextFixture.providerStatusesSnapshot = providers;
+          const settings = createBrowserTestServerSettings(NOW_ISO);
+          nextFixture.serverSettings = {
+            ...settings,
+            providers: {
+              ...settings.providers,
+              aether: { ...settings.providers.aether, enabled: true },
+            },
+          };
         },
-        { timeout: 8_000, interval: 16 },
-      );
-      // Nothing was created on disk or on the server.
-      expect(hasDispatchedCommandType("project.create")).toBe(false);
-      expect(hasDispatchedCommandType("thread.create")).toBe(false);
-    } finally {
-      restoreNativeApi();
-      await mounted.cleanup();
-    }
-  });
+      });
+
+      try {
+        await waitForComposerEditor();
+        useComposerDraftStore
+          .getState()
+          .setModelSelection(THREAD_ID, { provider: "aether", model: "claude-opus-5-5" });
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Ship it in the cloud");
+        const sendButton = await waitForSendButton();
+        await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        wsRequests.length = 0;
+        sendButton.click();
+
+        await vi.waitFor(
+          () => {
+            expect(
+              document.querySelector('[data-slot="toast-viewport"]')?.textContent ?? "",
+            ).toContain(refusal);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        // Nothing was created on disk or on the server.
+        expect(hasDispatchedCommandType("project.create")).toBe(false);
+        expect(hasDispatchedCommandType("thread.create")).toBe(false);
+      } finally {
+        restoreNativeApi();
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("explains a cloud provider once on a new chat and hides it after dismissal", async () => {
     const mounted = await mountChatView({

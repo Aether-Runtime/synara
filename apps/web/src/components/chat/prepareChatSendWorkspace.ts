@@ -212,15 +212,18 @@ export async function prepareChatSendWorkspace({
   let currentActiveGitBranchForSend = currentActiveGitBranch;
 
   if (isFirstMessage && isContainerLandingProject && firstSendTarget.kind !== "current") {
-    // A chat started here runs in a new chat folder or a project's local checkout, neither of
-    // which a provider that owns its worktree can use: refuse before creating anything.
+    // A chat started here runs in a new chat folder (not a git repository) or in a picked
+    // folder's local checkout, neither of which a provider that owns its worktree can use:
+    // refuse before creating anything.
     const provider = selectedModelSelectionForSend.provider;
     if (!providerSupportsFeature(provider, "local-workspace")) {
+      const newChatFolder =
+        firstSendTarget.kind === "create-project" && firstSendTarget.creation.kind === "chat";
       setThreadError(
         threadIdForSend,
         providerFeatureUnavailableMessage(
           provider,
-          firstSendTarget.kind === "create-project" ? "non-git-workspace" : "local-workspace",
+          newChatFolder ? "non-git-workspace" : "local-workspace",
         ),
       );
       return false;
