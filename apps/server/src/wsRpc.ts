@@ -24,6 +24,7 @@ import {
   type ComputerEvent,
   type GitActionProgressEvent,
   type GitHubProjectProvisionProgressEvent,
+  type GitRemoveWorktreeInput,
   type GitWorktreeSetupProgressEvent,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -31,6 +32,7 @@ import {
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadDetailSnapshot,
+  type OrchestrationThread,
   type OrchestrationThreadStreamItem,
   type ServerConfigStreamEvent,
   type ServerDiagnosticsResult,
@@ -112,7 +114,7 @@ import { recoverUnregisteredGitHubCheckout } from "./project/githubProjectRegist
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { getEnabledProviderAdapter } from "./provider/enabledProviderAdapter";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
-import { ProviderService } from "./provider/Services/ProviderService";
+import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { consumeCodexResetCreditEffect, listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { ProfileStatsQuery } from "./profileStats";
@@ -354,6 +356,41 @@ export const writeWorkspaceFileOutsideOwnedWorktree = (
   services.git
     .assertWorktreeNotOwned(services.path.resolve(input.cwd, input.relativePath))
     .pipe(Effect.andThen(services.workspaceFileSystem.writeFile(input)));
+
+/**
+ * `git.removeWorktree`, releasing first a claim that a deleted thread still holds. The app removes
+ * the worktree the user chose to delete right after `thread.delete` is accepted, while the
+ * deletion reactor stops the thread's provider session, which releases the worktree a provider
+ * such as Aether owns, only later. That same stop runs here first; a claim held by a thread that
+ * is not deleted still refuses the removal.
+ */
+export const removeWorktreeReleasingDeletedOwner = (
+  services: {
+    readonly git: Pick<GitCoreShape, "withMutation" | "removeWorktree">;
+    readonly providerService: Pick<ProviderServiceShape, "stopSession">;
+    readonly readModel: Effect.Effect<{
+      readonly threads: ReadonlyArray<Pick<OrchestrationThread, "id" | "deletedAt">>;
+    }>;
+  },
+  input: GitRemoveWorktreeInput,
+) => {
+  const remove = services.git.withMutation(input.cwd, services.git.removeWorktree(input));
+  return remove.pipe(
+    Effect.catchTag("WorktreeOwnedError", (owned) =>
+      services.readModel.pipe(
+        Effect.flatMap((readModel) =>
+          readModel.threads.some(
+            (thread) => thread.id === owned.ownerThreadId && thread.deletedAt !== null,
+          )
+            ? services.providerService
+                .stopSession({ threadId: owned.ownerThreadId })
+                .pipe(Effect.andThen(remove))
+            : Effect.fail(owned),
+        ),
+      ),
+    ),
+  );
+};
 
 // Process-wide so a subscriber's restart chain survives its own reconnects
 // (the client id is stable across a socket reconnect), but keyed per
@@ -1610,7 +1647,10 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             refreshGitStatusAfter(
               input.cwd,
-              git.withMutation(input.cwd, git.removeWorktree(input)),
+              removeWorktreeReleasingDeletedOwner(
+                { git, providerService, readModel: orchestrationEngine.getReadModel() },
+                input,
+              ),
             ),
             "Failed to remove worktree",
           ),
