@@ -72,6 +72,7 @@ import {
   type AetherIngestResume,
 } from "../aether/aetherConversationIngest.ts";
 import {
+  AETHER_TURNS_PAGE_LIMIT,
   makeAetherConversationPoller,
   type AetherConversationPollFailure,
   type AetherConversationPoller,
@@ -974,8 +975,9 @@ export const makeAetherAdapter = (
     /** A later turn: a new message, or the answer to a proposed plan; with a note to show. */
     const respondTurn = (session: SessionBase, task: Task, turn: TurnRequest) =>
       Effect.gen(function* () {
+        // The loop's page: a shorter one could miss the turn `after` names.
         const page = yield* client
-          .getConversationTurns(task.cursor.taskId)
+          .getConversationTurns(task.cursor.taskId, { limit: AETHER_TURNS_PAGE_LIMIT })
           .pipe(Effect.mapError(apiFailure("getConversationTurns")));
         const awaiting =
           page.task.status === "awaiting_input" ? page.task.awaiting_input : undefined;
@@ -1240,7 +1242,7 @@ export const makeAetherAdapter = (
               }
               const message = yield* turnText(input, "steerTurn");
               const page = yield* client
-                .getConversationTurns(task.cursor.taskId)
+                .getConversationTurns(task.cursor.taskId, { limit: AETHER_TURNS_PAGE_LIMIT })
                 .pipe(Effect.mapError(apiFailure("getConversationTurns")));
               // The loop may not have listed the turn just sent yet.
               for (const turn of page.turns) {
@@ -1286,7 +1288,7 @@ export const makeAetherAdapter = (
               if (task._tag === "Creating") return;
               const { taskId } = task.cursor;
               const page = yield* client
-                .getConversationTurns(taskId)
+                .getConversationTurns(taskId, { limit: AETHER_TURNS_PAGE_LIMIT })
                 .pipe(Effect.mapError(apiFailure("getConversationTurns")));
               for (const turn of page.turns) {
                 bindOrigin(task, turn.id, turn.root_message.clientMessageId);

@@ -34,6 +34,9 @@ type TurnState = "queued" | "running" | "awaiting_input" | "settled" | "errored"
 
 export const FAKE_REPO_URL = "https://github.com/acme/widgets.git";
 
+/** Shorter than any page the adapter asks for, so a read that omits its limit misses turns. */
+const FAKE_DEFAULT_TURNS_PAGE_LIMIT = 1;
+
 export interface FakeTurn {
   readonly id: string;
   readonly root: Json;
@@ -255,7 +258,7 @@ export function makeFakeAetherTask() {
         decode(AetherConversationTurnsPage, {
           task: taskBody(),
           head_revision: head,
-          turns: turns.slice(-(page?.limit ?? turns.length)).map((turn) => ({
+          turns: turns.slice(-(page?.limit ?? FAKE_DEFAULT_TURNS_PAGE_LIMIT)).map((turn) => ({
             id: turn.id,
             root_message: turn.root,
             members: [],
