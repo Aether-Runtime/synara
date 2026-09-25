@@ -18,6 +18,7 @@ import {
   DEVICE_WS_METHODS,
   COMPUTER_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
+  type NativeApi,
   type OrchestrationReadModel,
   type ProjectId,
   type ServerConfig,
@@ -63,6 +64,7 @@ import { getRouter } from "../router";
 import { useSplitViewStore } from "../splitViewStore";
 import { useSpacesUiStore } from "../spacesUiStore";
 import { useStore } from "../store";
+import { getThreadFromState } from "../threadDerivation";
 import {
   createShellSnapshotFromReadModel,
   flattenEffectRpcRequestPayload,
@@ -1305,13 +1307,22 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       updatedAt: NOW_ISO,
     };
   }
-  if (tag === WS_METHODS.shellOpenInEditor || tag === WS_METHODS.terminalWrite) {
+  if (
+    tag === WS_METHODS.shellOpenInEditor ||
+    tag === WS_METHODS.terminalWrite ||
+    tag === WS_METHODS.gitRemoveWorktree
+  ) {
     return null;
   }
   return {};
 }
 
-function installDeterministicSendNativeApi(options?: { rejectTurnStart?: boolean }): () => void {
+function installDeterministicSendNativeApi(options?: {
+  rejectTurnStart?: boolean;
+  rejectCommand?: (
+    command: Parameters<NativeApi["orchestration"]["dispatchCommand"]>[0],
+  ) => boolean;
+}): () => void {
   const previousNativeApi = window.nativeApi;
   const wsNativeApi = readNativeApi();
   if (!wsNativeApi) {
@@ -1365,6 +1376,9 @@ function installDeterministicSendNativeApi(options?: { rejectTurnStart?: boolean
           });
           if (options?.rejectTurnStart && command.type === "thread.turn.start") {
             throw new Error("Turn start failed for test.");
+          }
+          if (options?.rejectCommand?.(command)) {
+            throw new Error("Command refused for test.");
           }
           return { sequence: fixture.snapshot.snapshotSequence + 1 };
         },
@@ -8616,6 +8630,95 @@ describe("ChatView transcript geometry (full app)", () => {
       }
     },
   );
+
+  it("resets a failed first Aether send to a new worktree and surfaces a refused reset", async () => {
+    const restoreNativeApi = installDeterministicSendNativeApi({
+      rejectTurnStart: true,
+      rejectCommand: (command) =>
+        command.type === "thread.meta.update" && command.worktreePath === null,
+    });
+    const snapshot = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-aether-failed-first-send" as MessageId,
+        targetText: "aether failed first send",
+      }),
+      OTHER_THREAD_ID,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === OTHER_THREAD_ID
+            ? {
+                ...thread,
+                modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+                envMode: "worktree" as const,
+                session: null,
+              }
+            : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+        const settings = createBrowserTestServerSettings(NOW_ISO);
+        nextFixture.serverSettings = {
+          ...settings,
+          providers: {
+            ...settings.providers,
+            aether: { ...settings.providers.aether, enabled: true },
+          },
+        };
+      },
+    });
+
+    try {
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: OTHER_THREAD_ID } });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === `/${OTHER_THREAD_ID}`,
+        "Thread route did not switch.",
+      );
+      useComposerDraftStore.getState().setPrompt(OTHER_THREAD_ID, "Ship it in the cloud");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      wsRequests.length = 0;
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          // Aether never falls back to Local: the thread goes back to "no worktree yet".
+          const reset = wsRequests
+            .map(readDispatchedCommand)
+            .find(
+              (command) => command?.type === "thread.meta.update" && command.worktreePath === null,
+            );
+          expect(reset).toMatchObject({ envMode: "worktree", worktreePath: null });
+          expect(getThreadFromState(useStore.getState(), OTHER_THREAD_ID)?.error).toContain(
+            "Command refused for test.",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      restoreNativeApi();
+      await mounted.cleanup();
+    }
+  });
 
   it("explains a cloud provider once on a new chat and hides it after dismissal", async () => {
     const mounted = await mountChatView({
