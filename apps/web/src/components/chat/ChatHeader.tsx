@@ -99,6 +99,8 @@ interface ChatHeaderProps {
   handoffBadgeLabel: string | null;
   handoffActionLabel: string;
   handoffDisabled: boolean;
+  /** Why the thread's provider cannot hand off, shown on the disabled Hand off control. */
+  handoffUnavailableReason: string | null;
   handoffActionTargetProviders: ReadonlyArray<ProviderKind>;
   handoffBadgeSourceProvider: ProviderKind | null;
   handoffBadgeTargetProvider: ProviderKind | null;
@@ -522,6 +524,7 @@ export function ChatHeader({
   handoffBadgeLabel,
   handoffActionLabel,
   handoffDisabled,
+  handoffUnavailableReason,
   handoffActionTargetProviders,
   handoffBadgeSourceProvider,
   handoffBadgeTargetProvider,
@@ -660,6 +663,22 @@ export function ChatHeader({
       </TooltipPopup>
     </Tooltip>
   ) : null;
+  const handoffMenuTrigger = (
+    <MenuTrigger
+      render={
+        <ChatHeaderButton
+          type="button"
+          tone="outline"
+          className={compact ? "gap-1" : "gap-1.5"}
+          aria-label={handoffActionLabel}
+          disabled={handoffDisabled || handoffActionTargetProviders.length === 0}
+        />
+      }
+    >
+      <HandoffIcon className="size-[1em] shrink-0 opacity-80" />
+      {!compact ? <span className="truncate font-normal">Hand off</span> : null}
+    </MenuTrigger>
+  );
 
   return (
     <div ref={headerRef} className={cn("flex min-w-0 flex-1 items-center gap-2", className)}>
@@ -800,25 +819,17 @@ export function ChatHeader({
         {!minimalChrome && !hideHandoffControls ? (
           <Menu modal={false}>
             <Tooltip>
-              <TooltipTrigger
-                render={
-                  <MenuTrigger
-                    render={
-                      <ChatHeaderButton
-                        type="button"
-                        tone="outline"
-                        className={compact ? "gap-1" : "gap-1.5"}
-                        aria-label={handoffActionLabel}
-                        disabled={handoffDisabled || handoffActionTargetProviders.length === 0}
-                      />
-                    }
-                  >
-                    <HandoffIcon className="size-[1em] shrink-0 opacity-80" />
-                    {!compact ? <span className="truncate font-normal">Hand off</span> : null}
-                  </MenuTrigger>
-                }
-              />
-              <TooltipPopup side="bottom">{handoffActionLabel}</TooltipPopup>
+              {handoffUnavailableReason === null ? (
+                <TooltipTrigger render={handoffMenuTrigger} />
+              ) : (
+                // The disabled button drops pointer events, so the span owns the hover.
+                <TooltipTrigger render={<span className="inline-flex cursor-not-allowed" />}>
+                  {handoffMenuTrigger}
+                </TooltipTrigger>
+              )}
+              <TooltipPopup side="bottom">
+                {handoffUnavailableReason ?? handoffActionLabel}
+              </TooltipPopup>
             </Tooltip>
             <ComposerPickerMenuPopup align="end" side="bottom" className="w-48 min-w-48">
               {handoffActionTargetProviders.map((provider) => (

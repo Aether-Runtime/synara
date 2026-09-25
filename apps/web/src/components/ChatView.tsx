@@ -2239,6 +2239,11 @@ export default function ChatView({
     [activeThread, providerStatuses, serverSettingsQuery.data?.providers],
   );
   const handoffActionLabel = activeThread ? "Hand off thread" : "Create handoff thread";
+  const handoffLackingProvider = providerLackingFeature(threadGateProviders, "provider-handoff");
+  const handoffUnavailableReason =
+    handoffLackingProvider === null
+      ? null
+      : providerFeatureUnavailableMessage(handoffLackingProvider, "provider-handoff");
   const activeProviderStatus = useMemo(
     () => findProviderStatus(providerStatuses, selectedProvider),
     [selectedProvider, providerStatuses],
@@ -5776,6 +5781,7 @@ export default function ChatView({
           handoffBadgeLabel={handoffBadgeLabel}
           handoffActionLabel={handoffActionLabel}
           handoffDisabled={handoffDisabled}
+          handoffUnavailableReason={handoffUnavailableReason}
           handoffActionTargetProviders={handoffTargetProviders}
           handoffBadgeSourceProvider={handoffBadgeSourceProvider}
           handoffBadgeTargetProvider={handoffBadgeTargetProvider}
