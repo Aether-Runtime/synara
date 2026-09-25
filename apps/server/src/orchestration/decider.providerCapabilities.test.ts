@@ -307,7 +307,7 @@ describe("decider provider capability gating", () => {
           turnStart("hello"),
           await makeReadModel({ modelSelection: AETHER, worktreePath: null }),
         ),
-      ).toContain("Aether threads always run in a new worktree");
+      ).toContain("Aether needs a git repository with a GitHub remote");
       const events = await decide(
         turnStart("hello"),
         await makeReadModel({ modelSelection: AETHER }),

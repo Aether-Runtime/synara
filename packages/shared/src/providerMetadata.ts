@@ -292,7 +292,7 @@ export function providerFeatureUnavailableMessage(
     case "conversation-rollback":
       return `${name} cannot roll back its conversation, so reverting changes or editing earlier messages is unavailable in this thread.`;
     case "local-workspace":
-      return `${name} threads always run in a new worktree that ${name} owns; they cannot work in the local checkout.`;
+      return `${name} needs a git repository with a GitHub remote: its threads always run in a new worktree that ${name} owns, never in the local checkout.`;
     case "copy-changes":
       return `${name} threads cannot copy local changes into their worktree: ${name} clones from origin and resets the worktree on every turn.`;
     case "provider-handoff":

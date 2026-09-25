@@ -9,7 +9,10 @@ import {
   buildPromptThreadTitleFallback,
 } from "@synara/shared/chatThreads";
 import { getDefaultModel } from "@synara/shared/model";
-import { providerSupportsFeature } from "@synara/shared/providerMetadata";
+import {
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import type { QueryClient } from "@tanstack/react-query";
 import { gitStatusQueryOptions } from "~/lib/gitReactQuery";
 import { newCommandId, newProjectId } from "~/lib/utils";
@@ -332,10 +335,15 @@ export async function prepareChatSendWorkspace({
   // fall back to local execution when branch selection is missing.
   const shouldCreateWorktree =
     isFirstMessage && nextThreadEnvMode === "worktree" && !nextThreadWorktreePath;
+  // A provider that owns its worktree is forced into one, so no base branch here means no git
+  // repository to branch from (Studio, a non-git folder): say what the provider needs.
   if (shouldCreateWorktree && !nextThreadBranch) {
+    const provider = selectedModelSelectionForSend.provider;
     setStoreThreadError(
       threadIdForSend,
-      "Select a base branch before sending in New worktree mode.",
+      providerSupportsFeature(provider, "local-workspace")
+        ? "Select a base branch before sending in New worktree mode."
+        : providerFeatureUnavailableMessage(provider, "local-workspace"),
     );
     return false;
   }
