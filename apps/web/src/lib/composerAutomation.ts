@@ -42,6 +42,7 @@ import {
   type ChatAutomationIntent,
   type ResolvedChatAutomationIntent,
 } from "./automationIntent";
+import { providerSupportsFeature } from "@synara/shared/providerMetadata";
 
 type GenerateComposerAutomationIntent = (
   input: ServerGenerateAutomationIntentInput,
@@ -269,7 +270,9 @@ export function buildComposerAutomationDraft(input: {
       name: automationIntent.name,
       prompt: automationIntent.prompt,
       projectId: input.projectId,
-      modelSelection: input.selectedModelSelection,
+      modelSelection: providerSupportsFeature(input.selectedModelSelection.provider, "automation")
+        ? input.selectedModelSelection
+        : baseForm.modelSelection,
       runtimeMode: "approval-required",
       worktreeMode: automationIntent.executionScope === "worktree" ? "worktree" : "auto",
       mode: automationMode,

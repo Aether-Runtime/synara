@@ -5,6 +5,10 @@ import {
   type ProviderInteractionMode,
   type ProviderKind,
 } from "@synara/contracts";
+import {
+  providerSupportsFeature,
+  type ProviderGatedFeature,
+} from "@synara/shared/providerMetadata";
 import { DEFAULT_PROVIDER_ORDER } from "./providerOrdering";
 import {
   BUILT_IN_COMPOSER_SLASH_COMMANDS,
@@ -539,7 +543,28 @@ export function getAvailableComposerSlashCommands(input: {
           "feedback",
           "automation",
         ];
-  return availableCommands.filter((command) => !collidingNativeCommandNames.has(command));
+  return availableCommands.filter(
+    (command) =>
+      !collidingNativeCommandNames.has(command) &&
+      providerSupportsSlashCommand(input.provider, command),
+  );
+}
+
+// Built-in commands that need a provider capability. The server refuses them otherwise, so
+// they are neither offered nor parsed for a provider without it.
+const SLASH_COMMAND_PROVIDER_FEATURES: Partial<Record<ComposerSlashCommand, ProviderGatedFeature>> =
+  {
+    goal: "thread-goal",
+    "computer-use": "computer-control",
+    side: "sidechat",
+  };
+
+function providerSupportsSlashCommand(
+  provider: ProviderKind,
+  command: ComposerSlashCommand,
+): boolean {
+  const feature = SLASH_COMMAND_PROVIDER_FEATURES[command];
+  return feature === undefined || providerSupportsFeature(provider, feature);
 }
 
 export function hasProviderNativeSlashCommand(

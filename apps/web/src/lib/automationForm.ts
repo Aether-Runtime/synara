@@ -43,6 +43,7 @@ import {
   stopAfterConsecutiveFailuresFromPolicyValue,
   type AutomationFailurePolicyValue,
 } from "./automationFailurePolicy";
+import { providerSupportsFeature } from "@synara/shared/providerMetadata";
 
 export const defaultModelSelection: ModelSelection = {
   provider: "codex",
@@ -475,7 +476,12 @@ export function formFromDefinition(
     timezone,
     runtimeMode: definition?.runtimeMode ?? "approval-required",
     worktreeMode: definition?.worktreeMode ?? "auto",
-    modelSelection: definition?.modelSelection ?? fallbackModelSelection,
+    // A provider automations cannot run on (it owns its worktree) never becomes the default.
+    modelSelection:
+      definition?.modelSelection ??
+      (providerSupportsFeature(fallbackModelSelection.provider, "automation")
+        ? fallbackModelSelection
+        : defaultModelSelection),
     mode: definition?.mode ?? "standalone",
     notificationPolicy: definition?.notificationPolicy ?? "all",
     targetThreadId: definition?.targetThreadId ?? "",

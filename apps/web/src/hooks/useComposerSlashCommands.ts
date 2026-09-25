@@ -12,6 +12,10 @@ import {
   type ThreadId,
 } from "@synara/contracts";
 import { deriveAssociatedWorktreeMetadata } from "@synara/shared/threadWorkspace";
+import {
+  providerFeatureUnavailableMessage,
+  providerLackingFeature,
+} from "@synara/shared/providerMetadata";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { newCommandId, newMessageId, newThreadId } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
@@ -537,6 +541,18 @@ export function useComposerSlashCommands(input: {
       }
 
       const targetProvider = inputOptions?.targetProvider ?? null;
+      const providerWithoutSidechats = providerLackingFeature(
+        [activeThread.session?.provider, activeThread.modelSelection.provider, targetProvider],
+        "sidechat",
+      );
+      if (providerWithoutSidechats !== null) {
+        toastManager.add({
+          type: "warning",
+          title: "Side is unavailable",
+          description: providerFeatureUnavailableMessage(providerWithoutSidechats, "sidechat"),
+        });
+        return Promise.resolve(true);
+      }
       const sidechatModelSelection =
         targetProvider && targetProvider !== selectedModelSelection.provider
           ? resolveThreadHandoffModelSelection({

@@ -15,6 +15,7 @@ import {
   type ThreadHandoffImportedMessage,
 } from "@synara/contracts";
 import { getDefaultModel } from "@synara/shared/model";
+import { providerLackingFeature } from "@synara/shared/providerMetadata";
 import { type Thread } from "../types";
 import { DEFAULT_PROVIDER_ORDER } from "../providerOrdering";
 import { stripEmbeddedAssistantSelections } from "./assistantSelections";
@@ -52,6 +53,9 @@ export function isEligibleHandoffTargetProvider(input: {
 }): boolean {
   return (
     input.targetProvider !== input.sourceProvider &&
+    // The decider refuses a handoff to or from a provider that owns its worktree.
+    providerLackingFeature([input.sourceProvider, input.targetProvider], "provider-handoff") ===
+      null &&
     input.targetProviderEnabled === true &&
     input.targetProviderStatus?.provider === input.targetProvider &&
     isProviderUsable(input.targetProviderStatus)
@@ -183,12 +187,20 @@ export function hasNativeThreadHandoffMessages(thread: Pick<Thread, "messages">)
 }
 
 export function canCreateThreadHandoff(input: {
-  readonly thread: Pick<Thread, "handoff" | "messages" | "session">;
+  readonly thread: Pick<Thread, "handoff" | "messages" | "session" | "modelSelection">;
   readonly isBusy?: boolean;
   readonly hasPendingApprovals?: boolean;
   readonly hasPendingUserInput?: boolean;
 }): boolean {
   if (input.isBusy || input.hasPendingApprovals || input.hasPendingUserInput) {
+    return false;
+  }
+  if (
+    providerLackingFeature(
+      [input.thread.session?.provider, input.thread.modelSelection.provider],
+      "provider-handoff",
+    ) !== null
+  ) {
     return false;
   }
   const sessionStatus = input.thread.session?.orchestrationStatus;

@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildThreadHandoffImportedActivities,
   buildThreadHandoffImportedMessages,
+  canCreateThreadHandoff,
   resolveAvailableHandoffTargetProviders,
   resolveThreadHandoffTitle,
   resolveThreadHandoffModelSelection,
@@ -166,6 +167,58 @@ describe("threadHandoff", () => {
         ],
       }),
     ).toEqual(["claudeAgent", "opencode"]);
+  });
+
+  it("never offers a handoff to or from a provider that owns its worktree", () => {
+    const readyStatus = (provider: ProviderKind): ServerProviderStatus => ({
+      provider,
+      status: "ready",
+      available: true,
+      authStatus: "authenticated",
+      checkedAt: "2026-09-25T12:00:00.000Z",
+    });
+    const providerSettings = {
+      ...DEFAULT_SERVER_SETTINGS_VIEW.providers,
+      aether: { ...DEFAULT_SERVER_SETTINGS_VIEW.providers.aether, enabled: true },
+    };
+    const providerStatuses = [
+      readyStatus("codex"),
+      readyStatus("claudeAgent"),
+      readyStatus("aether"),
+    ];
+
+    expect(
+      resolveAvailableHandoffTargetProviders({
+        sourceProvider: "codex",
+        providerSettings,
+        providerStatuses,
+      }),
+    ).toEqual(["claudeAgent"]);
+    expect(
+      resolveAvailableHandoffTargetProviders({
+        sourceProvider: "aether",
+        providerSettings,
+        providerStatuses,
+      }),
+    ).toEqual([]);
+
+    const message = (id: string, role: "user" | "assistant") => ({
+      id: MessageId.makeUnsafe(id),
+      role,
+      text: `${role} text`,
+      createdAt: "2026-09-25T12:00:00.000Z",
+      streaming: false as const,
+      source: "native" as const,
+    });
+    const thread = (provider: "codex" | "claudeAgent" | "aether") => ({
+      handoff: null,
+      session: null,
+      modelSelection: { provider, model: DEFAULT_MODEL_BY_PROVIDER[provider] },
+      messages: [message("m1", "user"), message("m2", "assistant")],
+    });
+    expect(canCreateThreadHandoff({ thread: thread("codex") })).toBe(true);
+    expect(canCreateThreadHandoff({ thread: thread("claudeAgent") })).toBe(true);
+    expect(canCreateThreadHandoff({ thread: thread("aether") })).toBe(false);
   });
 
   it("does not expose targets before enabled-provider settings are available", () => {

@@ -36,6 +36,19 @@ describe("getRightDockPaneMeta", () => {
 });
 
 describe("resolveRightDockLauncherItems", () => {
+  it("drops Side chats only when the thread's provider cannot host them", () => {
+    const kinds = (hasSidechatSupport?: boolean) =>
+      resolveRightDockLauncherItems({
+        hasWorkspace: true,
+        hasGitRepository: true,
+        hasReview: false,
+        ...(hasSidechatSupport === undefined ? {} : { hasSidechatSupport }),
+      }).map((item) => item.kind);
+    expect(kinds()).toContain("sidechat");
+    expect(kinds(true)).toContain("sidechat");
+    expect(kinds(false)).not.toContain("sidechat");
+  });
+
   it("offers the non-Git tools for a chat without a repository", () => {
     expect(
       resolveRightDockLauncherItems({

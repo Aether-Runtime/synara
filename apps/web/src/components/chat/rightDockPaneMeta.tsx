@@ -93,8 +93,13 @@ export function resolveRightDockLauncherItems(input: {
    * from this machine to make it work.
    */
   hasDeviceSupport?: boolean;
+  /** False when the thread's provider cannot host side chats (it owns its worktree). */
+  hasSidechatSupport?: boolean;
 }): readonly RightDockLauncherItem[] {
   return RIGHT_DOCK_LAUNCHER_ORDER.flatMap((kind) => {
+    if (kind === "sidechat" && input.hasSidechatSupport === false) {
+      return [];
+    }
     if (kind === "diff" && !input.hasReview) {
       return [];
     }
