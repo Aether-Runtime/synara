@@ -117,7 +117,9 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   so it is persisted before the first send. A respond's `client_message_id` is derived from the
   task, `sends` and the request: a retry of the same request, even after a restart, reuses it; any
   other request gets a new one. A Synara turn's id is its send's id (the idempotency key for the
-  first turn), so a retry after a lost response is the same turn.
+  first turn), so a retry after a lost response is the same turn. A lost send's ledger entry is
+  never persisted, so the retry finds the Aether turn it started on the turns page by its
+  `client_message_id`, binds to it, and completes at once if that turn already settled.
 - Synara's worktree creation keeps only the commit, not the branch it came from. The base branch
   is the Aether project's default branch when its tip on origin is the worktree's HEAD (Aether's
   own task branches often sit at a past tip of it), otherwise the one branch on origin at HEAD.

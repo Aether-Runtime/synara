@@ -155,21 +155,11 @@ interface Task {
   readonly remoteTurns: Set<AetherTurnId>;
   /** The Synara turn an interrupt was sent for: it completes as interrupted. */
   interrupted: TurnId | undefined;
-  /**
-   * Runs that ended before their Synara turn started: a send whose response was lost landed
-   * anyway. The retry, which is the same request and so the same turn, completes at once.
-   */
-  readonly settledEarly: Map<TurnId, TurnEnding>;
 }
 
 /** The one writer of a task's cursor. Every caller holds the session lock. */
 function transition(task: Task, change: (cursor: AetherCreatedCursor) => AetherCreatedCursor) {
   task.cursor = change(task.cursor);
-}
-
-interface TurnEnding {
-  readonly state: "completed" | "failed";
-  readonly errors: ReadonlyArray<string>;
 }
 
 type MirrorOutcome =
@@ -563,23 +553,18 @@ export const makeAetherAdapter = (
             note,
           );
         }
-        if (turnId === undefined) return;
+        if (!completes) return;
         const errors = [
           ...(settled.state === "errored"
             ? [settled.errorMessage ?? "Aether reported the turn as failed."]
             : []),
           ...(failed === undefined ? [] : [failed]),
         ];
-        const ending: TurnEnding = { state: errors.length > 0 ? "failed" : "completed", errors };
-        if (!completes) {
-          task.settledEarly.set(turnId, ending);
-          return;
-        }
         yield* complete(
           session,
           task,
           turnId,
-          task.interrupted === turnId ? "interrupted" : ending.state,
+          task.interrupted === turnId ? "interrupted" : errors.length > 0 ? "failed" : "completed",
           errors,
         );
       });
@@ -697,7 +682,6 @@ export const makeAetherAdapter = (
           replayed,
           remoteTurns: new Set(),
           interrupted: undefined,
-          settledEarly: new Map(),
         };
         return task;
       });
@@ -912,7 +896,7 @@ export const makeAetherAdapter = (
           { after: null, emittedText: new Map() },
         );
         session.state = task;
-        return { task, turnId, note: undefined };
+        return { task, turnId, note: undefined, ended: undefined };
       });
 
     /** A later turn: a new message, or the answer to a proposed plan; with a note to show. */
@@ -959,23 +943,33 @@ export const makeAetherAdapter = (
               { aetherTurnId: waiting[0]!.id },
             ),
           );
-          return { task, turnId, note };
+          return { task, turnId, note, ended: undefined };
         }
-        const turnId = TurnId.makeUnsafe(
-          yield* respond(
-            task,
-            "sendTurn",
-            {
-              message: turn.message,
-              // A message sent while a run is busy waits for it instead of steering it.
-              queue_for_later: true,
-              interaction_mode: turn.mode,
-              ...(turn.effort === undefined ? {} : { reasoning_effort: turn.effort }),
-            },
-            { aetherTurnId: null },
-          ),
+        const body = {
+          message: turn.message,
+          // A message sent while a run is busy waits for it instead of steering it.
+          queue_for_later: true,
+          interaction_mode: turn.mode,
+          ...(turn.effort === undefined ? {} : { reasoning_effort: turn.effort }),
+        };
+        // A retry of a send whose response was lost, even across a restart, is the same request
+        // with the same id: its Aether turn may have started, and even settled, meanwhile.
+        const landed = page.turns.find(
+          (candidate) =>
+            candidate.root_message.clientMessageId === clientMessageIdFor(task.cursor, body),
         );
-        return { task, turnId, note };
+        const turnId = TurnId.makeUnsafe(
+          yield* respond(task, "sendTurn", body, { aetherTurnId: landed?.id ?? null }),
+        );
+        if (landed?.state === "settled") return { task, turnId, note, ended: [] };
+        if (landed?.state === "errored") {
+          const error =
+            page.task.status === "errored"
+              ? page.task.error
+              : "Aether reported the turn as failed.";
+          return { task, turnId, note, ended: [error] };
+        }
+        return { task, turnId, note, ended: undefined };
       });
 
     const startTurn = (session: Session, input: ProviderSendTurnInput) =>
@@ -991,7 +985,7 @@ export const makeAetherAdapter = (
           implementsPlan: input.sourceProposedPlan !== undefined,
         };
         const { state } = session;
-        const { task, turnId, note } =
+        const { task, turnId, note, ended } =
           state._tag === "Creating"
             ? yield* createTask(session, state.cursor, turn)
             : yield* respondTurn(session, state, turn);
@@ -1003,10 +997,9 @@ export const makeAetherAdapter = (
           payload: { model: session.model, ...(effort === undefined ? {} : { effort }) },
         });
         if (note !== undefined) yield* warn(session, task, turnId, ["mirror", "turn-start"], note);
-        const early = task.settledEarly.get(turnId);
-        if (early !== undefined) {
-          task.settledEarly.delete(turnId);
-          yield* complete(session, task, turnId, early.state, early.errors);
+        // Its run already settled, and was mirrored when it did: the turn ends now.
+        if (ended !== undefined) {
+          yield* complete(session, task, turnId, ended.length > 0 ? "failed" : "completed", ended);
         }
         yield* task.poller.wake;
         return { threadId: session.threadId, turnId, resumeCursor: task.cursor };

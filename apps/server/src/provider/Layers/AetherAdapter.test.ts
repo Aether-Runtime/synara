@@ -340,7 +340,9 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           default_branch: "main",
         });
         const otherHost = yield* adapter.sendTurn(h.send("Go")).pipe(Effect.flip);
-        expect(otherHost.message).toContain("No Aether project is connected to github.com/acme/widgets");
+        expect(otherHost.message).toContain(
+          "No Aether project is connected to github.com/acme/widgets",
+        );
 
         yield* git(h.repo, ["remote", "set-url", "origin", "https://user:s3cret@example.com/solo"]);
         const unreadable = yield* adapter.sendTurn(h.send("Go")).pipe(Effect.flip);
@@ -382,7 +384,8 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         const h = yield* makeHarness;
         const { adapter, events } = yield* h.launch();
         yield* h.start(adapter);
-        const error = "Your inference balance is empty. Add funds in Settings › Inference to continue.";
+        const error =
+          "Your inference balance is empty. Add funds in Settings › Inference to continue.";
         h.aether.hooks.onTurn = (turn) => h.aether.fail(turn, error);
         const turn = yield* adapter.sendTurn(h.send("Go"));
         const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
@@ -452,6 +455,43 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(again.turnId).not.toBe(retry.turnId);
         yield* waitFor("the third turn", () => completions(events)[2]);
         expect(h.aether.turns).toHaveLength(3);
+      }),
+    );
+  });
+
+  describe("lost sends across a restart", () => {
+    it.effect("binds a retried send to the turn it landed in, and completes it at once", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const first = yield* h.launch();
+        yield* h.start(first.adapter);
+        h.finishTurns();
+        yield* first.adapter.sendTurn(h.send("First"));
+        yield* waitFor("the first turn", () => completions(first.events)[0]);
+        // What Synara persisted: the cursor as of the last turn.completed.
+        const [persisted] = yield* first.adapter.listSessions();
+
+        // The message lands and its run settles, but the response is lost; then Synara restarts.
+        h.aether.faults.loseRespond = true;
+        yield* first.adapter.sendTurn(h.send("Second")).pipe(Effect.flip);
+        yield* first.stop;
+
+        const second = yield* h.launch();
+        yield* second.adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "aether",
+          cwd: h.worktree,
+          resumeCursor: persisted!.resumeCursor,
+          runtimeMode: "full-access",
+        });
+        yield* Effect.sleep("1500 millis");
+        const retry = yield* second.adapter.sendTurn(h.send("Second"));
+        const completed = yield* waitFor("the retried turn", () => completions(second.events)[0]);
+        expect(completed).toMatchObject({ turnId: retry.turnId, payload: { state: "completed" } });
+        expect(h.aether.turns).toHaveLength(2);
+        const [lost, retried] = h.aether.calls.respond.map((call) => call.client_message_id);
+        expect(retried).toBe(lost);
+        expect(retry.resumeCursor).toMatchObject({ active: false });
       }),
     );
   });
@@ -594,7 +634,10 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         h.aether.hooks.onTurn = (turn) =>
           h.aether.ask(turn, "exec-1", [], {
             questions: [
-              { question: "Which color should I use?", options: [{ label: "Red" }, { label: "Blue" }] },
+              {
+                question: "Which color should I use?",
+                options: [{ label: "Red" }, { label: "Blue" }],
+              },
               { question: "What should it be called?", options: [] },
             ],
           });
@@ -676,7 +719,8 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         yield* h.start(adapter);
         h.aether.hooks.onTurn = (turn) => {
           h.aether.propose(turn, "toolu_plan", "1. Use SQLite");
-          h.aether.hooks.onTurn = (revised) => h.aether.propose(revised, "toolu_plan_2", "1. Use Postgres");
+          h.aether.hooks.onTurn = (revised) =>
+            h.aether.propose(revised, "toolu_plan_2", "1. Use Postgres");
         };
         yield* adapter.sendTurn(h.send("Plan it", { interactionMode: "plan" }));
         yield* waitFor("the plan", () => completions(events)[0]);
