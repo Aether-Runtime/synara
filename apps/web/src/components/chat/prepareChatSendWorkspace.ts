@@ -368,7 +368,7 @@ export async function prepareChatSendWorkspace({
   // Branching off the checkout's current branch also carries its uncommitted
   // changes into the worktree, which the setup card surfaces as its own step.
   // A provider that owns its worktree clones from origin and resets it every turn, so copied
-  // changes would be erased; the server refuses them too.
+  // changes would be erased: they are never copied for it.
   const worktreeCopiesLocalChanges =
     Boolean(baseBranchForWorktree) &&
     baseBranchForWorktree === activeRootBranch &&
