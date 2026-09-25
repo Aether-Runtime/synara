@@ -28,7 +28,6 @@ import {
   GitRunStackedActionResult,
   GitStatusInput,
   GitStatusResult,
-  ProviderKind,
   GitSummarizeDiffInput,
   GitSummarizeDiffResult,
 } from "@synara/contracts";
@@ -121,10 +120,7 @@ export interface GitManagerShape {
    * Move a thread between Local and Worktree while preserving recoverable Git state.
    */
   readonly handoffThread: (
-    input: Omit<GitHandoffThreadInput, "commandId" | "threadId"> & {
-      /** The thread's provider, read by the server; worktrees the handoff creates are for it. */
-      readonly provider: ProviderKind;
-    },
+    input: Omit<GitHandoffThreadInput, "commandId" | "threadId">,
   ) => Effect.Effect<GitHandoffThreadResult, GitManagerServiceError>;
 
   /**

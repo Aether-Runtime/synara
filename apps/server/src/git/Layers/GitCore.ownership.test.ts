@@ -354,7 +354,6 @@ it.layer(TestLayer)("GitCore worktree ownership", (it) => {
               ref: "main",
               newBranch: "feature/inside-detached",
               path: path.relative(repo, inside),
-              provider: "codex",
             }),
           )
           .pipe(Effect.flip);

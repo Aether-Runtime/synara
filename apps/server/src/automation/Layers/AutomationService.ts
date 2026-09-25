@@ -945,8 +945,10 @@ export const AutomationServiceLive = Layer.effect(
                   cwd: project.workspaceRoot,
                   ref: "HEAD",
                   path: null,
-                  copyChangesFrom: project.workspaceRoot,
-                  provider: definition.modelSelection.provider,
+                  copyChangesFrom: {
+                    cwd: project.workspaceRoot,
+                    provider: definition.modelSelection.provider,
+                  },
                   newBranch: buildTemporaryWorktreeBranchName(),
                 })
                 .pipe(

@@ -1285,7 +1285,10 @@ layer("AutomationService", (it) => {
       const createdWorktree = createdWorktrees[0];
       assert.ok(createdWorktree);
       assert.strictEqual(createdWorktree.ref, "HEAD");
-      assert.strictEqual(createdWorktree.copyChangesFrom, project.workspaceRoot);
+      assert.deepStrictEqual(createdWorktree.copyChangesFrom, {
+        cwd: project.workspaceRoot,
+        provider: "codex",
+      });
       assert.strictEqual(threadCreate?.type, "thread.create");
       if (threadCreate?.type !== "thread.create") {
         assert.fail("Expected thread.create command.");

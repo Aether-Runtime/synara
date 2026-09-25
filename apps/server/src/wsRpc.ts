@@ -82,11 +82,11 @@ import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
 import {
   beginGitHandoff,
-  requireGitHandoffThread,
   completeGitHandoff,
   discardPendingGitHandoff,
   gitHandoffMetadataCommand,
   recordGitHandoffResult,
+  validateGitHandoffTarget,
 } from "./gitHandoffOperations";
 import { Keybindings } from "./keybindings";
 import { createLocalPreviewGrant } from "./localImageFiles";
@@ -1679,7 +1679,7 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const { commandId, threadId, ...gitInput } = input;
-              const thread = yield* requireGitHandoffThread(
+              yield* validateGitHandoffTarget(
                 input,
                 (yield* orchestrationEngine.getReadModel()).threads,
               );
@@ -1699,16 +1699,14 @@ const makeWsRpcHandlersLayer = () =>
                   ? operation.result
                   : yield* refreshGitStatusAfter(
                       input.cwd,
-                      gitManager
-                        .handoffThread({ ...gitInput, provider: thread.modelSelection.provider })
-                        .pipe(
-                          Effect.catch((error) =>
-                            discardPendingGitHandoff(commandId).pipe(
-                              Effect.catch(() => Effect.void),
-                              Effect.andThen(Effect.fail(error)),
-                            ),
+                      gitManager.handoffThread(gitInput).pipe(
+                        Effect.catch((error) =>
+                          discardPendingGitHandoff(commandId).pipe(
+                            Effect.catch(() => Effect.void),
+                            Effect.andThen(Effect.fail(error)),
                           ),
                         ),
+                      ),
                     ).pipe(Effect.tap((gitResult) => recordGitHandoffResult(commandId, gitResult)));
               yield* dispatchOrchestrationCommand(
                 gitHandoffMetadataCommand({ commandId, threadId }, result),

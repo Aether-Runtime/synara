@@ -3586,17 +3586,17 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         );
         const resolvedRef = refResult.stdout.trim();
         if (input.copyChangesFrom) {
-          if (!providerSupportsFeature(input.provider, "copy-changes")) {
+          if (!providerSupportsFeature(input.copyChangesFrom.provider, "copy-changes")) {
             return yield* createGitCommandError(
               "GitCore.createDetachedWorktree",
               input.cwd,
               ["worktree", "add", "--detach", "<path>", input.ref],
-              providerFeatureUnavailableMessage(input.provider, "copy-changes"),
+              providerFeatureUnavailableMessage(input.copyChangesFrom.provider, "copy-changes"),
             );
           }
           const sourceHead = yield* executeGit(
             "GitCore.createDetachedWorktree.resolveCopySource",
-            input.copyChangesFrom,
+            input.copyChangesFrom.cwd,
             ["rev-parse", "--verify", "HEAD^{commit}"],
           ).pipe(Effect.map((result) => result.stdout.trim()));
           if (sourceHead !== resolvedRef) {
@@ -3659,7 +3659,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
 
         if (input.copyChangesFrom) {
           yield* onPhase("copy-changes");
-          yield* copyCheckoutChanges(input.copyChangesFrom, worktreePath).pipe(
+          yield* copyCheckoutChanges(input.copyChangesFrom.cwd, worktreePath).pipe(
             Effect.onError(() =>
               executeGit(
                 "GitCore.createDetachedWorktree.rollback",

@@ -351,7 +351,7 @@ function handoffThread(
     preferredNewWorktreeName: string | null;
   },
 ) {
-  return manager.handoffThread({ ...input, provider: "codex" });
+  return manager.handoffThread(input);
 }
 
 function makeManager(input?: {

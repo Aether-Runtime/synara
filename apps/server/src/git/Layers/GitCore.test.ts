@@ -1902,12 +1902,7 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* initRepoWithCommit(tmp);
         const core = yield* GitCore;
         const wtPath = path.join(tmp, "wt-detached-owned");
-        yield* core.createDetachedWorktree({
-          cwd: tmp,
-          ref: "HEAD",
-          path: wtPath,
-          provider: "codex",
-        });
+        yield* core.createDetachedWorktree({ cwd: tmp, ref: "HEAD", path: wtPath });
 
         const proof = yield* core.recordWorktreeOwnership({
           path: wtPath,
@@ -1943,8 +1938,7 @@ it.layer(TestLayer)("git integration", (it) => {
           cwd: tmp,
           ref: "HEAD",
           path: wtPath,
-          provider: "codex",
-          copyChangesFrom: tmp,
+          copyChangesFrom: { cwd: tmp, provider: "codex" },
         });
 
         expect(result.worktree).toEqual({ path: wtPath, ref: expectedHead, branch: null });
@@ -1981,7 +1975,6 @@ it.layer(TestLayer)("git integration", (it) => {
           cwd: tmp,
           ref: "HEAD",
           path: wtPath,
-          provider: "codex",
           newBranch: "synara/abcd1234",
         });
 
@@ -2017,9 +2010,8 @@ it.layer(TestLayer)("git integration", (it) => {
             cwd: tmp,
             ref: "HEAD",
             path: wtPath,
-            provider: "codex",
             newBranch: "synara/ph123456",
-            copyChangesFrom: tmp,
+            copyChangesFrom: { cwd: tmp, provider: "codex" },
           },
           {
             onPhase: (phase) =>
@@ -2055,8 +2047,7 @@ it.layer(TestLayer)("git integration", (it) => {
               ref: "HEAD",
               path: wtPath,
               newBranch: "synara/cl123456",
-              copyChangesFrom: tmp,
-              provider: "aether",
+              copyChangesFrom: { cwd: tmp, provider: "aether" },
             },
             {
               onPhase: (phase) =>
@@ -2091,7 +2082,6 @@ it.layer(TestLayer)("git integration", (it) => {
               cwd: tmp,
               ref: "refs/heads/missing",
               path: path.join(tmp, "wt-invalid-ref"),
-              provider: "codex",
               newBranch: "synara/notstarted",
             },
             {
@@ -2124,7 +2114,6 @@ it.layer(TestLayer)("git integration", (it) => {
             cwd: tmp,
             ref: "HEAD",
             path: wtPath,
-            provider: "codex",
             newBranch: "synara/rollback1",
           }),
         );
@@ -2144,7 +2133,6 @@ it.layer(TestLayer)("git integration", (it) => {
           cwd: tmp,
           ref: "HEAD",
           path: wtPath,
-          provider: "codex",
           newBranch: "feature/user-owned",
         });
 

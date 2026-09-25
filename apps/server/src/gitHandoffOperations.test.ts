@@ -7,7 +7,7 @@ import {
   beginGitHandoff,
   recordGitHandoffResult,
   recoverGitHandoffOperations,
-  requireGitHandoffThread,
+  validateGitHandoffTarget,
 } from "./gitHandoffOperations.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 
@@ -92,13 +92,12 @@ it.effect(
       const toLocal = { ...input, targetMode: "local" as const };
 
       // Idle: no session and no live worktree claim.
-      const refusal = yield* requireGitHandoffThread(toLocal, aether).pipe(Effect.flip);
+      const refusal = yield* validateGitHandoffTarget(toLocal, aether).pipe(Effect.flip);
       assert.include(refusal.message, "Aether needs a git repository with a GitHub remote");
 
-      const codex = thread({ provider: "codex", model: "gpt-5-codex" });
-      assert.strictEqual((yield* requireGitHandoffThread(toLocal, codex)).id, input.threadId);
-      assert.strictEqual((yield* requireGitHandoffThread(input, aether)).id, input.threadId);
-      const missing = yield* requireGitHandoffThread(toLocal, []).pipe(Effect.flip);
+      yield* validateGitHandoffTarget(toLocal, thread({ provider: "codex", model: "gpt-5-codex" }));
+      yield* validateGitHandoffTarget(input, aether);
+      const missing = yield* validateGitHandoffTarget(toLocal, []).pipe(Effect.flip);
       assert.include(missing.message, "was not found");
     }),
 );

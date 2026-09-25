@@ -1,11 +1,11 @@
 import { DEFAULT_GIT_RECENT_COMMIT_LIMIT } from "@synara/contracts";
 import type {
+  GitCreateDetachedWorktreeInput,
   GitHandoffThreadInput,
   GitReadWorkingTreeDiffInput,
   GitStackedAction,
   ModelSelection,
   NativeApi,
-  ProviderKind,
   ProviderStartOptions,
 } from "@synara/contracts";
 import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react-query";
@@ -884,15 +884,13 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
       ref,
       path,
       copyChangesFrom,
-      provider,
       newBranch,
       progressId,
     }: {
       cwd: string;
       ref: string;
       path?: string | null;
-      copyChangesFrom?: string;
-      provider: ProviderKind;
+      copyChangesFrom?: GitCreateDetachedWorktreeInput["copyChangesFrom"];
       newBranch?: string;
       progressId?: string;
     }) => {
@@ -903,7 +901,6 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
         ref,
         path: path ?? null,
         ...(copyChangesFrom ? { copyChangesFrom } : {}),
-        provider,
         ...(newBranch ? { newBranch } : {}),
         ...(progressId ? { progressId } : {}),
       });

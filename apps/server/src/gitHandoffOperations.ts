@@ -66,11 +66,11 @@ const decodeOperation = (
     : Effect.succeed({ phase: row.phase });
 
 /**
- * The thread a handoff moves, read before any git operation runs. A handoff to Local ends with
- * a `thread.meta.update` to Local, which the decider refuses for a thread whose provider owns
- * its worktree, so it is refused here, before git stashes and removes that worktree.
+ * Checked before any git operation runs. A handoff to Local ends with a `thread.meta.update` to
+ * Local, which the decider refuses for a thread whose provider owns its worktree, so it is
+ * refused here, before git stashes and removes that worktree.
  */
-export const requireGitHandoffThread = (
+export const validateGitHandoffTarget = (
   input: Pick<GitHandoffThreadInput, "threadId" | "targetMode">,
   threads: ReadonlyArray<Pick<OrchestrationThread, "id" | "session" | "modelSelection">>,
 ) =>
@@ -89,7 +89,6 @@ export const requireGitHandoffThread = (
         yield* threadProviders(command, thread),
       );
     }
-    return thread;
   });
 
 export const beginGitHandoff = (input: GitHandoffThreadInput) =>

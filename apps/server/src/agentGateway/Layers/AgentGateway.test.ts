@@ -259,7 +259,7 @@ interface GatewayHarness {
     ref?: string;
     newBranch?: string;
     path?: string;
-    copyChangesFrom?: string;
+    copyChangesFrom?: { cwd: string; provider: ProviderKind };
   }>;
   readonly gitExecutions: Array<{ operation: string; cwd: string; args: ReadonlyArray<string> }>;
   readonly fetchedPullRequests: number[];
@@ -424,7 +424,7 @@ function makeHarnessLayer(
     ref?: string;
     newBranch?: string;
     path?: string;
-    copyChangesFrom?: string;
+    copyChangesFrom?: { cwd: string; provider: ProviderKind };
   }> = [];
   const gitExecutions: Array<{
     operation: string;
@@ -2770,7 +2770,10 @@ describe("AgentGateway", () => {
         (entry) => entry.operation === "AgentGateway.resolveWorktreeRef",
       );
       assert.equal(resolution?.cwd, "/tmp/caller-worktree");
-      assert.equal(harness.worktreeCreates[0]?.copyChangesFrom, "/tmp/caller-worktree");
+      assert.deepEqual(harness.worktreeCreates[0]?.copyChangesFrom, {
+        cwd: "/tmp/caller-worktree",
+        provider: "codex",
+      });
     }).pipe(Effect.provide(gatewayLayer));
   });
 
