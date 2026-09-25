@@ -590,6 +590,21 @@ export class AetherConversationIngest {
     return this.state.task?.status === "queued" && this.state.open.length === 0;
   }
 
+  /**
+   * Applies the task from a one-turn page read in place of `/live`: enough for the task and
+   * the head. True when the head moved (or a refresh is pending): then read the whole turns page
+   * and apply it with `applyTurnsInPlaceOfLive`.
+   */
+  applyTaskInPlaceOfLive(page: AetherConversationTurnsPage): boolean {
+    const state = this.state;
+    // A page older than the head already applied (a lagging replica) is dropped.
+    if (state.lastLiveHead !== undefined && page.head_revision < state.lastLiveHead) return false;
+    state.executing = false;
+    if (state.turnsRefreshPending || page.head_revision !== state.lastLiveHead) return true;
+    state.task = page.task;
+    return false;
+  }
+
   /** Applies a turns page read in place of `/live` (see `readsTurnsInPlaceOfLive`). */
   applyTurnsInPlaceOfLive(page: AetherConversationTurnsPage): ReadonlyArray<AetherIngestOutput> {
     const state = this.state;

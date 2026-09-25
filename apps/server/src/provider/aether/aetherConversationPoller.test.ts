@@ -21,6 +21,7 @@ import {
   AETHER_POLL_OUTAGE_LIMIT_MS,
   AETHER_POLL_PULL_REQUEST_INTERVAL_MS,
   AETHER_POLL_WAKE_GRACE_MS,
+  AETHER_TURNS_PAGE_LIMIT,
   makeAetherConversationPoller,
   type AetherConversationReader,
   type AetherPollerOutput,
@@ -110,10 +111,10 @@ function scriptedReader(script: Script, calls: Call[]): AetherConversationReader
         calls.push({ at, kind: "live", detail: messageIds });
         return yield* answer(AetherLiveConversationSnapshot, script.live(counts.live++, at));
       }),
-    getConversationTurns: () =>
+    getConversationTurns: (_task, page) =>
       Effect.gen(function* () {
         const at = yield* Clock.currentTimeMillis;
-        calls.push({ at, kind: "turns" });
+        calls.push({ at, kind: "turns", detail: page?.limit });
         const reply = script.turns?.(counts.turns++, at) ?? turnsBody(taskBody("processing"));
         return yield* answer(AetherConversationTurnsPage, reply);
       }),
@@ -447,15 +448,20 @@ describe("makeAetherConversationPoller", () => {
       },
       { seconds: 6 },
     );
-    const kinds = calls.map((call) => `${call.at / 1_000}:${call.kind}`);
+    const kinds = calls.map(
+      (call) =>
+        `${call.at / 1_000}:${call.kind}${call.kind === "turns" ? `/${String(call.detail)}` : ""}`,
+    );
     expect(kinds).toEqual([
       "0:live",
-      "0:turns",
+      `0:turns/${AETHER_TURNS_PAGE_LIMIT}`,
       "0:activity",
-      "1:turns",
-      "2:turns",
-      "3:turns",
-      "4:turns",
+      // One turn is enough for the task and the head, until the head moves.
+      "1:turns/1",
+      "2:turns/1",
+      "3:turns/1",
+      "4:turns/1",
+      `4:turns/${AETHER_TURNS_PAGE_LIMIT}`,
       "4:activity",
       // Once it runs, /live again, and the turns page only when the head moves.
       "5:live",

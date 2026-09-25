@@ -101,7 +101,7 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
     // Every recorded request, in order, and none after the last: the loop went idle.
     expect(transport.mismatches()).toEqual([]);
     expect(transport.remaining()).toEqual([]);
-    expect(transport.requested()).toHaveLength(59);
+    expect(transport.requested()).toHaveLength(61);
     expect(transport.maxInFlight()).toBe(1);
     expect(outputs.filter((output) => output._tag === "PollingStopped")).toEqual([]);
     expect(eventsOf(outputs).filter((event) => event.type === "runtime.warning")).toEqual([]);

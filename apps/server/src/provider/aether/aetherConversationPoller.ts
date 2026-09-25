@@ -5,9 +5,10 @@
 // Each tick reads `GET /conversation/live` for the messages open at the previous tick. Only when
 // `headRevision` moves does it read `GET /conversation/turns` (which carries the task), and then
 // `GET /turns/{id}/activity` for each turn whose `revision_sequence` moved. While the task is
-// queued (its workspace boots), the tick reads the turns page instead of `/live`: nothing runs,
-// the head stays put, and only the turns page carries the task's status line, which the adapter
-// shows as boot progress. It is one read a tick either way. One fiber makes every
+// queued (its workspace boots), the tick reads a one-turn turns page instead of `/live`: nothing
+// runs, the head stays put, and only the turns page carries the task's status line, which the
+// adapter shows as boot progress. It is one small read a tick either way; the whole page is read
+// only when the head moves. One fiber makes every
 // request in turn, so two requests for the task are never in flight together. A tick is applied
 // to a fork of the ingest and emitted only once every read in it succeeded: a failed tick
 // changes nothing, so the next tick (or the next `wake`) derives the same outputs again.
@@ -200,7 +201,10 @@ export const makeAetherConversationPoller = (
           limit: AETHER_TURNS_PAGE_LIMIT,
         });
         if (draft.readsTurnsInPlaceOfLive()) {
-          outputs.push(...draft.applyTurnsInPlaceOfLive(yield* readTurns));
+          const first = yield* client.getConversationTurns(context.taskId, { limit: 1 });
+          if (draft.applyTaskInPlaceOfLive(first)) {
+            outputs.push(...draft.applyTurnsInPlaceOfLive(yield* readTurns));
+          }
         } else {
           const live = yield* client.getLiveConversation(context.taskId, draft.openMessageIds());
           const step = yield* draft.applyLive(live, observedAt);
