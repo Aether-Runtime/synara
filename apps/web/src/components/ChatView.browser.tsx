@@ -8547,15 +8547,14 @@ describe("ChatView transcript geometry (full app)", () => {
 
       try {
         await waitForComposerEditor();
-        // Edit and resend (conversation rollback) and the goal strip (agent gateway).
+        // Edit and resend (conversation rollback). An existing goal stays visible so it can
+        // always be cleared, whatever the provider.
         const editButton = page.getByRole("button", { name: "Edit message" });
-        const goalStrip = page.getByRole("button", { name: "Edit goal" });
+        await expect.element(page.getByRole("button", { name: "Edit goal" })).toBeInTheDocument();
         if (expectsGatedControls) {
           await expect.element(editButton.first()).toBeInTheDocument();
-          await expect.element(goalStrip).toBeInTheDocument();
         } else {
           await expect.element(editButton).not.toBeInTheDocument();
-          await expect.element(goalStrip).not.toBeInTheDocument();
         }
         await page.getByLabelText("Composer extras").click();
         const goalRow = page.getByText("Set a goal to keep pursuing");

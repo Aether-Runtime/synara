@@ -1902,6 +1902,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (targetThread.worktreePath === null) {
         yield* validateProviderFeature(command, "local-workspace", targetProviders);
       }
+      // Only the agent gateway ends a goal: a turn that would carry the thread's goal onto a
+      // provider without it is refused rather than left to loop.
+      if ((targetThread.goal ?? "").trim().length > 0) {
+        yield* validateProviderFeature(command, "thread-goal", targetProviders);
+      }
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
             readModel,

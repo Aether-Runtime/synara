@@ -150,7 +150,10 @@ const goalSet = (goal = "Ship the feature"): OrchestrationCommand => ({
 
 const turnStart = (
   text: string,
-  options: { readonly enableComputerControl?: boolean } = {},
+  options: {
+    readonly enableComputerControl?: boolean;
+    readonly modelSelection?: ModelSelection;
+  } = {},
 ): OrchestrationCommand => ({
   type: "thread.turn.start",
   commandId: commandId("turn-start"),
@@ -274,6 +277,15 @@ describe("decider provider capability gating", () => {
           readModel,
         ),
       ).toContain("Thread goals are unavailable with Aether");
+    });
+
+    it("refuses a first turn that would carry an active goal onto Aether", async () => {
+      const readModel = await makeReadModel({ modelSelection: CODEX, goal: "Ship it" });
+      expect(await refusal(turnStart("hello", { modelSelection: AETHER }), readModel)).toBe(
+        "Orchestration command invariant failed (thread.turn.start): Thread goals are unavailable with Aether: its agent cannot reach Synara's agent gateway, so it could never mark a goal as achieved.",
+      );
+      const events = await decide(turnStart("hello"), readModel);
+      expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
     });
 
     it("refuses moving an idle thread to the local checkout", async () => {
