@@ -4827,32 +4827,6 @@ rotationRetry.layer("ProviderServiceLive credential rotation event durability", 
   );
 });
 
-routing.layer("ProviderServiceLive cloud provider capabilities", (it) => {
-  // Read from the provider descriptor before any adapter is looked up: none is registered here.
-  it.effect("refuses Computer Use for a provider that cannot reach the agent gateway", () =>
-    Effect.gen(function* () {
-      const provider = yield* ProviderService;
-      const threadId = asThreadId("thread-aether-computer-control");
-      const result = yield* Effect.result(
-        provider.startSession(threadId, {
-          provider: "aether",
-          threadId,
-          runtimeMode: "full-access",
-          enableComputerControl: true,
-        }),
-      );
-      assertFailure(
-        result,
-        new ProviderValidationError({
-          operation: "ProviderService.startSession",
-          issue:
-            "Computer Use, browser automation and device tools are unavailable with Aether: its agent cannot reach Synara's agent gateway.",
-        }),
-      );
-    }),
-  );
-});
-
 restartRollbackRouting.layer("ProviderServiceLive restart-based rollback", (it) => {
   it.effect("requires the source lifecycle generation for modern ACP interactions", () =>
     Effect.gen(function* () {

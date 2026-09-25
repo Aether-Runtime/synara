@@ -39,10 +39,6 @@ import {
   providerSupportsAutoRuntimeMode,
   unsupportedAutoRuntimeModeMessage,
 } from "@synara/shared/runtimeMode";
-import {
-  providerFeatureUnavailableMessage,
-  providerSupportsFeature,
-} from "@synara/shared/providerMetadata";
 import { createHash, randomUUID } from "node:crypto";
 import {
   Cause,
@@ -154,23 +150,6 @@ function validateAutoRuntimeMode(
         new ProviderValidationError({
           operation,
           issue: unsupportedAutoRuntimeModeMessage(provider),
-        }),
-      );
-}
-
-// A provider whose agent cannot reach the local agent gateway gets no gateway credential, so
-// Computer Use would silently do nothing: refuse it the way OpenCode's external server does.
-function validateComputerControlReachable(
-  operation: string,
-  provider: ProviderSession["provider"],
-  enableComputerControl: boolean | undefined,
-) {
-  return enableComputerControl !== true || providerSupportsFeature(provider, "computer-control")
-    ? Effect.void
-    : Effect.fail(
-        new ProviderValidationError({
-          operation,
-          issue: providerFeatureUnavailableMessage(provider, "computer-control"),
         }),
       );
 }
@@ -1881,11 +1860,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           "ProviderService.startSession",
           input.provider,
           input.runtimeMode,
-        );
-        yield* validateComputerControlReachable(
-          "ProviderService.startSession",
-          input.provider,
-          input.enableComputerControl,
         );
         // An explicit start is the recovery authority for a failed retirement,
         // but it must never interleave with one still in progress. Capture the
