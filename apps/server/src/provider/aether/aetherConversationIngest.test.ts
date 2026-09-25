@@ -797,7 +797,7 @@ describe("AetherConversationIngest: polling state", () => {
     expect(ingest.needsOlderActivity(TURN_ID, newest, new Set(["row-t2"]))).toBe(true);
     expect(ingest.needsOlderActivity(TURN_ID, newest, new Set(["row-t2", "row-t1"]))).toBe(false);
     // A page that starts with a row never seen means more new rows lie behind it.
-    expect(ingest.needsOlderActivity(TURN_ID, page([toolRow("t3")]), new Set(["row-t3"]))).toBe(
+    expect(ingest.needsOlderActivity(TURN_ID, page([toolRow("t4")]), new Set(["row-t4"]))).toBe(
       true,
     );
   });
