@@ -13,6 +13,8 @@ import { resolveWorktreeHandoffWorkspaceMetadata } from "@synara/shared/worktree
 import { Data, Effect, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { workspaceMoveFeature } from "./orchestration/workspaceMove.ts";
+
 type HandoffPhase = "pending" | "git_applied" | "completed" | "uncertain";
 
 interface HandoffRow {
@@ -144,7 +146,9 @@ const isProviderKind = Schema.is(ProviderKind);
 export const runGitHandoff = <HandoffError, HandoffContext, DispatchError, DispatchContext>(
   input: GitHandoffThreadInput,
   dependencies: {
-    readonly threads: ReadonlyArray<Pick<OrchestrationThread, "id" | "session" | "modelSelection">>;
+    readonly threads: ReadonlyArray<
+      Pick<OrchestrationThread, "id" | "session" | "latestTurn" | "modelSelection">
+    >;
     readonly handoffThread: (
       gitInput: Omit<GitHandoffThreadInput, "commandId" | "threadId">,
     ) => Effect.Effect<GitHandoffThreadResult, HandoffError, HandoffContext>;
@@ -161,7 +165,13 @@ export const runGitHandoff = <HandoffError, HandoffContext, DispatchError, Dispa
         message: `Thread '${threadId}' was not found.`,
       });
     }
-    if (input.targetMode === "local") {
+    // Every handoff moves the thread to another checkout: refuse what the decider would refuse
+    // for the metadata update it ends with, before git touches anything.
+    const workspaceFeature = workspaceMoveFeature(thread, {
+      toLocal: input.targetMode === "local",
+      changesWorktree: true,
+    });
+    if (workspaceFeature !== null) {
       const sessionProvider = thread.session?.providerName ?? null;
       if (sessionProvider !== null && !isProviderKind(sessionProvider)) {
         return yield* new GitHandoffOperationError({
@@ -170,11 +180,11 @@ export const runGitHandoff = <HandoffError, HandoffContext, DispatchError, Dispa
       }
       const refused = providerLackingFeature(
         [sessionProvider, thread.modelSelection.provider],
-        "local-workspace",
+        workspaceFeature,
       );
       if (refused !== null) {
         return yield* new GitHandoffOperationError({
-          message: providerFeatureUnavailableMessage(refused, "local-workspace"),
+          message: providerFeatureUnavailableMessage(refused, workspaceFeature),
         });
       }
     }

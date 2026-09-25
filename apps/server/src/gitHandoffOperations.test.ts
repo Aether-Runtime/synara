@@ -14,6 +14,14 @@ import {
   recoverGitHandoffOperations,
   runGitHandoff,
 } from "./gitHandoffOperations.ts";
+import { decideOrchestrationCommand } from "./orchestration/decider.ts";
+import {
+  AETHER,
+  makeReadModel,
+  THREAD_ID,
+  withSession,
+  WORKTREE_PATH,
+} from "./orchestration/testing/providerCapabilityReadModel.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 
 const layer = it.layer(SqlitePersistenceMemory);
@@ -97,7 +105,7 @@ layer("Git handoff operation recovery", (it) => {
         const handoff = (modelSelection: ModelSelection) =>
           runGitHandoff(toLocal, {
             // Idle: no session, so no live worktree claim either.
-            threads: [{ id: input.threadId, session: null, modelSelection }],
+            threads: [{ id: input.threadId, session: null, latestTurn: null, modelSelection }],
             handoffThread: (gitInput) =>
               Effect.sync(() => {
                 gitCalls.push(gitInput);
@@ -128,6 +136,46 @@ layer("Git handoff operation recovery", (it) => {
           envMode: "local",
           worktreePath: null,
         });
+      }),
+  );
+
+  it.effect(
+    "refuses the handoff RPC to a new worktree for a started Aether thread before any git call",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM git_handoff_operations`;
+        // A started Aether thread in its worktree; the real decider dispatches the metadata.
+        const readModel = withSession(
+          yield* Effect.promise(() => makeReadModel({ modelSelection: AETHER })),
+          "aether",
+        );
+        const gitCalls: unknown[] = [];
+        const refusal = yield* runGitHandoff(
+          {
+            ...input,
+            threadId: THREAD_ID,
+            targetMode: "worktree",
+            worktreePath: WORKTREE_PATH,
+          },
+          {
+            threads: readModel.threads,
+            handoffThread: (gitInput) =>
+              Effect.sync(() => {
+                gitCalls.push(gitInput);
+                return result;
+              }),
+            dispatch: (command) => decideOrchestrationCommand({ command, readModel }),
+          },
+        ).pipe(Effect.flip);
+
+        assert.include(
+          refusal.message,
+          "Aether owns this thread's worktree, so the thread cannot move to another checkout once a turn has started.",
+        );
+        assert.lengthOf(gitCalls, 0);
+        const rows = yield* sql`SELECT command_id FROM git_handoff_operations`;
+        assert.lengthOf(rows, 0);
       }),
   );
 });

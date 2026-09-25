@@ -6,11 +6,7 @@
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
-  EventId,
   MessageId,
-  ProjectId,
-  ThreadId,
-  TurnId,
   type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationReadModel,
@@ -19,136 +15,19 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { decideOrchestrationCommand } from "./decider.ts";
-import { createEmptyReadModel, projectEvent } from "./projector.ts";
-
-const NOW = "2026-09-25T12:00:00.000Z";
-const PROJECT_ID = ProjectId.makeUnsafe("project-capabilities");
-const THREAD_ID = ThreadId.makeUnsafe("thread-capabilities");
-const NEW_THREAD_ID = ThreadId.makeUnsafe("thread-capabilities-new");
-const MESSAGE_ID = MessageId.makeUnsafe("message-capabilities");
-const TURN_ID = TurnId.makeUnsafe("turn-capabilities");
-const WORKTREE_PATH = "/tmp/project/.worktrees/capabilities";
-
-const AETHER: ModelSelection = { provider: "aether", model: "claude-opus-5-5" };
-const CODEX: ModelSelection = { provider: "codex", model: "gpt-5-codex" };
-const CLAUDE: ModelSelection = { provider: "claudeAgent", model: "claude-opus-4-6" };
-
-async function makeReadModel(input: {
-  readonly modelSelection: ModelSelection;
-  readonly worktreePath?: string | null;
-  readonly goal?: string;
-  readonly goalPaused?: boolean;
-}): Promise<OrchestrationReadModel> {
-  const withProject = await Effect.runPromise(
-    projectEvent(createEmptyReadModel(NOW), {
-      sequence: 1,
-      eventId: EventId.makeUnsafe("evt-project-create"),
-      aggregateKind: "project",
-      aggregateId: PROJECT_ID,
-      type: "project.created",
-      occurredAt: NOW,
-      commandId: CommandId.makeUnsafe("cmd-project-create"),
-      causationEventId: null,
-      correlationId: CommandId.makeUnsafe("cmd-project-create"),
-      metadata: {},
-      payload: {
-        projectId: PROJECT_ID,
-        kind: "project",
-        title: "Project",
-        workspaceRoot: "/tmp/project",
-        defaultModelSelection: null,
-        scripts: [],
-        createdAt: NOW,
-        updatedAt: NOW,
-      },
-    }),
-  );
-  const worktreePath = input.worktreePath === undefined ? WORKTREE_PATH : input.worktreePath;
-  const readModel = await Effect.runPromise(
-    projectEvent(withProject, {
-      sequence: 2,
-      eventId: EventId.makeUnsafe("evt-thread-create"),
-      aggregateKind: "thread",
-      aggregateId: THREAD_ID,
-      type: "thread.created",
-      occurredAt: NOW,
-      commandId: CommandId.makeUnsafe("cmd-thread-create"),
-      causationEventId: null,
-      correlationId: CommandId.makeUnsafe("cmd-thread-create"),
-      metadata: {},
-      payload: {
-        threadId: THREAD_ID,
-        projectId: PROJECT_ID,
-        title: "Thread",
-        modelSelection: input.modelSelection,
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "full-access",
-        envMode: worktreePath === null ? "local" : "worktree",
-        branch: worktreePath === null ? null : "synara/capabilities",
-        worktreePath,
-        parentThreadId: null,
-        subagentAgentId: null,
-        subagentNickname: null,
-        subagentRole: null,
-        forkSourceThreadId: null,
-        sidechatSourceThreadId: null,
-        handoff: null,
-        createdAt: NOW,
-        updatedAt: NOW,
-      },
-    }),
-  );
-  const [thread] = readModel.threads;
-  return {
-    ...readModel,
-    threads: [
-      {
-        ...thread!,
-        messages: [
-          {
-            id: MESSAGE_ID,
-            role: "user",
-            text: "first request",
-            turnId: TURN_ID,
-            streaming: false,
-            source: "native",
-            createdAt: NOW,
-            updatedAt: NOW,
-          },
-        ],
-        ...(input.goal !== undefined
-          ? {
-              goal: input.goal,
-              goalStartedAt: NOW,
-              goalPausedAt: input.goalPaused ? NOW : null,
-            }
-          : {}),
-      },
-    ],
-  };
-}
-
-/** The thread after its first turn started: bound to a session of `providerName`. */
-function withSession(readModel: OrchestrationReadModel, providerName: string) {
-  const [thread] = readModel.threads;
-  return {
-    ...readModel,
-    threads: [
-      {
-        ...thread!,
-        session: {
-          threadId: THREAD_ID,
-          status: "ready" as const,
-          providerName,
-          runtimeMode: "full-access" as const,
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: NOW,
-        },
-      },
-    ],
-  };
-}
+import {
+  AETHER,
+  CLAUDE,
+  CODEX,
+  MESSAGE_ID,
+  makeReadModel,
+  NEW_THREAD_ID,
+  NOW,
+  PROJECT_ID,
+  THREAD_ID,
+  withSession,
+  WORKTREE_PATH,
+} from "./testing/providerCapabilityReadModel.ts";
 
 async function decide(command: OrchestrationCommand, readModel: OrchestrationReadModel) {
   const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));

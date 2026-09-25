@@ -45,6 +45,7 @@ import { activeThreadGoal } from "../provider/goalMode.ts";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { withProjectRelocationEvents } from "./projectRelocation.ts";
+import { workspaceMoveFeature } from "./workspaceMove.ts";
 import { buildForkThreadTitle } from "./forkThreadTitle.ts";
 import { hasNativeHandoffMessages } from "./handoff.ts";
 import { resolveStableMessageTurnId } from "./messageTurnId.ts";
@@ -1599,24 +1600,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           yield* threadProviders(command, thread, command.modelSelection),
         );
       }
-      // A provider that owns its worktree only ever runs in it, whether or not a live session
-      // claims that worktree right now. Once a turn has started it stays in that worktree;
-      // before then the worktree can be reset (a failed first send removes the one it made).
-      if (command.envMode === "local") {
+      // Whether or not a live session claims the worktree right now (a failed first send can
+      // still reset the worktree it made).
+      const workspaceFeature = workspaceMoveFeature(thread, {
+        toLocal: command.envMode === "local",
+        changesWorktree:
+          command.worktreePath !== undefined && command.worktreePath !== thread.worktreePath,
+      });
+      if (workspaceFeature !== null) {
         yield* validateProviderFeature(
           command,
-          "local-workspace",
-          yield* threadProviders(command, thread, command.modelSelection),
-        );
-      }
-      if (
-        command.worktreePath !== undefined &&
-        command.worktreePath !== thread.worktreePath &&
-        (thread.session !== null || thread.latestTurn !== null)
-      ) {
-        yield* validateProviderFeature(
-          command,
-          "worktree-change",
+          workspaceFeature,
           yield* threadProviders(command, thread, command.modelSelection),
         );
       }
