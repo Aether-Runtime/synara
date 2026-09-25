@@ -266,14 +266,16 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
       ["toolu_01X2w96QgTAChBvY6We8rcmK", "command_execution", "completed", "git diff --stat"],
     ]);
     const diff = eventsOf(outputs).find(
-      (event) => event.type === "item.completed" && event.itemId === "toolu_01X2w96QgTAChBvY6We8rcmK",
+      (event) =>
+        event.type === "item.completed" && event.itemId === "toolu_01X2w96QgTAChBvY6We8rcmK",
     );
     expect(diff).toMatchObject({
       payload: {
         data: {
           toolName: "Bash",
           durationMs: 239,
-          result: " web/src/components/CheckoutForm.tsx | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+          result:
+            " web/src/components/CheckoutForm.tsx | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
         },
       },
     });

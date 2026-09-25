@@ -193,8 +193,7 @@ export const makeAetherConversationPoller = (
         yield* emitAll(ingest.finishRefresh(observedAt));
       });
 
-    const stop = (error: AetherConversationPollFailure) =>
-      emit({ _tag: "PollingStopped", error });
+    const stop = (error: AetherConversationPollFailure) => emit({ _tag: "PollingStopped", error });
 
     /** Polls until the task goes idle or the loop stops with a failure. */
     const pollUntilIdle = Effect.gen(function* () {
@@ -229,7 +228,12 @@ export const makeAetherConversationPoller = (
           yield* emit({
             _tag: "Event",
             event: {
-              ...makeAetherEventBase(context, undefined, ["poll-degraded", String(now)], new Date(now).toISOString()),
+              ...makeAetherEventBase(
+                context,
+                undefined,
+                ["poll-degraded", String(now)],
+                new Date(now).toISOString(),
+              ),
               type: "runtime.warning",
               payload: {
                 message: "Synara lost contact with Aether and is retrying.",

@@ -216,7 +216,6 @@ const AskUserInput = Schema.Struct({
     }),
   ),
 });
-type AskUserInput = typeof AskUserInput.Type;
 
 const AskUserAnswer = Schema.Struct({
   answers: Schema.Record(Schema.String, Schema.Array(Schema.Int)),
@@ -258,21 +257,20 @@ function questionsFromInput(input: unknown): ReadonlyArray<UserInputQuestion> | 
 
 /** Answer labels by question id, from an `ask_user` tool response. */
 function answersFromResponse(
-  questions: AskUserInput["questions"],
+  questions: ReadonlyArray<UserInputQuestion>,
   data: unknown,
 ): Record<string, string | ReadonlyArray<string> | null> | undefined {
   const decoded = Schema.decodeUnknownOption(AskUserAnswer)(data);
   if (Option.isNone(decoded)) return undefined;
   const answers: Record<string, string | ReadonlyArray<string> | null> = {};
-  for (const [index, question] of questions.entries()) {
-    const id = String(index);
-    const labels = (decoded.value.answers[id] ?? []).flatMap((choice) => {
-      const label = question.options[choice]?.label.trim();
-      return label === undefined || label === "" ? [] : [label];
+  for (const question of questions) {
+    const labels = (decoded.value.answers[question.id] ?? []).flatMap((choice) => {
+      const label = question.options[choice]?.label;
+      return label === undefined ? [] : [label];
     });
-    const custom = decoded.value.customAnswers?.[id]?.trim();
+    const custom = decoded.value.customAnswers?.[question.id]?.trim();
     const chosen = custom === undefined || custom === "" ? labels : [...labels, custom];
-    answers[id] = question.multiSelect === true ? chosen : (chosen[0] ?? null);
+    answers[question.id] = question.multiSelect ? chosen : (chosen[0] ?? null);
   }
   return answers;
 }
@@ -346,7 +344,8 @@ interface PendingInput {
   readonly turnId: AetherTurnId;
   readonly toolId: AetherToolId;
   readonly kind: AetherPendingInputKind;
-  readonly questions: AskUserInput["questions"] | undefined;
+  /** The questions as shown, to name the chosen labels; absent when they could not be shown. */
+  readonly questions: ReadonlyArray<UserInputQuestion> | undefined;
 }
 
 type AwaitingAnswer = Extract<
@@ -560,7 +559,9 @@ export class AetherConversationIngest {
           break;
       }
     }
-    turn.revisionRead = Math.max(turn.revisionRead ?? 0, revision);
+    // The activity was read after the turns page, so it is at least as new as the page's
+    // revision even when its own `turn_revision_sequence` trails it.
+    turn.revisionRead = Math.max(turn.revisionRead ?? 0, revision, turn.revision);
     return Result.succeed(outputs);
   }
 
@@ -667,13 +668,7 @@ export class AetherConversationIngest {
     const refs = { requestId: awaiting.tool_id } as const;
     if (awaiting.kind === "questions") {
       const questions = questionsFromInput(awaiting.input);
-      this.pending = {
-        turnId,
-        toolId: awaiting.tool_id,
-        kind: "questions",
-        questions: Option.getOrUndefined(Schema.decodeUnknownOption(AskUserInput)(awaiting.input))
-          ?.questions,
-      };
+      this.pending = { turnId, toolId: awaiting.tool_id, kind: "questions", questions };
       outputs.push(
         questions === undefined
           ? this.warning(turnId, [awaiting.tool_id, "questions-unreadable"], observedAt, {
@@ -761,7 +756,8 @@ export class AetherConversationIngest {
     }
 
     const detail =
-      nonEmpty(tool.display.primary) ?? (status.status === "failed" ? nonEmpty(tool.error) : undefined);
+      nonEmpty(tool.display.primary) ??
+      (status.status === "failed" ? nonEmpty(tool.error) : undefined);
     const payload = {
       itemType: kind.itemType,
       status: status.status,
@@ -785,8 +781,11 @@ export class AetherConversationIngest {
     if (previous?.kind === "tool" && (previous.terminal || previous.key === key)) return outputs;
 
     const refs = { itemId: rowId, providerItemId: tool.id } as const;
-    const type =
-      status.terminal ? "item.completed" : previous === undefined ? "item.started" : "item.updated";
+    const type = status.terminal
+      ? "item.completed"
+      : previous === undefined
+        ? "item.started"
+        : "item.updated";
     // A lifecycle edge is one event per row and status; an in-progress change of the same
     // status is told apart by its content.
     const idParts = type === "item.updated" ? [rowId, status.raw, key] : [rowId, status.raw];
@@ -844,7 +843,11 @@ export class AetherConversationIngest {
           { itemId: rowId },
           {
             type: "item.completed",
-            payload: { itemType: "context_compaction", status: "completed", title: "Context compacted" },
+            payload: {
+              itemType: "context_compaction",
+              status: "completed",
+              title: "Context compacted",
+            },
           },
         ),
       ];
@@ -862,7 +865,11 @@ export class AetherConversationIngest {
 
   /** Streams the new suffix of a message's accumulated text; completes it once closed. */
   private advanceText(
-    message: { readonly id: AetherMessageId; readonly variant: "text" | "thinking"; readonly content: string },
+    message: {
+      readonly id: AetherMessageId;
+      readonly variant: "text" | "thinking";
+      readonly content: string;
+    },
     turnId: AetherTurnId,
     closed: boolean,
     source: "live" | "activity",
@@ -872,7 +879,9 @@ export class AetherConversationIngest {
     if (record === undefined) {
       const seeded = this.seedLengths.get(message.id) ?? 0;
       if (seeded > message.content.length) {
-        return Result.fail(this.diverged(turnId, message.id, "seed", seeded, message.content.length));
+        return Result.fail(
+          this.diverged(turnId, message.id, "seed", seeded, message.content.length),
+        );
       }
       record = {
         turnId,
@@ -901,13 +910,19 @@ export class AetherConversationIngest {
     // A message first seen closed streams nothing: its completion carries the whole text.
     if (suffix !== "" && (!closed || record.streamed !== "")) {
       outputs.push(
-        this.event(turnId, [message.id, "delta", String(message.content.length)], observedAt, refs, {
-          type: "content.delta",
-          payload: {
-            streamKind: message.variant === "text" ? "assistant_text" : "reasoning_text",
-            delta: suffix,
+        this.event(
+          turnId,
+          [message.id, "delta", String(message.content.length)],
+          observedAt,
+          refs,
+          {
+            type: "content.delta",
+            payload: {
+              streamKind: message.variant === "text" ? "assistant_text" : "reasoning_text",
+              delta: suffix,
+            },
           },
-        }),
+        ),
       );
       record.streamed = message.content;
     }
@@ -955,7 +970,11 @@ export class AetherConversationIngest {
     turnId: AetherTurnId | undefined,
     idParts: ReadonlyArray<string>,
     observedAt: string,
-    refs: { readonly itemId?: string; readonly providerItemId?: string; readonly requestId?: string },
+    refs: {
+      readonly itemId?: string;
+      readonly providerItemId?: string;
+      readonly requestId?: string;
+    },
     body: DistributiveOmit<ProviderRuntimeEvent, keyof ProviderRuntimeEventBaseFields>,
   ): AetherIngestOutput {
     const event = {
@@ -1011,7 +1030,11 @@ export function makeAetherEventBase(
   turnId: AetherTurnId | undefined,
   idParts: ReadonlyArray<string>,
   observedAt: string,
-  refs: { readonly itemId?: string; readonly providerItemId?: string; readonly requestId?: string } = {},
+  refs: {
+    readonly itemId?: string;
+    readonly providerItemId?: string;
+    readonly requestId?: string;
+  } = {},
 ): ProviderRuntimeEventBaseFields {
   const providerItemId = refs.providerItemId ?? refs.itemId;
   return {

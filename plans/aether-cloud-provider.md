@@ -118,6 +118,23 @@ auto_fix_*: false}` → `{id}`. Persist the resume cursor `{schemaVersion, taskI
 - Turns that did not originate in Synara (someone answered from Aether's web app) are rendered as
   a warning card carrying the injected text.
 
+As built in P3 (`provider/aether/aetherConversationIngest.ts`, `aetherConversationPoller.ts`),
+checked against recorded traffic in `provider/aether/testing/recordings/`:
+
+- A turn briefly reads `settled` while an answer is queued to resume it. A settled or errored turn
+  is final only once the task is idle, or the task's queued work belongs to another turn. Each
+  run settles once; a run is keyed by the turn's last user message, so a plan approval that
+  resumes the same Aether turn settles again.
+- Questions (`awaiting_input.kind = "questions"`) are `user-input.requested` inside the turn and do
+  not settle it. A plan (`kind = "plan"`) is `turn.proposed.completed` and settles the run as
+  `awaiting_input(plan)`, matching Synara's plan flow. The recordings carry no input digest; the
+  pending input is handed over whole for P4 to fence the answer with.
+- The mapper never emits `turn.completed` or `runtime.error`: Synara's ingestion treats
+  `runtime.error` as terminal for the turn, and P4 must mirror-sync first. A task error travels on
+  the settlement (`errorMessage`).
+- A message first seen closed streams nothing; its completion carries the text, which Synara
+  applies only when nothing streamed. A restart mid-stream resumes from lengths P4 seeds.
+
 ### Mirror sync (the key piece)
 
 At turn end: connect the workspace WS, request the cumulative git diff (merge-base → VM working
