@@ -83,8 +83,10 @@ export class MirrorLocalEditsError extends Schema.TaggedErrorClass<MirrorLocalEd
     return (
       `The Aether mirror worktree ${this.worktreePath} was edited locally since the last sync ` +
       `(${changes.length > 0 ? changes.join("; ") : "the changed paths could not be listed"}). ` +
-      "The mirror never overwrites local work. Move those changes elsewhere, then reset the " +
-      `worktree to the task base (git reset --hard ${this.baseCommit} && git clean -fd) to resume.`
+      "The mirror never overwrites local work. To resume, move those changes out of the way " +
+      "and return the worktree to the task base without deleting anything: branch off any local " +
+      `commit first, then run git stash push --include-untracked && git reset --hard ${this.baseCommit}. ` +
+      "Anything still left over is named by the next sync, never deleted."
     );
   }
 }

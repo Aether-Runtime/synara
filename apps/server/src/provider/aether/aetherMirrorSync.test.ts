@@ -656,14 +656,22 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         });
         expect(error).not.toHaveProperty("headMoved");
         expect(error.message).toContain("app.txt, scratch.txt");
+        expect(error.message).toContain(
+          `git stash push --include-untracked && git reset --hard ${mirror.baseCommit}`,
+        );
+        expect(error.message).not.toContain("git clean");
         expect(yield* mirror.read("app.txt")).toBe("my local edit\n");
         expect(yield* mirror.read("scratch.txt")).toBe("mine\n");
 
-        // The user moves their edits away and restores the base: the mirror resumes.
+        // The user follows the message: the edits go to the stash, nothing is deleted, and the
+        // mirror resumes.
+        yield* git(mirror.worktree, ["stash", "push", "--include-untracked"]);
         yield* git(mirror.worktree, ["reset", "--hard", mirror.baseCommit]);
-        yield* git(mirror.worktree, ["clean", "-fd"]);
         expect((yield* mirror.sync())._tag).toBe("synced");
         expect(yield* mirror.tree).toEqual({ ...BASE_TREE, "notes.md": "turn two\n" });
+        expect(
+          yield* git(mirror.worktree, ["stash", "show", "--include-untracked", "--name-only"]),
+        ).toBe("app.txt\nscratch.txt");
       }),
     );
 
