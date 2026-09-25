@@ -95,10 +95,6 @@ import {
 
 const PROVIDER = "aether" as const;
 
-/** Aether's task error when the org's inference balance runs out (no failure kind yet: AS4). */
-const INFERENCE_BALANCE_EMPTY =
-  "Your inference balance is empty. Add funds in Settings › Inference to continue.";
-
 /** Opens the task's workspace without booting it: `None` while it is not running. */
 export type AetherWorkspaceOpener = (
   workspaceId: AetherWorkspaceId,
@@ -201,35 +197,13 @@ function created(session: Session): AetherCreatedCursor {
   return session.cursor;
 }
 
-function describeApiError(error: AetherApiError): string {
-  if (error._tag === "AetherApiPaymentRequiredError") {
-    return `Aether did not admit this task on your plan (${error.code}): ${error.serverMessage} Add funds or change your plan at https://runaether.dev, then send again.`;
-  }
-  if (error._tag === "AetherApiConflictError" && "code" in error.body) {
-    if (error.body.code === "idempotency_key_reused") {
-      return "Aether already started a task for an earlier attempt at this thread's first message, with a different request. Send that same message again to continue it, or start a new thread.";
-    }
-    if (error.body.code === "stale_pending_input") {
-      return "Aether's question changed before this answer arrived. Synara read the task again: answer the question it shows now.";
-    }
-  }
-  return error.message;
-}
-
 const apiFailure = (method: string) => (error: AetherApiError) =>
   new ProviderAdapterRequestError({
     provider: PROVIDER,
     method,
-    detail: describeApiError(error),
+    detail: error.message,
     cause: error,
   });
-
-function taskErrorMessage(message: string | undefined): string {
-  if (message === INFERENCE_BALANCE_EMPTY) {
-    return "Your Aether inference balance is empty. Add funds in Aether (https://runaether.dev, Settings › Inference), then send your message again.";
-  }
-  return message ?? "Aether reported the turn as failed.";
-}
 
 /** Why a mirror failed; only a workspace that is not running defers it (`openWorkspace`). */
 function mirrorFailure(
@@ -519,7 +493,9 @@ export const makeAetherAdapter = (
         }
         if (turnId === undefined) return;
         const errors = [
-          ...(settled.state === "errored" ? [taskErrorMessage(settled.errorMessage)] : []),
+          ...(settled.state === "errored"
+            ? [settled.errorMessage ?? "Aether reported the turn as failed."]
+            : []),
           ...(failed === undefined ? [] : [failed]),
         ];
         const ending: TurnEnding = { state: errors.length > 0 ? "failed" : "completed", errors };

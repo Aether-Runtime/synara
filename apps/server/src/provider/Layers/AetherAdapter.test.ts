@@ -320,16 +320,34 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
-    it.effect("maps a 402 to an actionable message", () =>
+    it.effect("refuses a 402 with Aether's own message, typed as a payment failure", () =>
       Effect.gen(function* () {
         const h = yield* makeHarness;
         const { adapter, events } = yield* h.launch();
         yield* h.start(adapter);
         h.aether.faults.payment = true;
         const refused = yield* adapter.sendTurn(h.send("Go")).pipe(Effect.flip);
-        expect(refused.message).toContain("Your plan does not include cloud workspaces.");
-        expect(refused.message).toContain("https://runaether.dev");
+        expect(refused.message).toContain(
+          "Aether requires payment (POST /tasks, workspace_runtime_not_admitted, tier free, VM small): Your plan does not include cloud workspaces.",
+        );
+        expect(refused.cause).toMatchObject({ _tag: "AetherApiPaymentRequiredError" });
         expect(events).toEqual([]);
+      }),
+    );
+
+    it.effect("fails a turn whose task errored with Aether's own message", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        const error = "Your inference balance is empty. Add funds in Settings › Inference to continue.";
+        h.aether.hooks.onTurn = (turn) => h.aether.fail(turn, error);
+        const turn = yield* adapter.sendTurn(h.send("Go"));
+        const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+        expect(completed).toMatchObject({
+          turnId: turn.turnId,
+          payload: { state: "failed", errorMessage: error },
+        });
       }),
     );
   });
@@ -421,7 +439,9 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         const stale = yield* adapter
           .respondToUserInput(THREAD_ID, question, { "0": "Buy" })
           .pipe(Effect.flip);
-        expect(stale.message).toContain("question changed before this answer arrived");
+        expect(stale.message).toContain(
+          "Aether API conflict (POST /tasks/{taskID}/respond): The pending input changed.",
+        );
         // Never retried blindly.
         expect(h.aether.calls.respond).toHaveLength(1);
         expect(h.aether.calls.respond[0]?.tool_response).toMatchObject({

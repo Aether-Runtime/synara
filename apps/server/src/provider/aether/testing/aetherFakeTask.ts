@@ -309,6 +309,12 @@ export function makeFakeAetherTask() {
         hooks.onTurn(queued);
       }
     },
+    /** The run fails: the turn errors and the task carries Aether's message. */
+    fail: (turn: FakeTurn, error: string) => {
+      turn.state = "errored";
+      task = { status: "errored", awaiting: {}, error };
+      bump(turn);
+    },
     ask: (turn: FakeTurn, toolId: string, labels: ReadonlyArray<string>) => {
       const input = {
         questions: [
