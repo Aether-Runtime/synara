@@ -41,11 +41,9 @@ export {
  */
 export function resolveProviderEnvMode(
   envMode: ThreadEnvironmentMode,
-  provider: ProviderKind | null | undefined,
+  provider: ProviderKind,
 ): ThreadEnvironmentMode {
-  return provider != null && !providerSupportsFeature(provider, "local-workspace")
-    ? "worktree"
-    : envMode;
+  return providerSupportsFeature(provider, "local-workspace") ? envMode : "worktree";
 }
 
 export interface ThreadEnvironmentPresentation {
