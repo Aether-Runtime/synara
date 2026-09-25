@@ -3347,6 +3347,118 @@ describe("MessagesTimeline", () => {
     );
   });
 
+  it("shows an interrupted turn's marker after the answer instead of inside the settled fold", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...makeTimelineBaseProps()}
+        nowIso="2026-03-17T19:12:31.000Z"
+        isWorking={false}
+        activeTurnInProgress={false}
+        timelineEntries={[
+          {
+            id: "entry-stopped-tool",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-stopped-tool",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Run command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "sleep 90",
+              toolStatus: "cancelled",
+              activityKind: "tool.updated",
+            },
+          },
+          {
+            id: "entry-stopped-assistant",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            message: {
+              id: MessageId.makeUnsafe("message-stopped"),
+              role: "assistant",
+              text: "Starting the timer now.",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              completedAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "entry-turn-interrupted",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-turn-interrupted",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "Turn interrupted",
+              tone: "info",
+              activityKind: "turn.completed",
+              turnOutcome: "interrupted",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Worked for");
+    expect(markup.match(/Turn interrupted/g)).toHaveLength(1);
+    expect(markup.indexOf("Starting the timer now.")).toBeLessThan(
+      markup.indexOf("Turn interrupted"),
+    );
+  });
+
+  it("marks a turn stopped before it answered", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.makeUnsafe("turn-stopped-before-answer");
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "stopped-command",
+          createdAt: "2026-03-17T19:12:28.000Z",
+          kind: "tool.updated",
+          summary: "Run command",
+          tone: "tool",
+          turnId,
+          payload: {
+            itemType: "command_execution",
+            status: "inProgress",
+            title: "Run command",
+            detail: "sleep 90",
+            data: { toolCallId: "stopped-command" },
+          },
+        }),
+        makeActivity({
+          id: "turn-stopped",
+          createdAt: "2026-03-17T19:12:30.000Z",
+          kind: "turn.completed",
+          summary: "Turn interrupted",
+          tone: "info",
+          turnId,
+          payload: { state: "interrupted" },
+        }),
+      ],
+      turnId,
+    );
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...makeTimelineBaseProps()}
+        nowIso="2026-03-17T19:12:31.000Z"
+        isWorking={false}
+        activeTurnInProgress={false}
+        timelineEntries={entries.map((entry) => ({
+          id: `entry-${entry.id}`,
+          kind: "work" as const,
+          createdAt: entry.createdAt,
+          entry,
+        }))}
+      />,
+    );
+
+    expect(markup).toContain("Turn interrupted");
+    expect(markup).not.toContain("Completed");
+  });
+
   it("anchors the changed-files summary at the end of a collapsed file-change turn", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const assistantMessageId = MessageId.makeUnsafe("message-assistant-inline-multi-edit");

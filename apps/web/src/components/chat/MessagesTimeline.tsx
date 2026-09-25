@@ -1920,13 +1920,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               ),
             ).values(),
           ];
+          // A turn that did not complete says so after its answer, not inside the fold.
+          const collapsedTurnOutcomeEntries = (row.collapsedTurnItems ?? []).flatMap((item) =>
+            item.kind === "work" && item.entry.turnOutcome ? [item.entry] : [],
+          );
           const collapsedTurnItems = row.collapsedTurnItems?.filter(
             (item) =>
               item.kind !== "work" ||
               !(
                 item.entry.synaraThreadCreation ||
                 item.entry.computerSetupRequired ||
-                item.entry.computerControlDenied
+                item.entry.computerControlDenied ||
+                item.entry.turnOutcome
               ),
           );
           const hasCollapsedWork = Boolean(collapsedTurnItems && collapsedTurnItems.length > 0);
@@ -2273,21 +2278,25 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     ))}
                   </div>
                 )}
-                {collapsedComputerActionEntries.map((workEntry) => (
-                  <div key={`computer-action:${row.message.id}:${workEntry.id}`} className="mt-2">
-                    <TimelineWorkEntryRow
-                      workEntry={workEntry}
-                      chatMetaFontSizePx={appTypographyScale.chatMetaPx}
-                      textFontSizePx={normalizedChatFontSizePx}
-                      density="compact"
-                      markdownCwd={markdownCwd}
-                      onImageExpand={onImageExpand}
-                      timestampFormat={timestampFormat}
-                      {...(computerControlEnabled !== undefined ? { computerControlEnabled } : {})}
-                      {...(onEnableComputerControl ? { onEnableComputerControl } : {})}
-                    />
-                  </div>
-                ))}
+                {[...collapsedComputerActionEntries, ...collapsedTurnOutcomeEntries].map(
+                  (workEntry) => (
+                    <div key={`after-answer:${row.message.id}:${workEntry.id}`} className="mt-2">
+                      <TimelineWorkEntryRow
+                        workEntry={workEntry}
+                        chatMetaFontSizePx={appTypographyScale.chatMetaPx}
+                        textFontSizePx={normalizedChatFontSizePx}
+                        density="compact"
+                        markdownCwd={markdownCwd}
+                        onImageExpand={onImageExpand}
+                        timestampFormat={timestampFormat}
+                        {...(computerControlEnabled !== undefined
+                          ? { computerControlEnabled }
+                          : {})}
+                        {...(onEnableComputerControl ? { onEnableComputerControl } : {})}
+                      />
+                    </div>
+                  ),
+                )}
                 {!row.assistantTurnInProgress && row.showAssistantCopyButton
                   ? synaraThreadCreationRecaps.map((creation) => (
                       <div key={creation.operationId} className="mt-2 mb-4">

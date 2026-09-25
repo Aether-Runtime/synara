@@ -124,6 +124,8 @@ export interface WorkLogEntry {
   computerControlDenied?: WorkLogComputerControlDenied;
   computerSetupRequired?: WorkLogComputerSetupRequired;
   providerContextLifecycle?: ProviderContextLifecycleInfo;
+  /** How a turn that did not complete ended; the timeline keeps this row in view. */
+  turnOutcome?: "interrupted";
   // Source activity kind, kept so the timeline can pick a kind-specific icon
   // (e.g. user-input.requested -> question glyph) instead of the generic
   // tone fallback. Same rationale as `toolName` below.
@@ -430,7 +432,15 @@ function isQuietTurnLifecycleActivity(activity: OrchestrationThreadActivity): bo
     return false;
   }
   // Provider lifecycle rows close internal state; assistant/result text is rendered from messages.
-  return activity.tone !== "error";
+  // A failed or interrupted turn keeps its row: nothing else says the turn did not finish.
+  return activity.tone !== "error" && turnCompletedState(activity) !== "interrupted";
+}
+
+/** The state a `turn.completed` activity recorded, from its payload. */
+function turnCompletedState(activity: OrchestrationThreadActivity): string | null {
+  if (activity.kind !== "turn.completed") return null;
+  const state = asRecord(activity.payload)?.state;
+  return typeof state === "string" ? state : null;
 }
 
 function isUninformativeCommandStartEntry(entry: DerivedWorkLogEntry): boolean {
@@ -641,6 +651,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     ...(toolName ? { toolName } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolStatus ? { toolStatus } : {}),
+    ...(turnCompletedState(activity) === "interrupted" ? { turnOutcome: "interrupted" } : {}),
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
@@ -1426,8 +1437,14 @@ function reconcileSettledLiveActivities(
         settledAt: activity.createdAt,
       });
     } else if (activity.kind === "turn.completed") {
+      const turnState = turnCompletedState(activity);
       terminalByTurnId.set(activity.turnId, {
-        state: activity.tone === "error" ? "failed" : "completed",
+        state:
+          activity.tone === "error"
+            ? "failed"
+            : turnState === "interrupted" || turnState === "cancelled"
+              ? "cancelled"
+              : "completed",
         settledAt: activity.createdAt,
       });
     }

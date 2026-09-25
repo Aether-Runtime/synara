@@ -39,6 +39,7 @@ import {
   PencilIcon,
   SearchIcon,
   SkillCubeIcon,
+  StopIcon,
   TerminalIcon,
   WebSearchIcon,
   ZapIcon,
@@ -245,6 +246,7 @@ function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   if (workEntry.activityKind === "user-input.requested") return CircleQuestionIcon;
   if (workEntry.activityKind === "user-input.resolved") return ArrowUpCircleIcon;
   if (workEntry.activityKind === "context-compaction") return ContextCompactionIcon;
+  if (workEntry.turnOutcome === "interrupted") return StopIcon;
   // "Moved to background" notices read as a tray drop, not a warning check.
   if (workEntry.nativeEventType === "background_tasks_changed") return BackgroundTrayIcon;
   if (workEntry.providerContextLifecycle) {
