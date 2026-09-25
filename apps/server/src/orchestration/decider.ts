@@ -151,7 +151,11 @@ function threadProviders(
   thread: Pick<OrchestrationThread, "session" | "modelSelection">,
   commandModelSelection?: OrchestrationThread["modelSelection"],
 ): ReadonlyArray<string | null | undefined> {
-  return [thread.session?.providerName, thread.modelSelection.provider, commandModelSelection?.provider];
+  return [
+    thread.session?.providerName,
+    thread.modelSelection.provider,
+    commandModelSelection?.provider,
+  ];
 }
 
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {

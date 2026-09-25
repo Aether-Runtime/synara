@@ -8,7 +8,17 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, Exit, FileSystem, Layer, PlatformError, Schema, Scope, Stream } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  PlatformError,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import { describe, expect, vi } from "vitest";
 import { TestClock } from "effect/testing";
 
@@ -2018,6 +2028,45 @@ it.layer(TestLayer)("git integration", (it) => {
           force: true,
           reclaimTemporaryBranch: true,
         });
+      }),
+    );
+
+    it.effect("refuses to copy checkout changes for a provider that owns its worktree", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* writeTextFile(path.join(tmp, "notes.txt"), "untracked note\n");
+        const core = yield* GitCore;
+        const wtPath = path.join(tmp, "wt-cloud-copy");
+        const phases: string[] = [];
+
+        const result = yield* Effect.exit(
+          core.createDetachedWorktree(
+            {
+              cwd: tmp,
+              ref: "HEAD",
+              path: wtPath,
+              newBranch: "synara/cl123456",
+              copyChangesFrom: tmp,
+              provider: "aether",
+            },
+            {
+              onPhase: (phase) =>
+                Effect.sync(() => {
+                  phases.push(phase);
+                }),
+            },
+          ),
+        );
+
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(String(Exit.isFailure(result) ? Cause.squash(result.cause) : "")).toContain(
+          "Aether threads cannot copy local changes into their worktree",
+        );
+        expect(phases).toEqual([]);
+        expect(existsSync(wtPath)).toBe(false);
+        const branches = yield* git(tmp, ["branch", "--list", "synara/cl123456"]);
+        expect(branches.trim()).toBe("");
       }),
     );
 

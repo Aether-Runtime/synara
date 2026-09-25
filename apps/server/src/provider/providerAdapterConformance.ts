@@ -17,7 +17,10 @@ type CapabilityFlag = Exclude<
 >;
 
 /** Adapter capabilities the shared provider descriptors mirror for the decider and the web. */
-type DescriptorMirroredCapability = "reachesAgentGateway" | "managesWorktreeBranch" | "conversationRollback";
+type DescriptorMirroredCapability =
+  | "reachesAgentGateway"
+  | "managesWorktreeBranch"
+  | "conversationRollback";
 
 type OptionalAdapterMethod =
   | "steerTurn"

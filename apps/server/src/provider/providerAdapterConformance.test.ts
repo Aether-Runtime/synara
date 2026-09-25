@@ -101,6 +101,38 @@ describe("provider adapter conformance", () => {
     );
   });
 
+  it("refuses capabilities that disagree with the shared provider descriptor", () => {
+    // Aether's descriptor has no gateway, owns its worktree and cannot roll back.
+    expect(providerAdapterConformanceIssues(makeAdapter({ provider: "aether" }))).toEqual([
+      { descriptorMismatch: "reachesAgentGateway" },
+      { descriptorMismatch: "managesWorktreeBranch" },
+      { descriptorMismatch: "conversationRollback" },
+    ]);
+    expect(() =>
+      assertProviderAdapterConformance(
+        makeAdapter({
+          provider: "codex",
+          capabilities: { sessionModelSwitch: "in-session", conversationRollback: "unsupported" },
+        }),
+      ),
+    ).toThrow(
+      'Provider adapter "codex" has invalid capabilities: conversationRollback disagrees with the shared provider descriptor.',
+    );
+    expect(
+      providerAdapterConformanceIssues(
+        makeAdapter({
+          provider: "aether",
+          capabilities: {
+            sessionModelSwitch: "unsupported",
+            conversationRollback: "unsupported",
+            reachesAgentGateway: false,
+            managesWorktreeBranch: true,
+          },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
   it("reports duplicate provider registrations instead of allowing silent overwrite", () => {
     const first = makeAdapter({ provider: "codex" });
     const second = makeAdapter({ provider: "codex" });

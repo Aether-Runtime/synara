@@ -529,9 +529,14 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
               ),
             );
           }
-          if (environment === "local" && !providerSupportsFeature(target.provider, "local-workspace")) {
+          if (
+            environment === "local" &&
+            !providerSupportsFeature(target.provider, "local-workspace")
+          ) {
             return yield* Effect.fail(
-              new ToolInputError(providerFeatureUnavailableMessage(target.provider, "local-workspace")),
+              new ToolInputError(
+                providerFeatureUnavailableMessage(target.provider, "local-workspace"),
+              ),
             );
           }
           const runtimeMode =

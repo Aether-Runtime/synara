@@ -266,7 +266,7 @@ export function providerFeatureUnavailableMessage(
     case "automation":
       return `Automations cannot run on ${name}: an automation branches from your local HEAD, which ${name} never sees.`;
     case "conversation-rollback":
-      return `${name} cannot roll back its conversation, so reverting or editing earlier messages is unavailable in this thread.`;
+      return `${name} cannot roll back its conversation, so reverting changes or editing earlier messages is unavailable in this thread.`;
     case "local-workspace":
       return `${name} threads always run in a new worktree that ${name} owns; they cannot work in the local checkout.`;
     case "copy-changes":

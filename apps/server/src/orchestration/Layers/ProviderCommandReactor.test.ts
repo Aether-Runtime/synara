@@ -281,7 +281,7 @@ describe("ProviderCommandReactor", () => {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session" | "restart-session";
-    readonly conversationRollback?: "native" | "restart-session";
+    readonly conversationRollback?: "native" | "restart-session" | "unsupported";
     readonly managesWorktreeBranch?: boolean;
     readonly checkpointStore?: Partial<CheckpointStoreShape>;
     readonly studioOutputReactor?: Partial<StudioOutputReactorShape>;
@@ -8296,6 +8296,54 @@ describe("ProviderCommandReactor", () => {
     await waitFor(async () => (await readHarnessThread(harness))?.session?.status === "error");
     const thread = await readHarnessThread(harness);
     expect(thread?.session?.lastError).toContain("managed by the aether session");
+    expect(harness.rollbackConversation).not.toHaveBeenCalled();
+    expect(harness.restoreCheckpoint).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("refuses an edit resend up front for a provider that cannot roll back", async () => {
+    const harness = await createHarness({
+      threadModelSelection: { provider: "aether", model: "claude-opus-5-5" },
+      conversationRollback: "unsupported",
+      managesWorktreeBranch: true,
+    });
+    const now = new Date().toISOString();
+    harness.isGitRepository.mockImplementation(() => Effect.succeed(true));
+    // Owned like a live Aether mirror: the rollback refusal must come before the
+    // ownership pre-check, which runs outside the repository lock.
+    harness.ownedWorktrees.set("/tmp/provider-project", {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      provider: "aether",
+    });
+    await seedRollbackTarget(harness, {
+      messageId: asMessageId("user-message-unsupported-edit"),
+      turnId: asTurnId("turn-unsupported-edit"),
+      createdAt: now,
+    });
+    const before = await readHarnessThread(harness);
+
+    await expect(
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.edit-and-resend",
+          commandId: CommandId.makeUnsafe("cmd-unsupported-edit-resend"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          messageId: asMessageId("user-message-unsupported-edit"),
+          text: "edited prompt for a cloud provider",
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        }),
+      ),
+    ).rejects.toThrow("Aether cannot roll back its conversation");
+
+    const thread = await readHarnessThread(harness);
+    expect(thread?.session).toEqual(before?.session);
+    expect(thread?.messages).toEqual(before?.messages);
+    expect(harness.isGitRepository).not.toHaveBeenCalled();
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.stopRuntimeSession).not.toHaveBeenCalled();
+    expect(harness.clearSessionResumeCursor).not.toHaveBeenCalled();
     expect(harness.rollbackConversation).not.toHaveBeenCalled();
     expect(harness.restoreCheckpoint).not.toHaveBeenCalled();
     expect(harness.sendTurn).not.toHaveBeenCalled();

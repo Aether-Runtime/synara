@@ -796,6 +796,54 @@ layer("AutomationService", (it) => {
     }),
   );
 
+  it.effect("refuses a provider that owns its worktree on create, update and run", () =>
+    Effect.gen(function* () {
+      resetHarness();
+      const service = yield* AutomationService;
+      const repository = yield* AutomationRepository;
+      const aetherModelSelection = { provider: "aether" as const, model: "claude-opus-5-5" };
+      const refusal =
+        /Automations cannot run on Aether: an automation branches from your local HEAD/;
+
+      const createError = yield* service
+        .create({ ...createInput(), modelSelection: aetherModelSelection })
+        .pipe(Effect.flip);
+      assert.match(createError.message, refusal);
+
+      const definition = yield* service.create(createInput());
+      const updateError = yield* service
+        .update({ id: definition.id, modelSelection: aetherModelSelection })
+        .pipe(Effect.flip);
+      assert.match(updateError.message, refusal);
+
+      // Inserted directly, bypassing create-time validation: the run path refuses too,
+      // even with Aether enabled.
+      const serverSettings = yield* ServerSettingsService;
+      yield* serverSettings.updateSettings({ providers: { aether: { enabled: true } } });
+      const automationId = AutomationId.makeUnsafe("automation-aether-runnow");
+      yield* repository.createDefinition({
+        id: automationId,
+        input: { ...createInput(), modelSelection: aetherModelSelection },
+        now,
+      });
+      const runError = yield* service
+        .runNow({ automationId })
+        .pipe(
+          Effect.flip,
+          Effect.ensuring(
+            serverSettings
+              .updateSettings({ providers: { aether: { enabled: false } } })
+              .pipe(Effect.ignore),
+          ),
+        );
+      assert.match(runError.message, refusal);
+      assert.strictEqual(
+        dispatchedCommands.filter((command) => command.type === "thread.create").length,
+        0,
+      );
+    }),
+  );
+
   it.effect("accepts and dismisses persisted automation proposals", () =>
     Effect.gen(function* () {
       resetHarness();
