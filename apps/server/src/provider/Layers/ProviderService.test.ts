@@ -6914,3 +6914,63 @@ liveFallback.layer("ProviderServiceLive live-fallback settled turns", (it) => {
     }),
   );
 });
+
+it.effect(
+  "reattaches a turn only through an adapter that can, without reading anything for one that cannot",
+  () =>
+    Effect.gen(function* () {
+      const failure = new ProviderSessionDirectoryPersistenceError({
+        operation: "test",
+        detail: "injected binding read failure",
+      });
+      const codex = makeFakeCodexAdapter("codex");
+      const reattaching = { ...makeFakeCodexAdapter("antigravity").adapter, reattachTurn: vi.fn() };
+      const registry: typeof ProviderAdapterRegistry.Service = {
+        getByProvider: (provider) =>
+          provider === "codex"
+            ? Effect.succeed(codex.adapter)
+            : provider === "antigravity"
+              ? Effect.succeed(reattaching)
+              : Effect.fail(new ProviderUnsupportedError({ provider })),
+        listProviders: () => Effect.succeed(["codex", "antigravity"] as const),
+      };
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const failingDirectoryLayer = Layer.effect(
+        ProviderSessionDirectory,
+        Effect.gen(function* () {
+          const directory = yield* ProviderSessionDirectory;
+          return {
+            ...directory,
+            getBinding: () => Effect.fail(failure),
+          } satisfies ProviderSessionDirectoryShape;
+        }),
+      ).pipe(
+        Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))),
+      );
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const input = {
+          threadId: asThreadId("thread-reattach"),
+          turnId: asTurnId("turn-reattach"),
+          runtimeMode: "full-access",
+        } as const;
+        // A provider that cannot reattach is left to the usual restart path, whatever else fails.
+        assert.equal(yield* provider.reattachTurn!({ ...input, provider: "codex" }), false);
+        // One that can fails loudly on a failed read.
+        const refused = yield* provider.reattachTurn!({ ...input, provider: "antigravity" }).pipe(
+          Effect.flip,
+        );
+        assert.equal(refused, failure);
+        assert.equal(reattaching.reattachTurn.mock.calls.length, 0);
+      }).pipe(
+        Effect.provide(
+          makeProviderServiceLive().pipe(
+            Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+            Layer.provide(failingDirectoryLayer),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+);

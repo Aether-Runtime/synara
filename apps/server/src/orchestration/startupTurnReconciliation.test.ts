@@ -841,7 +841,7 @@ describe("reconcileRestartStuckTurns selection", () => {
         hasPendingUserInput: false,
       },
     ];
-    const reattachTurn = vi.fn((input: { readonly threadId: string }) =>
+    const reattachTurn = vi.fn((input: { readonly threadId: string; readonly provider: string }) =>
       input.threadId === "reattached"
         ? Effect.succeed(true)
         : input.threadId === "reattach-failed"
@@ -871,10 +871,10 @@ describe("reconcileRestartStuckTurns selection", () => {
         Effect.provideService(ProviderService, { reattachTurn } as never),
       ),
     );
-    expect(reattachTurn.mock.calls.map(([input]) => input.threadId)).toEqual([
-      "reattached",
-      "reattach-failed",
-      "local",
+    expect(reattachTurn.mock.calls.map(([input]) => [input.threadId, input.provider])).toEqual([
+      ["reattached", "aether"],
+      ["reattach-failed", "aether"],
+      ["local", "grok"],
     ]);
     const commands = dispatch.mock.calls.map(
       ([command]) =>

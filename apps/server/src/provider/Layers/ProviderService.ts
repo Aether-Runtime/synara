@@ -3334,10 +3334,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const reattachTurn: NonNullable<ProviderServiceShape["reattachTurn"]> = (input) =>
       Effect.gen(function* () {
-        const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
-        if (binding === undefined) return false;
-        const adapter = yield* registry.getByProvider(binding.provider);
+        const adapter = yield* registry.getByProvider(input.provider);
+        // A provider that cannot reattach is left to the usual restart path: nothing is read.
         if (adapter.reattachTurn === undefined) return false;
+        const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+        if (binding?.provider !== input.provider) {
+          return yield* toValidationError(
+            "ProviderService.reattachTurn",
+            `Cannot reattach thread '${input.threadId}' without its ${input.provider} provider binding.`,
+          );
+        }
         yield* adapter.reattachTurn({
           threadId: input.threadId,
           turnId: input.turnId,

@@ -41,13 +41,13 @@ import type {
   RuntimeMode,
   ThreadId,
 } from "@synara/contracts";
-import { CommandId, EventId } from "@synara/contracts";
+import { CommandId, EventId, ProviderKind } from "@synara/contracts";
 import { createStalePendingInteractionMatcher } from "@synara/shared/pendingInteractions";
 import {
   derivePendingThreadRequestIds,
   type PendingThreadRequestKind,
 } from "@synara/shared/threadSummary";
-import { Array as Arr, Cause, Effect, Option } from "effect";
+import { Array as Arr, Cause, Effect, Option, Schema } from "effect";
 import type { ProjectionPendingInteraction } from "../persistence/Services/ProjectionPendingInteractions.ts";
 import { ProjectionPendingInteractionRepository } from "../persistence/Services/ProjectionPendingInteractions.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
@@ -427,9 +427,17 @@ export const reconcileRestartStuckTurns: Effect.Effect<
       threadsNeedingRestartCleanup,
       (thread) => {
         const turnId = thread.session?.activeTurnId;
-        if (!threadHasInFlightTurn(thread) || turnId == null) return Effect.void;
+        const provider = thread.session?.providerName;
+        if (
+          !threadHasInFlightTurn(thread) ||
+          turnId == null ||
+          !Schema.is(ProviderKind)(provider)
+        ) {
+          return Effect.void;
+        }
         return reattachTurn({
           threadId: thread.id,
+          provider,
           turnId,
           runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
         }).pipe(
