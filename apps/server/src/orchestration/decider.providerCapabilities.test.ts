@@ -374,6 +374,31 @@ describe("decider provider capability gating", () => {
     });
   });
 
+  it("refuses a gated command on a thread bound to an unknown provider", async () => {
+    const readModel = await makeReadModel({ modelSelection: CODEX });
+    const [thread] = readModel.threads;
+    const unknownSession = {
+      ...readModel,
+      threads: [
+        {
+          ...thread!,
+          session: {
+            threadId: THREAD_ID,
+            status: "ready" as const,
+            providerName: "retired-provider",
+            runtimeMode: "full-access" as const,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: NOW,
+          },
+        },
+      ],
+    };
+    expect(await refusal(checkpointRevert("thread"), unknownSession)).toContain(
+      "bound to unknown provider 'retired-provider'",
+    );
+  });
+
   describe.each([
     ["Codex", CODEX],
     ["Claude", CLAUDE],

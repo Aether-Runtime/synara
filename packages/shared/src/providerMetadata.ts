@@ -18,8 +18,7 @@ export interface ProviderDescriptor {
   /**
    * False when the provider's agent cannot reach Synara's local agent gateway (Aether runs in
    * a cloud VM), so it never gets the thread-scoped synara_* tools that thread goals, Computer
-   * Use, browser automation and device tools depend on. Mirrors the adapter's
-   * `reachesAgentGateway` capability; the adapter registry refuses a mismatch.
+   * Use, browser automation and device tools depend on.
    */
   readonly reachesAgentGateway: boolean;
   /**
@@ -32,8 +31,7 @@ export interface ProviderDescriptor {
   readonly managesWorktreeBranch: boolean;
   /**
    * False when the provider cannot rewind its conversation, so checkpoint revert and
-   * edit-and-resend are refused before any file is touched. Mirrors the adapter's
-   * `conversationRollback` capability being `"unsupported"`.
+   * edit-and-resend are refused before any file is touched.
    */
   readonly supportsConversationRollback: boolean;
   /**
@@ -220,23 +218,9 @@ export const providerSupportsNativeTurnSteering = (kind: string): boolean =>
     (descriptor) => descriptor.kind === kind && descriptor.supportsNativeTurnSteering,
   );
 
-const findProviderDescriptor = (kind: string) =>
-  PROVIDER_DESCRIPTORS.find((descriptor) => descriptor.kind === kind);
-
 /** True for a cloud service Synara connects to, rather than a CLI installed locally. */
-export const providerIsCloudService = (kind: string): boolean =>
-  findProviderDescriptor(kind)?.runtime === "cloud";
-
-// The capability checks below also accept plain strings. An unknown provider is not gated
-// here: it cannot start a session, and the adapter registry already fails loudly for it.
-export const providerReachesAgentGateway = (kind: string): boolean =>
-  findProviderDescriptor(kind)?.reachesAgentGateway ?? true;
-
-export const providerManagesWorktreeBranch = (kind: string): boolean =>
-  findProviderDescriptor(kind)?.managesWorktreeBranch ?? false;
-
-export const providerSupportsConversationRollback = (kind: string): boolean =>
-  findProviderDescriptor(kind)?.supportsConversationRollback ?? true;
+export const providerIsCloudService = (kind: ProviderKind): boolean =>
+  PROVIDER_DESCRIPTOR_BY_KIND[kind].runtime === "cloud";
 
 /** A Synara feature a provider capability can rule out. */
 export type ProviderGatedFeature =
@@ -253,19 +237,23 @@ export type ProviderGatedFeature =
  * The provider capability a feature needs, as one predicate. The server refuses and the web
  * hides with the same answer, so the two cannot drift apart.
  */
-export function providerSupportsFeature(kind: string, feature: ProviderGatedFeature): boolean {
+export function providerSupportsFeature(
+  kind: ProviderKind,
+  feature: ProviderGatedFeature,
+): boolean {
+  const descriptor = PROVIDER_DESCRIPTOR_BY_KIND[kind];
   switch (feature) {
     case "thread-goal":
     case "computer-control":
-      return providerReachesAgentGateway(kind);
+      return descriptor.reachesAgentGateway;
     case "sidechat":
     case "automation":
     case "local-workspace":
     case "copy-changes":
     case "provider-handoff":
-      return !providerManagesWorktreeBranch(kind);
+      return !descriptor.managesWorktreeBranch;
     case "conversation-rollback":
-      return providerSupportsConversationRollback(kind);
+      return descriptor.supportsConversationRollback;
   }
 }
 
@@ -275,23 +263,23 @@ export function providerSupportsFeature(kind: string, feature: ProviderGatedFeat
  * gates check all of them; absent entries are skipped.
  */
 export function providerLackingFeature(
-  providers: ReadonlyArray<string | null | undefined>,
+  providers: ReadonlyArray<ProviderKind | null | undefined>,
   feature: ProviderGatedFeature,
-): string | null {
+): ProviderKind | null {
   return (
     providers.find(
-      (provider): provider is string =>
-        typeof provider === "string" && !providerSupportsFeature(provider, feature),
+      (provider): provider is ProviderKind =>
+        provider != null && !providerSupportsFeature(provider, feature),
     ) ?? null
   );
 }
 
 /** Why `feature` is unavailable for `kind`; the server's refusal text. */
 export function providerFeatureUnavailableMessage(
-  kind: string,
+  kind: ProviderKind,
   feature: ProviderGatedFeature,
 ): string {
-  const name = findProviderDescriptor(kind)?.displayName ?? kind;
+  const name = PROVIDER_DESCRIPTOR_BY_KIND[kind].displayName;
   switch (feature) {
     case "thread-goal":
       return `Thread goals are unavailable with ${name}: its agent cannot reach Synara's agent gateway, so it could never mark a goal as achieved.`;
