@@ -21,6 +21,7 @@ import {
   EventId,
   resolveAetherAgentFamily,
   TurnId,
+  type ProviderInteractionMode,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
   type ProviderSession,
@@ -79,6 +80,7 @@ import {
   activeTurnId,
   parseAetherResumeCursor,
   type AetherCreatedCursor,
+  type AetherCreatingCursor,
   type AetherResumeCursor,
 } from "../aether/aetherResumeCursor.ts";
 import { requireAetherWorktree, resolveAetherTaskBase } from "../aether/aetherTaskBase.ts";
@@ -117,19 +119,36 @@ export interface AetherAdapterOptions {
   readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
 }
 
-interface Session {
+/** A session, whatever its task's state. */
+interface SessionBase {
   readonly threadId: ThreadId;
   readonly runtimeMode: RuntimeMode;
   readonly model: string;
   readonly createdAt: string;
   readonly scope: Scope.Closeable;
+  /** Held by every call that changes the session, and by every poll loop output. */
   readonly lock: Semaphore.Semaphore;
   readonly claim: WorktreeClaim;
-  cursor: AetherResumeCursor;
   updatedAt: string;
-  poller: AetherConversationPoller | undefined;
+}
+
+interface Session extends SessionBase {
+  /** No task until the first turn creates one; then the task and the loop following it. */
+  state: Creating | Task;
+}
+
+interface Creating {
+  readonly _tag: "Creating";
+  readonly cursor: AetherCreatingCursor;
+}
+
+interface Task {
+  readonly _tag: "Task";
+  /** Changed only through `transition`, under the session lock. */
+  cursor: AetherCreatedCursor;
+  readonly poller: AetherConversationPoller;
   /** Event ids the journal holds: a resumed poll loop derives them again, and they are dropped. */
-  replayed: ReadonlySet<string>;
+  readonly replayed: ReadonlySet<string>;
   /** Aether turns that did not come from Synara (sent from Aether's own UI). */
   readonly remoteTurns: Set<AetherTurnId>;
   /** The Synara turn an interrupt was sent for: it completes as interrupted. */
@@ -139,6 +158,11 @@ interface Session {
    * anyway. The retry, which is the same request and so the same turn, completes at once.
    */
   readonly settledEarly: Map<TurnId, TurnEnding>;
+}
+
+/** The one writer of a task's cursor. Every caller holds the session lock. */
+function transition(task: Task, change: (cursor: AetherCreatedCursor) => AetherCreatedCursor) {
+  task.cursor = change(task.cursor);
 }
 
 interface TurnEnding {
@@ -193,12 +217,6 @@ function derivedUuid(text: string): string {
  */
 const clientMessageIdFor = (cursor: AetherCreatedCursor, body: unknown) =>
   derivedUuid(`${cursor.taskId}:${cursor.sends}:${JSON.stringify(body)}`);
-
-/** The cursor of a session whose task exists: every caller runs only once it does. */
-function created(session: Session): AetherCreatedCursor {
-  if (session.cursor.status !== "created") throw new Error("The Aether task does not exist yet.");
-  return session.cursor;
-}
 
 /**
  * An API failure as an adapter error. A request Aether refused changed nothing, so it is a
@@ -275,6 +293,19 @@ function askUserAnswer(input: unknown, answers: ProviderUserInputAnswers) {
   });
 }
 
+/** The Aether interaction mode of a Synara turn. */
+function aetherMode(mode: ProviderInteractionMode | undefined): "default" | "plan" {
+  switch (mode) {
+    case undefined:
+    case "default":
+    // Debug mode is a prompt prefix the command reactor adds; Aether runs it as a default turn.
+    case "debug":
+      return "default";
+    case "plan":
+      return "plan";
+  }
+}
+
 function turnText(input: ProviderSendTurnInput, operation: string) {
   if ((input.attachments?.length ?? 0) > 0) {
     return Exit.fail(invalid(operation, "Aether turns do not take attachments yet."));
@@ -308,20 +339,21 @@ export const makeAetherAdapter = (
     const nowIso = Effect.map(Clock.currentTimeMillis, (millis) => new Date(millis).toISOString());
 
     const requireTask = (session: Session, operation: string) =>
-      session.cursor.status === "created"
-        ? Effect.succeed(session.cursor)
+      session.state._tag === "Task"
+        ? Effect.succeed(session.state)
         : Effect.fail(invalid(operation, "No Aether task has started for this thread yet."));
 
     const snapshot = (session: Session): ProviderSession => {
-      const active = session.cursor.status === "created" ? activeTurnId(session.cursor) : null;
+      const { state } = session;
+      const active = state._tag === "Task" ? activeTurnId(state.cursor) : null;
       return {
         provider: PROVIDER,
         status: active === null ? "ready" : "running",
         runtimeMode: session.runtimeMode,
-        cwd: session.cursor.worktreePath,
+        cwd: state.cursor.worktreePath,
         model: session.model,
         threadId: session.threadId,
-        resumeCursor: session.cursor,
+        resumeCursor: state.cursor,
         ...(active === null ? {} : { activeTurnId: active }),
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
@@ -333,20 +365,25 @@ export const makeAetherAdapter = (
     // -----------------------------------------------------------------------
 
     /** Every event goes out here; one the journal already holds is not sent again. */
-    const publish = (session: Session, event: ProviderRuntimeEvent) =>
-      session.replayed.has(event.eventId)
+    const publish = (session: SessionBase, task: Task, event: ProviderRuntimeEvent) =>
+      task.replayed.has(event.eventId)
         ? Effect.void
         : Effect.suspend(() => {
             session.updatedAt = event.createdAt;
             return Queue.offer(events, event);
           }).pipe(Effect.asVoid);
 
-    const base = (session: Session, turnId: TurnId | undefined, parts: ReadonlyArray<string>) =>
+    const base = (
+      session: SessionBase,
+      task: Task,
+      turnId: TurnId | undefined,
+      parts: ReadonlyArray<string>,
+    ) =>
       Effect.map(nowIso, (createdAt) => ({
         eventId: EventId.makeUnsafe(
           [
             "aether",
-            created(session).taskId,
+            task.cursor.taskId,
             turnId === undefined ? "task" : `synara:${turnId}`,
             ...parts,
           ].join(":"),
@@ -358,15 +395,16 @@ export const makeAetherAdapter = (
       }));
 
     const warn = (
-      session: Session,
+      session: SessionBase,
+      task: Task,
       turnId: TurnId | undefined,
       parts: ReadonlyArray<string>,
       message: string,
       detail?: unknown,
     ) =>
-      base(session, turnId, parts).pipe(
+      base(session, task, turnId, parts).pipe(
         Effect.flatMap((fields) =>
-          publish(session, {
+          publish(session, task, {
             ...fields,
             type: "runtime.warning",
             payload: { message, ...(detail === undefined ? {} : { detail }) },
@@ -376,19 +414,19 @@ export const makeAetherAdapter = (
 
     /** The turn's one `turn.completed`; its id is the turn's, so a replay of it is dropped. */
     const complete = (
-      session: Session,
+      session: SessionBase,
+      task: Task,
       turnId: TurnId,
       state: "completed" | "failed" | "interrupted",
       errors: ReadonlyArray<string> = [],
     ) =>
       Effect.gen(function* () {
-        const cursor = created(session);
-        session.cursor = {
+        transition(task, (cursor) => ({
           ...cursor,
           active: activeTurnId(cursor) === turnId ? false : cursor.active,
-        };
-        yield* publish(session, {
-          ...(yield* base(session, turnId, ["completed"])),
+        }));
+        yield* publish(session, task, {
+          ...(yield* base(session, task, turnId, ["completed"])),
           type: "turn.completed",
           payload: { state, ...(errors.length === 0 ? {} : { errorMessage: errors.join("\n\n") }) },
         });
@@ -404,10 +442,10 @@ export const makeAetherAdapter = (
      * it still waits for its own (its text can stream before its turn is listed); otherwise an id
      * of its own, for a turn sent from outside Synara.
      */
-    const turnIdFor = (session: Session, aetherTurnId: AetherTurnId): TurnId => {
-      const cursor = created(session);
+    const turnIdFor = (task: Task, aetherTurnId: AetherTurnId): TurnId => {
+      const { cursor } = task;
       const active = activeTurnId(cursor);
-      if (!session.remoteTurns.has(aetherTurnId)) {
+      if (!task.remoteTurns.has(aetherTurnId)) {
         const bound = cursor.turns.findLast((turn) => turn.aetherTurnId === aetherTurnId);
         if (bound !== undefined) return bound.turnId;
         const waiting = cursor.turns.find(
@@ -420,14 +458,14 @@ export const makeAetherAdapter = (
 
     /** Binds a new Aether turn to the Synara turn that sent it; false when none did. */
     const bindOrigin = (
-      session: Session,
+      task: Task,
       aetherTurnId: AetherTurnId,
       clientMessageId: string | undefined,
     ): boolean => {
-      const cursor = created(session);
+      const { cursor } = task;
       if (cursor.turns.some((turn) => turn.aetherTurnId === aetherTurnId)) return true;
-      if (session.remoteTurns.has(aetherTurnId)) return false;
-      const [task, ...sent] = cursor.turns;
+      if (task.remoteTurns.has(aetherTurnId)) return false;
+      const [first, ...sent] = cursor.turns;
       const bySend =
         clientMessageId === undefined
           ? -1
@@ -435,18 +473,21 @@ export const makeAetherAdapter = (
               (turn) => turn.aetherTurnId === null && turn.clientMessageId === clientMessageId,
             );
       if (bySend !== -1) {
-        session.cursor = {
-          ...cursor,
-          turns: [task, ...sent.with(bySend, { ...sent[bySend]!, aetherTurnId })],
-        };
+        transition(task, (current) => ({
+          ...current,
+          turns: [first, ...sent.with(bySend, { ...sent[bySend]!, aetherTurnId })],
+        }));
         return true;
       }
       // The task's first turn is the one `POST /tasks` started.
-      if (task.aetherTurnId === null) {
-        session.cursor = { ...cursor, turns: [{ ...task, aetherTurnId }, ...sent] };
+      if (first.aetherTurnId === null) {
+        transition(task, (current) => ({
+          ...current,
+          turns: [{ ...first, aetherTurnId }, ...sent],
+        }));
         return true;
       }
-      session.remoteTurns.add(aetherTurnId);
+      task.remoteTurns.add(aetherTurnId);
       return false;
     };
 
@@ -455,9 +496,9 @@ export const makeAetherAdapter = (
     // -----------------------------------------------------------------------
 
     /** Mirrors the VM's working tree into the worktree; never boots a suspended VM. */
-    const mirror = (session: Session): Effect.Effect<MirrorOutcome> =>
+    const mirror = (session: SessionBase, task: Task): Effect.Effect<MirrorOutcome> =>
       Effect.gen(function* () {
-        const cursor = created(session);
+        const { cursor } = task;
         const page = yield* client.getConversationTurns(cursor.taskId, { limit: 1 });
         const workspaceId = page.task.run_context?.workspace_id;
         if (workspaceId === undefined) return deferred("the task has no workspace yet");
@@ -483,11 +524,11 @@ export const makeAetherAdapter = (
       );
 
     /** Mirrors a run a suspended workspace kept back, before the next turn is sent. */
-    const mirrorPending = (session: Session) =>
+    const mirrorPending = (session: SessionBase, task: Task) =>
       Effect.gen(function* () {
-        if (!created(session).mirrorPending) return undefined;
-        const outcome = yield* mirror(session);
-        session.cursor = { ...created(session), mirrorPending: outcome._tag === "Deferred" };
+        if (!task.cursor.mirrorPending) return undefined;
+        const outcome = yield* mirror(session, task);
+        transition(task, (cursor) => ({ ...cursor, mirrorPending: outcome._tag === "Deferred" }));
         return outcome._tag === "Deferred" ? undefined : outcome.note;
       });
 
@@ -496,23 +537,22 @@ export const makeAetherAdapter = (
     // -----------------------------------------------------------------------
 
     /** A run ended: mirror, record it, then complete its Synara turn if it is the one in flight. */
-    const settle = (session: Session, settled: TurnSettled) =>
+    const settle = (session: SessionBase, task: Task, settled: TurnSettled) =>
       Effect.gen(function* () {
-        const turnId = session.remoteTurns.has(settled.turnId)
+        const turnId = task.remoteTurns.has(settled.turnId)
           ? undefined
-          : created(session).turns.findLast((turn) => turn.aetherTurnId === settled.turnId)?.turnId;
-        const outcome = yield* mirror(session);
-        const cursor = created(session);
-        const completes = turnId !== undefined && activeTurnId(cursor) === turnId;
-        session.cursor = {
+          : task.cursor.turns.findLast((turn) => turn.aetherTurnId === settled.turnId)?.turnId;
+        const outcome = yield* mirror(session, task);
+        const completes = turnId !== undefined && activeTurnId(task.cursor) === turnId;
+        transition(task, (cursor) => ({
           ...cursor,
           after: { turnId: settled.turnId, runMessageId: settled.runMessageId },
           mirrorPending: outcome._tag === "Deferred",
-        };
+        }));
         const failed = outcome._tag === "Failed" ? outcome.note : undefined;
         const note = completes && failed !== undefined ? undefined : outcome.note;
         if (note !== undefined) {
-          yield* warn(session, turnId, ["mirror", settled.turnId, settled.runMessageId], note);
+          yield* warn(session, task, turnId, ["mirror", settled.turnId, settled.runMessageId], note);
         }
         if (turnId === undefined) return;
         const errors = [
@@ -523,42 +563,43 @@ export const makeAetherAdapter = (
         ];
         const ending: TurnEnding = { state: errors.length > 0 ? "failed" : "completed", errors };
         if (!completes) {
-          session.settledEarly.set(turnId, ending);
+          task.settledEarly.set(turnId, ending);
           return;
         }
         yield* complete(
           session,
+          task,
           turnId,
-          session.interrupted === turnId ? "interrupted" : ending.state,
+          task.interrupted === turnId ? "interrupted" : ending.state,
           errors,
         );
       });
 
     /** The loop stopped: fail the turn in flight. The next message, answer or stop wakes it. */
-    const pollingStopped = (session: Session, error: AetherConversationPollFailure) =>
+    const pollingStopped = (session: SessionBase, task: Task, error: AetherConversationPollFailure) =>
       Effect.gen(function* () {
         const message = `Synara stopped following the Aether task: ${error.message} It follows it again at the next message.`;
-        const turnId = activeTurnId(created(session));
-        if (turnId !== null) return yield* complete(session, turnId, "failed", [message]);
-        yield* warn(session, undefined, ["polling-stopped", yield* nowIso], message);
+        const turnId = activeTurnId(task.cursor);
+        if (turnId !== null) return yield* complete(session, task, turnId, "failed", [message]);
+        yield* warn(session, task, undefined, ["polling-stopped", yield* nowIso], message);
       });
 
-    const handleOutput = (session: Session, output: AetherPollerOutput) => {
+    const handleOutput = (session: SessionBase, task: Task, output: AetherPollerOutput) => {
       switch (output._tag) {
         case "Event":
-          return publish(session, output.event);
+          return publish(session, task, output.event);
         case "TurnOrigin":
-          return bindOrigin(session, output.turnId, output.clientMessageId)
+          return bindOrigin(task, output.turnId, output.clientMessageId)
             ? Effect.void
             : Effect.gen(function* () {
-                yield* publish(session, {
+                yield* publish(session, task, {
                   eventId: EventId.makeUnsafe(
-                    `aether:${created(session).taskId}:${output.turnId}:remote-origin`,
+                    `aether:${task.cursor.taskId}:${output.turnId}:remote-origin`,
                   ),
                   provider: PROVIDER,
                   threadId: session.threadId,
                   createdAt: yield* nowIso,
-                  turnId: turnIdFor(session, output.turnId),
+                  turnId: turnIdFor(task, output.turnId),
                   type: "runtime.warning",
                   payload: {
                     message: "A message reached this Aether task from outside Synara.",
@@ -567,9 +608,9 @@ export const makeAetherAdapter = (
                 });
               });
         case "TurnSettled":
-          return settle(session, output);
+          return settle(session, task, output);
         case "PollingStopped":
-          return pollingStopped(session, output.error);
+          return pollingStopped(session, task, output.error);
         case "PendingInput":
         case "PendingInputResolved":
         case "ConversationReset":
@@ -615,19 +656,37 @@ export const makeAetherAdapter = (
         ),
       );
 
-    /** Starts the task's poll loop in the session's scope; the caller wakes it. */
-    const follow = (session: Session, resume: AetherIngestResume) =>
+    /**
+     * Starts following a created task: its poll loop runs in the session's scope, each output
+     * under the session lock, and waits for the caller to wake it.
+     */
+    const follow = (
+      session: SessionBase,
+      cursor: AetherCreatedCursor,
+      replayed: ReadonlySet<string>,
+      resume: AetherIngestResume,
+    ) =>
       Effect.gen(function* () {
-        session.poller = yield* makeAetherConversationPoller({
+        const poller = yield* makeAetherConversationPoller({
           client,
           context: {
-            taskId: created(session).taskId,
+            taskId: cursor.taskId,
             threadId: session.threadId,
-            turnIdFor: (turnId) => turnIdFor(session, turnId),
+            turnIdFor: (turnId) => turnIdFor(task, turnId),
           },
           resume,
-          emit: (output) => handleOutput(session, output),
+          emit: (output) => session.lock.withPermit(handleOutput(session, task, output)),
         }).pipe(Scope.provide(session.scope));
+        const task: Task = {
+          _tag: "Task",
+          cursor,
+          poller,
+          replayed,
+          remoteTurns: new Set(),
+          interrupted: undefined,
+          settledEarly: new Map(),
+        };
+        return task;
       });
 
     // -----------------------------------------------------------------------
@@ -665,9 +724,10 @@ export const makeAetherAdapter = (
       readonly model: string;
     }) =>
       Effect.gen(function* () {
-        const claim = yield* claimWorktree(input.threadId, input.cursor.worktreePath);
+        const { cursor } = input;
+        const claim = yield* claimWorktree(input.threadId, cursor.worktreePath);
         const at = yield* nowIso;
-        const session: Session = {
+        const base: SessionBase = {
           threadId: input.threadId,
           runtimeMode: input.runtimeMode,
           model: input.model,
@@ -676,20 +736,18 @@ export const makeAetherAdapter = (
           scope: yield* Scope.fork(adapterScope, "sequential"),
           lock: yield* Semaphore.make(1),
           claim,
-          cursor: input.cursor,
-          poller: undefined,
-          replayed: new Set(),
-          remoteTurns: new Set(),
-          interrupted: undefined,
-          settledEarly: new Map(),
         };
-        if (input.cursor.status === "created") {
-          const { replayed, emittedText } = yield* readJournal(input.threadId).pipe(
-            Effect.onError(() => Scope.close(session.scope, Exit.void)),
-          );
-          session.replayed = replayed;
-          yield* follow(session, { after: input.cursor.after, emittedText });
-        }
+        const state: Creating | Task =
+          cursor.status === "creating"
+            ? { _tag: "Creating", cursor }
+            : yield* readJournal(input.threadId).pipe(
+                Effect.flatMap(({ replayed, emittedText }) =>
+                  follow(base, cursor, replayed, { after: cursor.after, emittedText }),
+                ),
+                Effect.onError(() => Scope.close(base.scope, Exit.void)),
+              );
+        // The same object the poll loop's outputs hold, now with its state.
+        const session: Session = Object.assign(base, { state });
         sessions.set(input.threadId, session);
         return session;
       });
@@ -704,8 +762,6 @@ export const makeAetherAdapter = (
           ? Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }))
           : run(session);
       });
-
-    const wake = (session: Session) => session.poller?.wake ?? Effect.void;
 
     const stopSession: AetherAdapterShape["stopSession"] = (threadId) =>
       Effect.suspend(() => {
@@ -726,50 +782,50 @@ export const makeAetherAdapter = (
      * have landed: its retry is the same request, so it has the same id and the same turn.
      */
     const respond = (
-      session: Session,
+      task: Task,
       operation: string,
       body: Omit<AetherRespondToTaskRequest, "client_message_id">,
       turn?: { readonly aetherTurnId: AetherTurnId | null },
     ) =>
       Effect.gen(function* () {
-        const cursor = created(session);
-        const clientMessageId = clientMessageIdFor(cursor, body);
+        const clientMessageId = clientMessageIdFor(task.cursor, body);
         const turnId = TurnId.makeUnsafe(clientMessageId);
-        if (turn !== undefined && !cursor.turns.some((sent) => sent.turnId === turnId)) {
-          session.cursor = {
+        if (turn !== undefined && !task.cursor.turns.some((sent) => sent.turnId === turnId)) {
+          transition(task, (cursor) => ({
             ...cursor,
             turns: [...cursor.turns, { turnId, clientMessageId, aetherTurnId: turn.aetherTurnId }],
-          };
+          }));
         }
         yield* client
-          .respondToTask(cursor.taskId, { ...body, client_message_id: clientMessageId })
+          .respondToTask(task.cursor.taskId, { ...body, client_message_id: clientMessageId })
           .pipe(
             Effect.tapError((error) =>
               Effect.gen(function* () {
                 if (sendRefused(error)) {
-                  const current = created(session);
-                  const [task, ...sent] = current.turns;
-                  session.cursor = {
-                    ...current,
-                    turns: [task, ...sent.filter((other) => other.turnId !== turnId)],
-                  };
+                  transition(task, (cursor) => {
+                    const [first, ...sent] = cursor.turns;
+                    return {
+                      ...cursor,
+                      turns: [first, ...sent.filter((other) => other.turnId !== turnId)],
+                    };
+                  });
                 }
                 // A stale answer: read the task again rather than retry.
-                if (error._tag === "AetherApiConflictError") yield* wake(session);
+                if (error._tag === "AetherApiConflictError") yield* task.poller.wake;
               }),
             ),
             Effect.mapError(apiFailure(operation)),
           );
-        const sent = created(session);
-        session.cursor = { ...sent, sends: sent.sends + 1 };
+        transition(task, (cursor) => ({ ...cursor, sends: cursor.sends + 1 }));
         return turnId;
       });
 
-    /** The first turn: creates the task. Its Synara turn id is the idempotency key. */
-    const createTask = (session: Session, turn: TurnRequest) =>
+    /**
+     * The first turn: creates the task and starts following it. Its Synara turn id is the
+     * idempotency key.
+     */
+    const createTask = (session: Session, creating: AetherCreatingCursor, turn: TurnRequest) =>
       Effect.gen(function* () {
-        const creating = session.cursor;
-        if (creating.status !== "creating") throw new Error("The Aether task exists already.");
         const { worktreePath, idempotencyKey } = creating;
         const turnId = TurnId.makeUnsafe(idempotencyKey);
         const agentType = resolveAetherAgentFamily(session.model);
@@ -785,7 +841,7 @@ export const makeAetherAdapter = (
               : apiFailure("listProjects")(error),
           ),
         );
-        const task = yield* client
+        const created = yield* client
           .createTask({
             project_id: taskBase.projectId,
             prompt: turn.message,
@@ -805,36 +861,44 @@ export const makeAetherAdapter = (
               Effect.sync(() => {
                 // Nothing was created: the next send starts over with a new key.
                 if (sendRefused(error)) {
-                  session.cursor = { ...creating, idempotencyKey: randomUUID() };
+                  session.state = {
+                    _tag: "Creating",
+                    cursor: { ...creating, idempotencyKey: randomUUID() },
+                  };
                 }
               }),
             ),
             Effect.mapError(apiFailure("createTask")),
           );
-        session.cursor = {
-          schemaVersion: 1,
-          status: "created",
-          worktreePath,
-          taskId: task.id,
-          projectId: taskBase.projectId,
-          baseBranch: taskBase.baseBranch,
-          baseCommit: taskBase.baseCommit,
-          model: session.model,
-          turns: [{ turnId, aetherTurnId: null }],
-          sends: 0,
-          after: null,
-          active: false,
-          mirrorPending: false,
-        };
-        yield* follow(session, { after: null, emittedText: new Map() });
-        return turnId;
+        const task = yield* follow(
+          session,
+          {
+            schemaVersion: 1,
+            status: "created",
+            worktreePath,
+            taskId: created.id,
+            projectId: taskBase.projectId,
+            baseBranch: taskBase.baseBranch,
+            baseCommit: taskBase.baseCommit,
+            model: session.model,
+            turns: [{ turnId, aetherTurnId: null }],
+            sends: 0,
+            after: null,
+            active: false,
+            mirrorPending: false,
+          },
+          new Set(),
+          { after: null, emittedText: new Map() },
+        );
+        session.state = task;
+        return { task, turnId, note: undefined };
       });
 
     /** A later turn: a new message, or the answer to a proposed plan; with a note to show. */
-    const respondTurn = (session: Session, turn: TurnRequest) =>
+    const respondTurn = (session: SessionBase, task: Task, turn: TurnRequest) =>
       Effect.gen(function* () {
         const page = yield* client
-          .getConversationTurns(created(session).taskId)
+          .getConversationTurns(task.cursor.taskId)
           .pipe(Effect.mapError(apiFailure("getConversationTurns")));
         const awaiting =
           page.task.status === "awaiting_input" ? page.task.awaiting_input : undefined;
@@ -844,7 +908,7 @@ export const makeAetherAdapter = (
             "Aether is waiting for an answer to its question. Answer it before sending a new message.",
           );
         }
-        const note = yield* mirrorPending(session);
+        const note = yield* mirrorPending(session, task);
         if (awaiting?.kind === "plan") {
           const waiting = page.turns.filter((candidate) => candidate.state === "awaiting_input");
           if (waiting.length !== 1) {
@@ -859,7 +923,7 @@ export const makeAetherAdapter = (
             ? { approved: true }
             : { approved: false, feedback: turn.message };
           const turnId = yield* respond(
-            session,
+            task,
             "sendTurn",
             {
               message: JSON.stringify(data),
@@ -872,10 +936,10 @@ export const makeAetherAdapter = (
             },
             { aetherTurnId: waiting[0]!.id },
           );
-          return { turnId, note };
+          return { task, turnId, note };
         }
         const turnId = yield* respond(
-          session,
+          task,
           "sendTurn",
           {
             message: turn.message,
@@ -886,43 +950,41 @@ export const makeAetherAdapter = (
           },
           { aetherTurnId: null },
         );
-        return { turnId, note };
+        return { task, turnId, note };
       });
 
     const startTurn = (session: Session, input: ProviderSendTurnInput) =>
       Effect.gen(function* () {
-        const message = yield* turnText(input, "sendTurn");
-        // Debug mode is a prompt prefix the command reactor adds; Aether runs it as a default turn.
-        const mode = input.interactionMode === "plan" ? "plan" : "default";
         const effort =
           input.modelSelection?.provider === PROVIDER
             ? input.modelSelection.options?.reasoningEffort
             : undefined;
         const turn: TurnRequest = {
-          message,
-          mode,
+          message: yield* turnText(input, "sendTurn"),
+          mode: aetherMode(input.interactionMode),
           effort,
           implementsPlan: input.sourceProposedPlan !== undefined,
         };
-        const { turnId, note } =
-          session.cursor.status === "creating"
-            ? { turnId: yield* createTask(session, turn), note: undefined }
-            : yield* respondTurn(session, turn);
-        session.cursor = { ...created(session), active: true };
-        session.interrupted = undefined;
-        yield* publish(session, {
-          ...(yield* base(session, turnId, ["started"])),
+        const { state } = session;
+        const { task, turnId, note } =
+          state._tag === "Creating"
+            ? yield* createTask(session, state.cursor, turn)
+            : yield* respondTurn(session, state, turn);
+        transition(task, (cursor) => ({ ...cursor, active: true }));
+        task.interrupted = undefined;
+        yield* publish(session, task, {
+          ...(yield* base(session, task, turnId, ["started"])),
           type: "turn.started",
           payload: { model: session.model, ...(effort === undefined ? {} : { effort }) },
         });
-        if (note !== undefined) yield* warn(session, turnId, ["mirror", "turn-start"], note);
-        const early = session.settledEarly.get(turnId);
+        if (note !== undefined) yield* warn(session, task, turnId, ["mirror", "turn-start"], note);
+        const early = task.settledEarly.get(turnId);
         if (early !== undefined) {
-          session.settledEarly.delete(turnId);
-          yield* complete(session, turnId, early.state, early.errors);
+          task.settledEarly.delete(turnId);
+          yield* complete(session, task, turnId, early.state, early.errors);
         }
-        yield* wake(session);
-        return { threadId: session.threadId, turnId, resumeCursor: session.cursor };
+        yield* task.poller.wake;
+        return { threadId: session.threadId, turnId, resumeCursor: task.cursor };
       });
 
     // -----------------------------------------------------------------------
@@ -945,7 +1007,7 @@ export const makeAetherAdapter = (
           runtimeMode: binding.runtimeMode,
           model: cursor.model,
         });
-        yield* wake(session);
+        if (session.state._tag === "Task") yield* session.state.poller.wake;
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logError("aether.reattach.failed", {
@@ -981,7 +1043,7 @@ export const makeAetherAdapter = (
         Effect.gen(function* () {
           const existing = sessions.get(input.threadId);
           if (existing !== undefined) {
-            if (input.cwd !== existing.cursor.worktreePath) {
+            if (input.cwd !== existing.state.cursor.worktreePath) {
               return yield* invalid("startSession", "The Aether thread's worktree changed.");
             }
             return snapshot(existing);
@@ -1024,7 +1086,7 @@ export const makeAetherAdapter = (
             model,
           });
           // Reattached: read the task again, including anything answered in Aether meanwhile.
-          yield* wake(session);
+          if (session.state._tag === "Task") yield* session.state.poller.wake;
           return snapshot(session);
         }),
       sendTurn: (input) =>
@@ -1035,18 +1097,16 @@ export const makeAetherAdapter = (
         withSession(input.threadId, (session) =>
           session.lock.withPermit(
             Effect.gen(function* () {
-              const active =
-                session.cursor.status === "created" ? activeTurnId(session.cursor) : null;
-              if (active === null) return yield* startTurn(session, input);
+              const task = session.state;
+              const active = task._tag === "Task" ? activeTurnId(task.cursor) : null;
+              if (task._tag === "Creating" || active === null) {
+                return yield* startTurn(session, input);
+              }
               const message = yield* turnText(input, "steerTurn");
               // Without `queue_for_later`, Aether hands the message to the running agent.
-              yield* respond(session, "steerTurn", { message });
-              yield* wake(session);
-              return {
-                threadId: session.threadId,
-                turnId: active,
-                resumeCursor: session.cursor,
-              };
+              yield* respond(task, "steerTurn", { message });
+              yield* task.poller.wake;
+              return { threadId: session.threadId, turnId: active, resumeCursor: task.cursor };
             }),
           ),
         ),
@@ -1054,13 +1114,14 @@ export const makeAetherAdapter = (
         withSession(threadId, (session) =>
           session.lock.withPermit(
             Effect.gen(function* () {
-              if (session.cursor.status !== "created") return;
-              const { taskId } = session.cursor;
+              const task = session.state;
+              if (task._tag === "Creating") return;
+              const { taskId } = task.cursor;
               const page = yield* client
                 .getConversationTurns(taskId)
                 .pipe(Effect.mapError(apiFailure("getConversationTurns")));
               for (const turn of page.turns) {
-                bindOrigin(session, turn.id, turn.root_message.clientMessageId);
+                bindOrigin(task, turn.id, turn.root_message.clientMessageId);
               }
               yield* client
                 .stopTask(taskId, { discard_queued_messages: true })
@@ -1068,10 +1129,11 @@ export const makeAetherAdapter = (
               const discarded = page.turns
                 .filter((turn) => turn.state === "queued")
                 .map((turn) => turn.root_message.content);
-              const active = activeTurnId(created(session)) ?? undefined;
+              const active = activeTurnId(task.cursor) ?? undefined;
               if (discarded.length > 0) {
                 yield* warn(
                   session,
+                  task,
                   active,
                   ["stop-discarded", yield* nowIso],
                   `Stopping the Aether task discarded ${discarded.length} queued message${discarded.length === 1 ? "" : "s"}.`,
@@ -1079,17 +1141,17 @@ export const makeAetherAdapter = (
                 );
               }
               if (active !== undefined) {
-                session.interrupted = active;
-                const aetherTurnId = created(session).turns.findLast(
+                task.interrupted = active;
+                const aetherTurnId = task.cursor.turns.findLast(
                   (turn) => turn.turnId === active && turn.aetherTurnId !== null,
                 )?.aetherTurnId;
                 const state = page.turns.find((turn) => turn.id === aetherTurnId)?.state;
                 // Never started, so no run will settle it: it ends now.
                 if (aetherTurnId === undefined || state === "queued") {
-                  yield* complete(session, active, "interrupted");
+                  yield* complete(session, task, active, "interrupted");
                 }
               }
-              yield* wake(session);
+              yield* task.poller.wake;
             }),
           ),
         ),
@@ -1098,14 +1160,14 @@ export const makeAetherAdapter = (
         withSession(threadId, (session) =>
           session.lock.withPermit(
             Effect.gen(function* () {
-              const cursor = yield* requireTask(session, "respondToUserInput");
+              const task = yield* requireTask(session, "respondToUserInput");
               const page = yield* client
-                .getConversationTurns(cursor.taskId)
+                .getConversationTurns(task.cursor.taskId)
                 .pipe(Effect.mapError(apiFailure("getConversationTurns")));
               const awaiting =
                 page.task.status === "awaiting_input" ? page.task.awaiting_input : undefined;
               if (awaiting?.kind !== "questions" || awaiting.tool_id !== (requestId as string)) {
-                yield* wake(session);
+                yield* task.poller.wake;
                 return yield* invalid(
                   "respondToUserInput",
                   "Aether is no longer waiting for an answer to this question: it was answered or cancelled elsewhere.",
@@ -1118,7 +1180,7 @@ export const makeAetherAdapter = (
                   `Synara cannot send this answer to Aether: ${answer.failure}.`,
                 );
               }
-              yield* respond(session, "respondToUserInput", {
+              yield* respond(task, "respondToUserInput", {
                 message: JSON.stringify(answer.success),
                 // The tool id fences the answer to the question actually shown.
                 tool_response: {
@@ -1127,7 +1189,7 @@ export const makeAetherAdapter = (
                   expected_tool_id: awaiting.tool_id,
                 },
               });
-              yield* wake(session);
+              yield* task.poller.wake;
             }),
           ),
         ),
