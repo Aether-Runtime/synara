@@ -810,16 +810,32 @@ export const makeAetherAdapter = (
     ) =>
       Effect.gen(function* () {
         const clientMessageId = clientMessageIdFor(task.cursor, body);
-        const [, ...recorded] = task.cursor.turns;
-        if (
-          send !== undefined &&
-          !recorded.some((sent) => sent.clientMessageId === clientMessageId)
-        ) {
-          const turnId = send.turnId ?? TurnId.makeUnsafe(clientMessageId);
-          transition(task, (cursor) => ({
-            ...cursor,
-            turns: [...cursor.turns, { turnId, clientMessageId, aetherTurnId: send.aetherTurnId }],
-          }));
+        if (send !== undefined) {
+          transition(task, (cursor) => {
+            const [first, ...sent] = cursor.turns;
+            const at = sent.findIndex((other) => other.clientMessageId === clientMessageId);
+            if (at === -1) {
+              const turnId = send.turnId ?? TurnId.makeUnsafe(clientMessageId);
+              return {
+                ...cursor,
+                turns: [
+                  ...cursor.turns,
+                  { turnId, clientMessageId, aetherTurnId: send.aetherTurnId },
+                ],
+              };
+            }
+            // A retry that knows the Aether turn its lost attempt started binds it now.
+            const recorded = sent[at]!;
+            return recorded.aetherTurnId !== null || send.aetherTurnId === null
+              ? cursor
+              : {
+                  ...cursor,
+                  turns: [
+                    first,
+                    ...sent.with(at, { ...recorded, aetherTurnId: send.aetherTurnId }),
+                  ],
+                };
+          });
         }
         yield* client
           .respondToTask(task.cursor.taskId, { ...body, client_message_id: clientMessageId })
@@ -977,15 +993,24 @@ export const makeAetherAdapter = (
         };
         // A retry of a send whose response was lost, even across a restart, is the same request
         // with the same id: its Aether turn may have started, and even settled, meanwhile.
-        const landed = page.turns.find(
+        const landedAt = page.turns.findIndex(
           (candidate) =>
             candidate.root_message.clientMessageId === clientMessageIdFor(task.cursor, body),
         );
+        const landed = page.turns[landedAt];
         const turnId = TurnId.makeUnsafe(
           yield* respond(task, "sendTurn", body, { aetherTurnId: landed?.id ?? null }),
         );
-        if (landed?.state === "settled") return { task, turnId, note, ended: [] };
-        if (landed?.state === "errored") {
+        // Only a run the loop has already settled (and mirrored) ends here; nothing settles it
+        // again. Otherwise the loop settles it, and the turn completes after its mirror. Runs
+        // settle in page order, as the ingest counts them (`resume.after`).
+        const { after } = task.cursor;
+        const afterAt = after === null ? -1 : page.turns.findIndex((t) => t.id === after.turnId);
+        const settledAlready =
+          landed !== undefined && after !== null && (afterAt === -1 || landedAt <= afterAt);
+        if (!settledAlready) return { task, turnId, note, ended: undefined };
+        if (landed.state === "settled") return { task, turnId, note, ended: [] };
+        if (landed.state === "errored") {
           const error =
             page.task.status === "errored"
               ? page.task.error

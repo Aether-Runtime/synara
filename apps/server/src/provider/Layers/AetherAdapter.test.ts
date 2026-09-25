@@ -545,6 +545,41 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
     );
   });
 
+  describe("lost sends", () => {
+    it.effect("completes a retried send only after its run is ingested and mirrored", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        yield* adapter.sendTurn(h.send("First"));
+        yield* waitFor("the first turn", () => completions(events)[0]);
+        // The loop goes idle once the task is; nothing wakes it until the retry.
+        yield* Effect.sleep("1500 millis");
+
+        // The message lands, its run settles, and the response is lost.
+        h.workspace.serve(diffOf(h.baseCommit, added("feature.txt", "hello\n")));
+        h.aether.faults.loseRespond = true;
+        yield* adapter.sendTurn(h.send("Second")).pipe(Effect.flip);
+        const landed = h.aether.turns[1]!;
+        expect(landed.state).toBe("settled");
+
+        const retry = yield* adapter.sendTurn(h.send("Second"));
+        const completed = yield* waitFor("the retried turn", () => completions(events)[1]);
+        // Mirrored before it completed, so the checkpoint holds the VM's changes.
+        expect(yield* h.exists("feature.txt")).toBe(true);
+        expect(completed).toMatchObject({ turnId: retry.turnId, payload: { state: "completed" } });
+        // The run's rows belong to the retried turn, before its completion.
+        const row = events.find((event) => event.itemId === `text-${landed.id}`);
+        expect(row).toMatchObject({ turnId: retry.turnId });
+        expect(events.indexOf(row!)).toBeLessThan(events.indexOf(completed));
+        expect(events.some((event) => event.type === "runtime.warning")).toBe(false);
+        yield* Effect.sleep("1500 millis");
+        expect(completions(events)).toHaveLength(2);
+      }),
+    );
+  });
+
   describe("lost sends across a restart", () => {
     it.effect("binds a retried send to the turn it landed in, and completes it at once", () =>
       Effect.gen(function* () {
