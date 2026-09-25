@@ -969,7 +969,8 @@ export const makeAetherAdapter = (
       capabilities: {
         // The task's agent and model are fixed when it is created.
         sessionModelSwitch: "unsupported",
-        conversationRollback: "restart-session",
+        // No `conversationRollback`: a rollback reaches `rollbackThread`, which refuses. A
+        // restart-session rollback would clear the cursor and orphan the task.
         supportsSkillMentions: false,
         supportsSkillDiscovery: false,
         supportsNativeSlashCommandDiscovery: false,

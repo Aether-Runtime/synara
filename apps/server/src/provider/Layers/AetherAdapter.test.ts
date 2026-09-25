@@ -294,6 +294,18 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
+    it.effect("declares no conversation rollback, so a rollback is refused, not restarted", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter } = yield* h.launch();
+        // "restart-session" would clear the cursor and create a second task from the mirrored
+        // worktree; without the capability, ProviderService calls rollbackThread, which refuses.
+        expect(adapter.capabilities.conversationRollback).toBeUndefined();
+        const refused = yield* adapter.rollbackThread(THREAD_ID, 1).pipe(Effect.flip);
+        expect(refused.message).toContain("Aether cannot roll back");
+      }),
+    );
+
     it.effect("maps a 402 to an actionable message", () =>
       Effect.gen(function* () {
         const h = yield* makeHarness;
