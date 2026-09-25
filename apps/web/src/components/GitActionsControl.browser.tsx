@@ -10,7 +10,7 @@ import { ThreadId, type NativeApi, type OrchestrationThreadPullRequest } from "@
 import { providerFeatureUnavailableMessage } from "@synara/shared/providerMetadata";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { cleanup, render } from "vitest-browser-react";
 
 import { useStore } from "~/store";
@@ -103,6 +103,27 @@ describe("GitActionsControl on a thread whose agent owns the branch", () => {
 
     await page.getByRole("menuitem", { name: "Create PR" }).click();
     await expect.poll(() => dispatchCommand.mock.calls.length).toBe(1);
+    // The request is on its way: asking again queues nothing.
+    await page.getByRole("button", { name: "Git action options" }).click();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Create PR", exact: true }))
+      .toHaveAttribute("data-disabled");
+    await userEvent.keyboard("{Escape}");
+    // Its turn runs, then ends with no pull request: the agent can be asked again.
+    useStore.setState({
+      threadSessionById: { [threadId]: { provider: "aether", status: "running" } } as never,
+    });
+    // The turn runs for a while: at least one render sees it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    useStore.setState({
+      threadSessionById: { [threadId]: { provider: "aether", status: "ready" } } as never,
+    });
+    await page.getByRole("button", { name: "Git action options" }).click();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Create PR", exact: true }))
+      .not.toHaveAttribute("data-disabled");
+    await userEvent.keyboard("{Escape}");
+    expect(dispatchCommand).toHaveBeenCalledTimes(1);
     expect(dispatchCommand.mock.calls[0]![0]).toMatchObject({
       type: "thread.turn.start",
       threadId,

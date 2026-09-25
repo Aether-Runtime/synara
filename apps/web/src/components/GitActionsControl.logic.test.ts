@@ -2121,7 +2121,12 @@ describe("shouldOfferCreateBranchPrompt", () => {
 describe("resolveProviderOwnedGitActions", () => {
   it("asks the agent for a PR while there is none, and opens the reported one after", () => {
     expect(
-      resolveProviderOwnedGitActions({ owner: "aether", pullRequest: null, isBusy: false }),
+      resolveProviderOwnedGitActions({
+        owner: "aether",
+        pullRequest: null,
+        isBusy: false,
+        agentWorking: false,
+      }),
     ).toEqual({
       quickAction: { label: "Create PR", disabled: false, kind: "run_action", action: "create_pr" },
       unavailableReason: providerFeatureUnavailableMessage("aether", "branch-git"),
@@ -2131,14 +2136,36 @@ describe("resolveProviderOwnedGitActions", () => {
         owner: "aether",
         pullRequest: { url: "https://github.com/Aether-Runtime/acme-checkout/pull/18" },
         isBusy: true,
+        agentWorking: true,
       }).quickAction,
     ).toEqual({ label: "View PR", disabled: false, kind: "open_pr" });
   });
 
+  it("asks only once: not while the agent works, or the request is on its way", () => {
+    expect(
+      resolveProviderOwnedGitActions({
+        owner: "aether",
+        pullRequest: null,
+        isBusy: false,
+        agentWorking: true,
+      }).quickAction,
+    ).toEqual({
+      label: "Create PR",
+      disabled: true,
+      kind: "run_action",
+      action: "create_pr",
+      hint: "The agent is working. Ask it for a pull request once it is done.",
+    });
+  });
+
   it("explains that the agent owns the branch", () => {
     expect(
-      resolveProviderOwnedGitActions({ owner: "aether", pullRequest: null, isBusy: false })
-        .unavailableReason,
+      resolveProviderOwnedGitActions({
+        owner: "aether",
+        pullRequest: null,
+        isBusy: false,
+        agentWorking: false,
+      }).unavailableReason,
     ).toContain("Aether's agent owns this thread's branch");
   });
 });

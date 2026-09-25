@@ -21,6 +21,7 @@ import type {
   Project,
   SidebarThreadSummary,
   Thread,
+  ThreadSession,
   ThreadShell,
 } from "./types";
 
@@ -298,6 +299,8 @@ export interface ThreadGitActionsMetadata {
    */
   readonly branchOwner: ProviderKind | null;
   readonly lastKnownPr: OrchestrationThreadPullRequest | null;
+  /** The thread's session status; null before it has one. */
+  readonly sessionStatus: ThreadSession["status"] | null;
 }
 
 const EMPTY_THREAD_GIT_ACTIONS_METADATA: ThreadGitActionsMetadata = {
@@ -308,6 +311,7 @@ const EMPTY_THREAD_GIT_ACTIONS_METADATA: ThreadGitActionsMetadata = {
   title: undefined,
   branchOwner: null,
   lastKnownPr: null,
+  sessionStatus: null,
 };
 
 /** Shell-only git-action inputs (worktree, branch, title) that stay reference-stable
@@ -333,11 +337,13 @@ export function createThreadGitActionsMetadataSelector(
     const associatedWorktreeBranch = source.associatedWorktreeBranch;
     const createBranchFlowCompleted = source.createBranchFlowCompleted ?? false;
     const title = source.title;
+    const session = state.threadSessionById?.[threadId];
     const branchOwner = providerLackingFeature(
-      [state.threadSessionById?.[threadId]?.provider, source.modelSelection.provider],
+      [session?.provider, source.modelSelection.provider],
       "branch-git",
     );
     const lastKnownPr = source.lastKnownPr ?? null;
+    const sessionStatus = session?.status ?? null;
     if (
       previousResult.worktreePath === worktreePath &&
       previousResult.branch === branch &&
@@ -345,7 +351,8 @@ export function createThreadGitActionsMetadataSelector(
       previousResult.createBranchFlowCompleted === createBranchFlowCompleted &&
       previousResult.title === title &&
       previousResult.branchOwner === branchOwner &&
-      previousResult.lastKnownPr === lastKnownPr
+      previousResult.lastKnownPr === lastKnownPr &&
+      previousResult.sessionStatus === sessionStatus
     ) {
       return previousResult;
     }
@@ -357,6 +364,7 @@ export function createThreadGitActionsMetadataSelector(
       title,
       branchOwner,
       lastKnownPr,
+      sessionStatus,
     };
     return previousResult;
   };

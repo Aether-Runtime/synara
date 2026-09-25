@@ -44,18 +44,29 @@ export interface ProviderOwnedGitActions {
 /**
  * Git actions on a thread whose provider owns its branch (Aether): its agent commits and pushes
  * the branch, so Synara's own commit, push, pull and branch creation would race it. The PR
- * action opens the PR the provider reported, or asks the agent to open one.
+ * action opens the PR the provider reported, or asks the agent to open one, once: not while a
+ * turn runs or the request is on its way, which would queue the same request again.
  */
 export function resolveProviderOwnedGitActions(input: {
   readonly owner: ProviderKind;
   readonly pullRequest: { readonly url: string } | null;
   readonly isBusy: boolean;
+  /** A turn runs, or the request for a pull request is on its way to one. */
+  readonly agentWorking: boolean;
 }): ProviderOwnedGitActions {
   return {
     quickAction:
-      input.pullRequest === null
-        ? { label: "Create PR", disabled: input.isBusy, kind: "run_action", action: "create_pr" }
-        : { label: "View PR", disabled: false, kind: "open_pr" },
+      input.pullRequest !== null
+        ? { label: "View PR", disabled: false, kind: "open_pr" }
+        : input.agentWorking
+          ? {
+              label: "Create PR",
+              disabled: true,
+              kind: "run_action",
+              action: "create_pr",
+              hint: "The agent is working. Ask it for a pull request once it is done.",
+            }
+          : { label: "Create PR", disabled: input.isBusy, kind: "run_action", action: "create_pr" },
     unavailableReason: providerFeatureUnavailableMessage(input.owner, "branch-git"),
   };
 }

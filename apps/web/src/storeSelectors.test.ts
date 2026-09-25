@@ -613,6 +613,7 @@ describe("createThreadGitActionsMetadataSelector", () => {
       title: "A",
       branchOwner: null,
       lastKnownPr: null,
+      sessionStatus: null,
     });
   });
 
@@ -662,6 +663,7 @@ describe("createThreadGitActionsMetadataSelector", () => {
       title: undefined,
       branchOwner: null,
       lastKnownPr: null,
+      sessionStatus: null,
     });
     expect(createThreadGitActionsMetadataSelector(null)(makeState({}))).toBe(
       createThreadGitActionsMetadataSelector(undefined)(makeState({})),

@@ -104,7 +104,10 @@ import {
 import { cn, newCommandId, newMessageId, randomUUID } from "~/lib/utils";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { readNativeApi } from "~/nativeApi";
-import { createThreadGitActionsMetadataSelector } from "~/storeSelectors";
+import {
+  createThreadGitActionsMetadataSelector,
+  type ThreadGitActionsMetadata,
+} from "~/storeSelectors";
 import { useStore } from "~/store";
 
 interface GitActionsControlProps {
@@ -276,6 +279,18 @@ export default function GitActionsControl({
   // PR action applies; it opens the PR the provider reported, or asks the agent for one.
   const branchOwner = activeThread.branchOwner;
   const reportedPullRequest = activeThread.lastKnownPr;
+  const turnRunning = activeThread.sessionStatus === "running";
+  // The session status when the request for a pull request was sent, until the session moves
+  // on (its turn runs, or fails to start) or the send fails; from then `turnRunning` covers it.
+  const [pullRequestAskedAt, setPullRequestAskedAt] = useState<
+    ThreadGitActionsMetadata["sessionStatus"] | undefined
+  >(undefined);
+  const pullRequestAsked = pullRequestAskedAt !== undefined;
+  useEffect(() => {
+    if (pullRequestAskedAt !== undefined && activeThread.sessionStatus !== pullRequestAskedAt) {
+      setPullRequestAskedAt(undefined);
+    }
+  }, [activeThread.sessionStatus, pullRequestAskedAt]);
   const threadToastData = useMemo(
     () => (activeThreadId ? { threadId: activeThreadId } : undefined),
     [activeThreadId],
@@ -438,8 +453,9 @@ export default function GitActionsControl({
             owner: branchOwner,
             pullRequest: reportedPullRequest,
             isBusy: isGitActionRunning,
+            agentWorking: turnRunning || pullRequestAsked,
           }),
-    [branchOwner, isGitActionRunning, reportedPullRequest],
+    [branchOwner, isGitActionRunning, pullRequestAsked, reportedPullRequest, turnRunning],
   );
   const quickAction = useMemo(
     () =>
@@ -606,6 +622,7 @@ export default function GitActionsControl({
 
   /** "Create PR" on a thread whose agent owns the branch: the agent is asked to open one. */
   const askAgentToOpenPullRequest = useCallback(() => {
+    if (turnRunning || pullRequestAsked) return;
     const api = readNativeApi();
     const thread = activeThreadId
       ? useStore.getState().threadShellById?.[activeThreadId]
@@ -618,6 +635,7 @@ export default function GitActionsControl({
       });
       return;
     }
+    setPullRequestAskedAt(activeThread.sessionStatus);
     void api.orchestration
       .dispatchCommand({
         type: "thread.turn.start",
@@ -637,6 +655,7 @@ export default function GitActionsControl({
         createdAt: new Date().toISOString(),
       })
       .catch((error: unknown) => {
+        setPullRequestAskedAt(undefined);
         toastManager.add({
           type: "error",
           title: "Unable to ask the agent for a pull request",
@@ -644,7 +663,7 @@ export default function GitActionsControl({
           data: threadToastData,
         });
       });
-  }, [activeThreadId, threadToastData]);
+  }, [activeThread.sessionStatus, activeThreadId, pullRequestAsked, threadToastData, turnRunning]);
 
   // Single entry point for every "Create PR" surface: opens the PR dialog when a
   // PR can be created, opens the existing PR when one is already open, and
@@ -1405,7 +1424,7 @@ export default function GitActionsControl({
           label: pr.label,
           icon: "pr",
           disabled: pr.disabled,
-          disabledReason: pr.disabled ? "Git action in progress." : null,
+          disabledReason: pr.disabled ? (pr.hint ?? "Git action in progress.") : null,
           onSelect: () => openCreatePrDialog(),
         },
         unavailable("create_branch", "Create Branch", "branch"),
