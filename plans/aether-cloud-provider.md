@@ -134,7 +134,9 @@ diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same me
 Built in P5b as `syncAetherMirror` (`apps/server/src/provider/aether/aetherMirrorSync.ts`); P4
 wires it into the adapter:
 
-- The diff's `baseRef` is the merge-base the VM computed; it must equal the task base commit.
+- The diff's `baseRef` is the merge-base the VM computed; it must equal the task base commit. If
+  the agent rebases onto a newer base, the merge-base moves and every later sync fails with
+  `base-mismatch` for the rest of the task: P4 must surface that rather than retry.
 - Before the lock, the diff becomes a target tree in a scratch index built from the base: text via
   `git apply --cached`, deletions via `update-index --force-remove`, binaries via
   `hash-object -w` + `update-index --cacheinfo` (Git checks paths with its NTFS and HFS `.git`

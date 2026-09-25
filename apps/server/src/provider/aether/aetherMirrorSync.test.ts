@@ -9,13 +9,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ThreadId } from "@synara/contracts";
 import { Deferred, Effect, Fiber, FileSystem, Layer } from "effect";
-import { describe, expect } from "vitest";
+import { describe, expect, it as vitestIt } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
 import { GitCore, type GitCoreShape, type WorktreeOwner } from "../../git/Services/GitCore.ts";
 import { AetherTaskId } from "./aetherApiSchemas.ts";
-import { syncAetherMirror } from "./aetherMirrorSync.ts";
+import { commandLineBatches, syncAetherMirror } from "./aetherMirrorSync.ts";
 import type { AetherGitDiffFile } from "./aetherWorkspaceProtocol.ts";
 import {
   added,
@@ -203,6 +203,21 @@ const makeMirror = (options: { readonly symlinks?: Readonly<Record<string, strin
     };
   });
 
+describe("commandLineBatches", () => {
+  vitestIt("keeps groups whole and every batch within the budget", () => {
+    const groups = Array.from({ length: 50 }, (_, index) => ["--cacheinfo", `100644,oid,${index}`]);
+    const batches = commandLineBatches(groups, 100);
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.flat()).toEqual(groups.flat());
+    for (const batch of batches) expect(batch.join(" ").length).toBeLessThanOrEqual(100);
+    expect(batches.every((batch) => batch.length % 2 === 0)).toBe(true);
+  });
+
+  vitestIt("still sends a single group longer than the budget", () => {
+    expect(commandLineBatches([["x".repeat(20)], ["y"]], 10)).toEqual([["x".repeat(20)], ["y"]]);
+  });
+});
+
 it.layer(TestLayer)("syncAetherMirror", (it) => {
   describe("text files", () => {
     it.effect("mirrors modified, added, deleted and renamed files onto the task base", () =>
@@ -381,6 +396,42 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
       }),
     );
 
+    it.effect("keeps every Git command line short when a diff adds hundreds of binaries", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        const gitCore = yield* GitCore;
+        const commandLines: Array<{
+          readonly args: ReadonlyArray<string>;
+          readonly length: number;
+        }> = [];
+        const measured: GitCoreShape = {
+          ...gitCore,
+          execute: (input) => {
+            commandLines.push({ args: input.args, length: input.args.join(" ").length });
+            return gitCore.execute(input);
+          },
+        };
+        const files = Array.from(
+          { length: 300 },
+          (_, index) =>
+            `assets/icon-set/icon-${String(index).padStart(3, "0")}-with-a-longer-name.bin`,
+        );
+        mirror.serve(
+          files.map((file) => binary("added", "/dev/null", file)),
+          Object.fromEntries(files.map((file, index) => [file, Buffer.from([index % 256, 0xff])])),
+        );
+
+        const result = yield* mirror.sync().pipe(Effect.provideService(GitCore, measured));
+        expect(result).toMatchObject({ _tag: "synced", filesChanged: 300 });
+        expect((yield* mirror.tree)[files[299] ?? ""]).toBe(hex(Buffer.from([299 % 256, 0xff])));
+        expect(Math.max(...commandLines.map((line) => line.length))).toBeLessThan(10_000);
+        const adds = commandLines.filter(
+          (line) => line.args.includes("update-index") && line.args.includes("--add"),
+        );
+        expect(adds.length).toBeGreaterThan(1);
+      }),
+    );
+
     it.effect("applies a deletion and a rename onto the same path", () =>
       Effect.gen(function* () {
         const mirror = yield* makeMirror();
@@ -483,6 +534,20 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         mirror.serve([added("notes.md", "fine\n")]);
         expect((yield* mirror.sync())._tag).toBe("synced");
         expect(yield* mirror.read("build/keep.bin")).toBe("mine\n");
+      }),
+    );
+
+    it.effect("refuses an ignored local file where the diff needs a directory", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        yield* mirror.write("build/out", "mine\n");
+        mirror.serve([added("build/out/x.txt", "theirs\n")]);
+
+        expect(yield* mirror.failure()).toMatchObject({
+          reason: "local-edits",
+          paths: ["build/out"],
+        });
+        expect(yield* mirror.read("build/out")).toBe("mine\n");
       }),
     );
 

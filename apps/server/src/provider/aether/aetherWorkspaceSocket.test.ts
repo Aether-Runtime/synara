@@ -122,7 +122,7 @@ const diffAnswer = (requestId: unknown, files: unknown[]) => ({
   type: "diff",
   requestId,
   success: true,
-  diff: { baseRef: "origin/main", files },
+  diff: { baseRef: "3f2c9d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e", files },
 });
 const paths = { oldPath: "src/a.ts", newPath: "src/a.ts", displayPath: "src/a.ts" };
 const textFile = {

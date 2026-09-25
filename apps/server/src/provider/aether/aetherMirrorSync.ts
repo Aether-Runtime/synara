@@ -69,6 +69,31 @@ const nulInput = (paths: ReadonlyArray<string>) => paths.map((path) => `${path}\
 const subcommand = (args: ReadonlyArray<string>) =>
   args.find((arg, index) => !arg.startsWith("-") && args[index - 1] !== "-c") ?? "git";
 
+/**
+ * Groups argument lists into command lines of at most `budget` characters, so a sync with
+ * hundreds of paths stays far below the 32,767 characters Windows allows a command line.
+ */
+export const commandLineBatches = (
+  groups: ReadonlyArray<ReadonlyArray<string>>,
+  budget = 8_000,
+): Array<Array<string>> => {
+  const batches: Array<Array<string>> = [];
+  let batch: Array<string> = [];
+  let length = 0;
+  for (const group of groups) {
+    const groupLength = group.reduce((sum, arg) => sum + arg.length + 1, 0);
+    if (batch.length > 0 && length + groupLength > budget) {
+      batches.push(batch);
+      batch = [];
+      length = 0;
+    }
+    batch.push(...group);
+    length += groupLength;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+};
+
 interface GitOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly stdin?: string;
@@ -174,9 +199,9 @@ export const syncAetherMirror = (
         }
         const keepModeOf = plan.writes.flatMap((write) => (write.modeOf ? [write.modeOf] : []));
         const baseModes = new Map<string, string>();
-        if (keepModeOf.length > 0) {
+        for (const paths of commandLineBatches(keepModeOf.map((file) => [file]))) {
           const listed = yield* git(
-            ["--literal-pathspecs", "ls-files", "--stage", "-z", "--", ...keepModeOf],
+            ["--literal-pathspecs", "ls-files", "--stage", "-z", "--", ...paths],
             { env },
           );
           // `<mode> <oid> <stage>\t<path>`
@@ -184,7 +209,7 @@ export const syncAetherMirror = (
             baseModes.set(entry.slice(entry.indexOf("\t") + 1), entry.slice(0, entry.indexOf(" ")));
           }
         }
-        return plan.writes.flatMap((write, index) => {
+        return plan.writes.map((write, index) => {
           const executable = write.modeOf && baseModes.get(write.modeOf) === "100755";
           const mode = executable ? "100755" : "100644";
           return ["--cacheinfo", `${mode},${oids[index]},${write.path}`];
@@ -209,8 +234,9 @@ export const syncAetherMirror = (
           stdin: plan.patch,
         });
       }
-      if (binaries.length > 0) {
-        yield* gitChecksPaths(["update-index", "--add", ...binaries], { env });
+      // `--cacheinfo`, unlike `--index-info`, fails on a path Git refuses instead of skipping it.
+      for (const batch of commandLineBatches(binaries)) {
+        yield* gitChecksPaths(["update-index", "--add", ...batch], { env });
       }
       return (yield* git(["write-tree"], { env })).trim();
     }).pipe(
@@ -278,6 +304,29 @@ export const syncAetherMirror = (
         );
       });
 
+    /**
+     * What is on disk where the move would create `file`: the file itself, or a non-directory
+     * where one of its directories must go. `read-tree` would replace either.
+     */
+    const blockingPath = (file: string) =>
+      Effect.gen(function* () {
+        const segments = file.split("/");
+        for (let depth = 1; depth <= segments.length; depth += 1) {
+          const prefix = segments.slice(0, depth).join("/");
+          const info = yield* fs.stat(path.join(worktree, prefix)).pipe(
+            Effect.map((stat): { readonly type: string } | undefined => stat),
+            Effect.catchTag("PlatformError", (error) =>
+              error.reason._tag === "NotFound"
+                ? Effect.succeed(undefined)
+                : Effect.fail(platformFailure(error)),
+            ),
+          );
+          if (info === undefined) return undefined;
+          if (depth === segments.length || info.type !== "Directory") return prefix;
+        }
+        return undefined;
+      });
+
     /** Ignored local files where the move adds a file: `read-tree` would overwrite them. */
     const refuseIgnoredInTheWay = (from: string) =>
       Effect.gen(function* () {
@@ -299,19 +348,16 @@ export const syncAetherMirror = (
           stdin: nulInput(added),
         });
         if (ignored.code > 1) return yield* refused(ignored.stderr);
-        const inTheWay: Array<string> = [];
+        const inTheWay = new Set<string>();
         for (const file of nulList(ignored.stdout)) {
-          if (yield* fs.exists(path.join(worktree, file)).pipe(Effect.mapError(platformFailure))) {
-            inTheWay.push(file);
-          }
+          const blocking = yield* blockingPath(file);
+          if (blocking !== undefined) inTheWay.add(blocking);
         }
-        if (inTheWay.length > 0) {
+        if (inTheWay.size > 0) {
           return yield* mirrorError(
             "local-edits",
             "Ignored local files are where the mirror adds files.",
-            {
-              paths: inTheWay,
-            },
+            { paths: [...inTheWay].toSorted() },
           );
         }
       });
