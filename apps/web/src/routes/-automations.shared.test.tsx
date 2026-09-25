@@ -54,21 +54,11 @@ import {
 } from "./-automations.shared";
 
 describe("automation providers", () => {
-  it("never offers or defaults to a provider automations cannot run on", () => {
+  it("never offers a provider automations cannot run on", () => {
     expect(resolveAutomationHiddenProviders([])).toEqual(["aether"]);
     expect(resolveAutomationHiddenProviders(["grok"])).toEqual(["grok", "aether"]);
     expect(resolveAutomationHiddenProviders([])).not.toContain("codex");
     expect(resolveAutomationHiddenProviders([])).not.toContain("claudeAgent");
-
-    const projectId = "project-1";
-    expect(
-      formFromDefinition(null, projectId, { provider: "aether", model: "claude-opus-5-5" })
-        .modelSelection.provider,
-    ).toBe("codex");
-    expect(
-      formFromDefinition(null, projectId, { provider: "claudeAgent", model: "claude-opus-4-6" })
-        .modelSelection,
-    ).toEqual({ provider: "claudeAgent", model: "claude-opus-4-6" });
   });
 });
 

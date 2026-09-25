@@ -1,4 +1,8 @@
 import { ThreadId, type ModelSelection, type ProviderStartOptions } from "@synara/contracts";
+import {
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import { readNativeApi } from "~/nativeApi";
 import {
   automationClarificationPrompt,
@@ -111,6 +115,15 @@ export async function handleChatAutomationSend({
     return true;
   }
   if (automationRequest.type !== "normal-chat") {
+    const provider = selectedModelSelectionForSend.provider;
+    if (!providerSupportsFeature(provider, "automation")) {
+      toastManager.add({
+        type: "error",
+        title: "Automation unavailable",
+        description: providerFeatureUnavailableMessage(provider, "automation"),
+      });
+      return true;
+    }
     if (automationRequest.type === "needs-clarification") {
       // Conversational setup only runs for prompt-only sends while no turn is live:
       // clearing the composer would drop attachments/mentions Cancel can't restore,
