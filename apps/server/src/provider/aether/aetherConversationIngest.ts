@@ -489,8 +489,7 @@ export class AetherConversationIngest {
   /**
    * Whether the task still has work to watch: an executing run, a busy task, a turn still
    * running, a run not signalled yet, or data not read yet. A question or plan already surfaced
-   * is not: nothing changes on the server until someone answers, so the loop idles until the
-   * adapter wakes it (it sent the answer, or it reattached).
+   * is not: nothing changes on the server until someone answers (`waitsOnUser`).
    */
   shouldKeepPolling(): boolean {
     const { executing, open, turnsRefreshPending, task, turnOrder, turns } = this.state;
@@ -506,6 +505,12 @@ export class AetherConversationIngest {
       }
       return (turn.state !== "settled" && turn.state !== "errored") || !this.isSignalled(turn);
     });
+  }
+
+  /** Whether a surfaced question or plan waits on the user. */
+  waitsOnUser(): boolean {
+    const awaiting = this.awaitingAnswer();
+    return awaiting !== undefined && this.state.surfacedToolIds.has(awaiting.tool_id);
   }
 
   applyLive(

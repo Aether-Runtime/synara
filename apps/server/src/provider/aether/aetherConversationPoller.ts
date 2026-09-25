@@ -9,12 +9,13 @@
 // to a fork of the ingest and emitted only once every read in it succeeded: a failed tick
 // changes nothing, so the next tick (or the next `wake`) derives the same outputs again.
 //
-// The loop ticks while a run executes, the task is busy, or a turn has not ended and been
-// signalled; otherwise it goes idle until `wake`. A question or plan waiting on an answer idles
-// it too, once surfaced: the adapter wakes it when it sends the answer or reattaches, so an
-// answer given in Aether's own UI shows at the next wake. A transport failure backs off (1 s,
-// doubling to 10 s) with one warning while degraded; an outage longer than two minutes, or an
-// error retrying cannot fix, stops the loop with a typed failure until the next `wake`.
+// The loop ticks every second while a run executes, the task is busy, or a turn has not ended
+// and been signalled; otherwise it goes idle until `wake`. While a surfaced question or plan
+// waits on the user and nothing runs, it reads `/live` every 15 s instead, so an answer given
+// in Aether's own UI shows within one slow tick; `wake` (the adapter sent an answer) ticks at
+// once. A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
+// an outage longer than two minutes, or an error retrying cannot fix, stops the loop with a
+// typed failure until the next `wake`.
 
 import { Cause, Clock, Effect, Latch, Option, Schema, Scope } from "effect";
 
@@ -37,6 +38,8 @@ import {
 
 /** Time between the end of one tick and the start of the next. */
 export const AETHER_POLL_INTERVAL_MS = 1_000;
+/** The same while a surfaced question or plan waits on the user and nothing runs. */
+export const AETHER_POLL_AWAITING_INTERVAL_MS = 15_000;
 /** First retry delay after a transport failure; it doubles up to the maximum. */
 export const AETHER_POLL_BACKOFF_INITIAL_MS = 1_000;
 export const AETHER_POLL_BACKOFF_MAX_MS = 10_000;
@@ -216,7 +219,14 @@ export const makeAetherConversationPoller = (
           if (ingest.shouldKeepPolling()) {
             wakeState.sawActive = true;
           } else if (wakeState.sawActive || now >= wakeState.graceUntil) {
-            return;
+            if (!ingest.waitsOnUser()) return;
+            // Someone may answer in Aether's own UI: look again now and then, or at a wake.
+            yield* Effect.raceFirst(
+              Effect.sleep(AETHER_POLL_AWAITING_INTERVAL_MS),
+              wakeLatch.await,
+            );
+            yield* wakeLatch.close;
+            continue;
           }
           yield* Effect.sleep(AETHER_POLL_INTERVAL_MS);
           continue;

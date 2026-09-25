@@ -129,8 +129,9 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   and the task stays in plan mode.
 - `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident;
   `steerTurn` sends without it.
-- While a surfaced question or plan waits, the poll loop idles; sending an answer or reattaching
-  wakes it, so an answer given in Aether's own UI shows at the next wake.
+- While a surfaced question or plan waits and nothing runs, the poll loop reads `/live` every
+  15 s instead of every second, so an answer given in Aether's own UI shows within 15 s; sending
+  an answer wakes it at once.
 - A turn completes exactly once: when its run settles, after the mirror; when the poll loop stops
   (failed); or on a stop that discards it before it ran (interrupted). The settle records `after`
   and clears `activeTurnId` in the cursor first. If the workspace is not running the turn completes
