@@ -32,6 +32,7 @@ import { constants as fsConstants } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 
+import { supportsPosixPermissions } from "@synara/shared/filesystemPlatform";
 import { decodeJsonResult } from "@synara/shared/schemaJson";
 import { Effect, Exit, FileSystem, Path, Result, Schema } from "effect";
 
@@ -451,7 +452,7 @@ const writeRecord = (context: MirrorContext, record: MirrorRecord) =>
     ),
   );
 
-const O_NOFOLLOW = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
+const O_NOFOLLOW = supportsPosixPermissions() ? fsConstants.O_NOFOLLOW : 0;
 
 const lstatOrUndefined = (target: string) =>
   nodeFs.lstat(target).catch((cause: unknown) => {
@@ -533,7 +534,8 @@ const resolveTarget = async (
   step: "remove" | "write",
   create: boolean,
 ): Promise<string | undefined> => {
-  const segments = relative.split(process.platform === "win32" ? /[\\/]/u : "/");
+  // Node's own separators: a backslash is a separator on Windows and a name character elsewhere.
+  const segments = nodePath.relative(root, nodePath.join(root, relative)).split(nodePath.sep);
   const leaf = segments.pop()!;
   let current = root;
   for (const segment of segments) {
