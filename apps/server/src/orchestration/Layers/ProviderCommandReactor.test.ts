@@ -1140,6 +1140,48 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("hands the proposed plan a turn implements to the provider", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.proposed-plan.upsert",
+        commandId: CommandId.makeUnsafe("cmd-plan-upsert"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        proposedPlan: {
+          id: "plan-1",
+          turnId: null,
+          planMarkdown: "1. Edit",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    const sourceProposedPlan = { threadId: ThreadId.makeUnsafe("thread-1"), planId: "plan-1" };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        commandId: CommandId.makeUnsafe("cmd-implement-plan"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: MessageId.makeUnsafe("implement-plan"),
+          role: "user",
+          text: "PLEASE IMPLEMENT THIS PLAN:\n1. Edit",
+          attachments: [],
+        },
+        sourceProposedPlan,
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ sourceProposedPlan });
+  });
+
   it.each([
     [
       "a typed failure by its message",

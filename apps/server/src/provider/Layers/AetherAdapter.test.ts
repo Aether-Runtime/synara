@@ -11,6 +11,7 @@ import { it } from "@effect/vitest";
 import {
   ApprovalRequestId,
   CheckpointRef,
+  OrchestrationProposedPlanId,
   ThreadId,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
@@ -59,6 +60,11 @@ const TestLayer = Layer.mergeAll(GitLayer, CheckpointStoreLive.pipe(Layer.provid
 );
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-aether");
+/** The proposed plan Synara's Implement action names on its turn. */
+const SOURCE_PLAN = {
+  threadId: THREAD_ID,
+  planId: OrchestrationProposedPlanId.makeUnsafe("plan-1"),
+};
 const MODEL = "claude-opus-5";
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
@@ -602,17 +608,24 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           payload: { planMarkdown: "1. Edit\n2. Test" },
         });
 
+        // Synara's Implement action: a default-mode turn carrying the plan it implements.
         const approving = yield* adapter.sendTurn(
-          h.send("PLEASE IMPLEMENT THIS PLAN:\n1. Edit\n2. Test", { interactionMode: "default" }),
+          h.send("PLEASE IMPLEMENT THIS PLAN:\n1. Edit\n2. Test", {
+            interactionMode: "default",
+            sourceProposedPlan: SOURCE_PLAN,
+          }),
         );
-        expect(h.aether.calls.respond).toMatchObject([
+        expect(h.aether.calls.respond).toEqual([
           {
             message: JSON.stringify({ approved: true }),
+            // Approving leaves plan mode; without it Aether keeps planning.
+            interaction_mode: "default",
             tool_response: {
               tool_name: "propose_plan",
               data: { approved: true },
               expected_tool_id: "toolu_plan",
             },
+            client_message_id: approving.turnId,
           },
         ]);
         const implemented = yield* waitFor("the approved run", () => completions(events)[1]);
@@ -626,6 +639,62 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         ).toMatchObject({ turnId: approving.turnId });
         yield* Effect.sleep("1500 millis");
         expect(completions(events)).toHaveLength(2);
+      }),
+    );
+    it.effect("sends any other message while a plan waits as feedback, staying in plan mode", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.aether.hooks.onTurn = (turn) => {
+          h.aether.propose(turn, "toolu_plan", "1. Use SQLite");
+          h.aether.hooks.onTurn = (revised) => h.aether.propose(revised, "toolu_plan_2", "1. Use Postgres");
+        };
+        yield* adapter.sendTurn(h.send("Plan it", { interactionMode: "plan" }));
+        yield* waitFor("the plan", () => completions(events)[0]);
+
+        const feedback = "No. Use Postgres instead, do not implement that plan.";
+        const revising = yield* adapter.sendTurn(h.send(feedback, { interactionMode: "default" }));
+        const data = { approved: false, feedback };
+        expect(h.aether.calls.respond).toEqual([
+          {
+            message: JSON.stringify(data),
+            tool_response: { tool_name: "propose_plan", data, expected_tool_id: "toolu_plan" },
+            client_message_id: revising.turnId,
+          },
+        ]);
+        const revised = yield* waitFor("the revised plan", () => completions(events)[1]);
+        expect(revised).toMatchObject({ turnId: revising.turnId, payload: { state: "completed" } });
+        expect(
+          events.filter((event) => event.type === "turn.proposed.completed").at(-1),
+        ).toMatchObject({ turnId: revising.turnId, payload: { planMarkdown: "1. Use Postgres" } });
+      }),
+    );
+
+    it.effect("refuses an answer to a plan that changed, and sends nothing twice", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.aether.hooks.onTurn = (turn) => {
+          h.aether.propose(turn, "toolu_plan", "1. Edit");
+          h.finishTurns();
+        };
+        yield* adapter.sendTurn(h.send("Plan it", { interactionMode: "plan" }));
+        yield* waitFor("the plan", () => completions(events)[0]);
+
+        h.aether.faults.staleAnswer = true;
+        const implement = h.send("PLEASE IMPLEMENT THIS PLAN:\n1. Edit", {
+          sourceProposedPlan: SOURCE_PLAN,
+        });
+        const stale = yield* adapter.sendTurn(implement).pipe(Effect.flip);
+        expect(stale.message).toContain("The pending input changed.");
+        expect(events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+
+        const approving = yield* adapter.sendTurn(implement);
+        const implemented = yield* waitFor("the approved run", () => completions(events)[1]);
+        expect(implemented).toMatchObject({ turnId: approving.turnId });
+        expect(h.aether.turns).toHaveLength(1);
       }),
     );
   });

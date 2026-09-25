@@ -122,8 +122,11 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   None (unpushed or behind) or several is a loud error. The project is matched by host, owner
   and repository.
 - Answers are fenced by `expected_tool_id` only: `expected_input_digest` would need Go
-  `encoding/json` bytes reproduced exactly. A plan is answered by the next message: implementing it
-  (default mode) approves; a message in plan mode is feedback.
+  `encoding/json` bytes reproduced exactly. A plan is answered by the next message. Synara's
+  Implement action (a turn carrying `sourceProposedPlan`, which the command reactor hands to the
+  provider) approves it with `interaction_mode: "default"`, since Aether keeps the current mode
+  when a plan answer omits it; any other message is feedback (`approved: false` with the text),
+  and the task stays in plan mode.
 - `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident;
   `steerTurn` sends without it.
 - While a surfaced question or plan waits, the poll loop idles; sending an answer or reattaching

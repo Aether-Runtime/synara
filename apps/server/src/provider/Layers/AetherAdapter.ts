@@ -157,6 +157,8 @@ interface TurnRequest {
   readonly message: string;
   readonly mode: "default" | "plan";
   readonly effort: string | undefined;
+  /** The turn implements a proposed plan (it carries `sourceProposedPlan`). */
+  readonly implementsPlan: boolean;
 }
 
 /** Aether refused the send, so nothing landed; otherwise its response may just have been lost. */
@@ -834,7 +836,6 @@ export const makeAetherAdapter = (
         }
         const note = yield* mirrorPending(session);
         if (awaiting?.kind === "plan") {
-          // Synara's plan flow: implementing leaves plan mode; anything typed in plan mode is feedback.
           const waiting = page.turns.filter((candidate) => candidate.state === "awaiting_input");
           if (waiting.length !== 1) {
             return yield* invalid(
@@ -842,15 +843,17 @@ export const makeAetherAdapter = (
               `Aether waits on a plan approval but ${waiting.length} turns are waiting.`,
             );
           }
-          const data =
-            turn.mode === "default"
-              ? { approved: true }
-              : { approved: false, feedback: turn.message };
+          // Synara's Implement action approves the plan and leaves plan mode (Aether keeps the
+          // mode a plan answer omits); any other message is feedback, and planning goes on.
+          const data = turn.implementsPlan
+            ? { approved: true }
+            : { approved: false, feedback: turn.message };
           const turnId = yield* respond(
             session,
             "sendTurn",
             {
               message: JSON.stringify(data),
+              ...(turn.implementsPlan ? { interaction_mode: "default" as const } : {}),
               tool_response: {
                 tool_name: "propose_plan",
                 data,
@@ -885,7 +888,12 @@ export const makeAetherAdapter = (
           input.modelSelection?.provider === PROVIDER
             ? input.modelSelection.options?.reasoningEffort
             : undefined;
-        const turn: TurnRequest = { message, mode, effort };
+        const turn: TurnRequest = {
+          message,
+          mode,
+          effort,
+          implementsPlan: input.sourceProposedPlan !== undefined,
+        };
         const { turnId, note } =
           session.cursor.status === "creating"
             ? { turnId: yield* createTask(session, turn), note: undefined }

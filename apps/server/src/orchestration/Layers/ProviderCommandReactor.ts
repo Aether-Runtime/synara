@@ -25,6 +25,7 @@ import {
   type ProviderRuntimeEvent,
   ProviderKind,
   type ProviderReviewTarget,
+  type ProviderSendTurnInput,
   type ProviderStartOptions,
   type ProviderSkillReference,
   type ProviderTurnStartResult,
@@ -2224,6 +2225,7 @@ const make = Effect.gen(function* () {
     readonly computerControlGeneration?: number;
     readonly runtimeMode?: RuntimeMode;
     readonly interactionMode?: ProviderInteractionMode;
+    readonly sourceProposedPlan?: ProviderSendTurnInput["sourceProposedPlan"];
     readonly dispatchMode?: "queue" | "steer";
     readonly turnKind?: "user" | "goal-continuation";
     readonly createdAt: string;
@@ -2787,6 +2789,9 @@ const make = Effect.gen(function* () {
       ...(providerMentions !== undefined ? { mentions: providerMentions } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.sourceProposedPlan !== undefined
+        ? { sourceProposedPlan: input.sourceProposedPlan }
+        : {}),
     };
     const sendQueuedProviderTurn = (messageText: string | undefined) =>
       Effect.gen(function* () {
@@ -3644,6 +3649,9 @@ const make = Effect.gen(function* () {
           ? { reviewTarget: event.payload.reviewTarget }
           : {}),
         interactionMode: event.payload.interactionMode,
+        ...(event.payload.sourceProposedPlan !== undefined
+          ? { sourceProposedPlan: event.payload.sourceProposedPlan }
+          : {}),
         dispatchMode: immediateDispatchMode,
         createdAt: event.payload.createdAt,
       }).pipe(
