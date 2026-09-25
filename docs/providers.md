@@ -46,10 +46,13 @@ none, or more than one.
   so its checkpoint and diff include them. If the VM is suspended, the mirror waits for the next
   turn. Local changes in the worktree pause the mirror until they are discarded or moved; nothing
   is overwritten, and the turn fails with a notice under its reply that names the files.
-- The worktree's branch is the task's own branch on origin. When the agent pushes, Synara
-  fast-forwards the local branch to it, so pushed work shows as commits and only what the agent
-  has not committed shows as (unstaged) changes. If the local branch has commits of its own, or
-  the agent force-pushed, the branch stays where it is and the thread shows a warning.
+- The worktree's branch is the task's own branch on origin. When Synara mirrors the VM, it also
+  fast-forwards the local branch to what the agent pushed, so pushed work shows as commits and
+  only what the agent has not committed shows as (unstaged) changes. If the local branch has
+  commits of your own, or the agent force-pushed, the branch stays where it is and the thread
+  shows a warning; the mirror goes on, so your committed edits that the agent does not have
+  look reverted in the worktree. The branch stays in your repository when the thread's worktree
+  is removed.
 - The thread's pull request, its CI, and Aether Review's verdict come from Aether, so no local
   `gh` login is needed. The agent owns the branch: Commit & push, Push and Pull are unavailable,
   and **Create PR** asks the agent to open one.

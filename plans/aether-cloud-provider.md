@@ -301,11 +301,16 @@ As built in P9 (`syncAetherBranch` in `aetherMirrorSync.ts`, `aetherPullRequest.
   name (create the new ref, point HEAD at it, drop the old one, so HEAD always names a branch that
   exists). A worktree on any other branch, or a name already taken locally, is left alone with a
   warning.
-- After each settle, at turn start when a mirror was pending, and after a reattach, Synara reads
-  `origin/<head_branch>` (`ls-remote`, then a fetch only when it moved; no prompt, 60 s limit)
-  and fast-forwards the branch to it. The working tree stays what the mirror wrote; the index
-  follows HEAD. Only fast-forward: with local commits origin lacks, or when origin was
-  force-pushed or rebased, the branch stays, the thread gets a warning, and the mirror goes on.
+- Only a mirror moves the branch. Before it reads the VM, Synara reads `origin/<head_branch>`
+  (`fetchAetherBranch`: `ls-remote`, then a fetch only when it moved; no prompt, 60 s limit),
+  and after it fast-forwards the branch to that tip, which the mirrored working tree holds all
+  of. The working tree stays what the mirror wrote; the index follows HEAD. Without a mirror
+  (the workspace is suspended, or a reattach) the branch stays: moving HEAD past a working tree
+  that lacks the agent's commits would show them as local reversions.
+- Only fast-forward: with commits of the user's own (on origin's tip, or on the task base while
+  nothing is pushed), or when origin was force-pushed or rebased, the branch stays, every mirror
+  warns naming both commits and saying why the working tree looks reverted, and the mirror goes
+  on.
 - Crash safety: the record gets `fastForward {from, to}` before `update-ref <branch> <to> <from>`,
   then `git reset -q` points the index at HEAD's tree. The next sync of either kind finishes a
   fast-forward a crash cut short when HEAD is at either end and the index holds either end's
@@ -317,9 +322,13 @@ As built in P9 (`syncAetherBranch` in `aetherMirrorSync.ts`, `aetherPullRequest.
   or review runs. A PR in a state Synara does not know is warned about and not shown.
 - Git actions (`branch-git` capability): commit, push, pull and branch creation are unavailable
   with the reason; Create PR asks the agent to open one, then View PR opens it.
-- Boot progress: while the task is queued the poll loop reads the turns page in place of `/live`
-  (same one read a tick) to see `latest_status_message` from `infra`; the adapter shows it for
-  the turn in flight as `runtime.status` until the agent's first output.
+- Boot progress: while the task is queued the poll loop reads a one-turn turns page in place of
+  `/live` (one small read a tick; the whole page only when the head moves) to see
+  `latest_status_message` from `infra`; the adapter shows it for the turn in flight as
+  `runtime.status` until the agent's first output.
+- The task's branch stays in the local repository (with its `branch.<name>` config) when the
+  thread's worktree is removed; it is on origin. `removeWorktree` reclaims only Synara's
+  temporary `synara/<8 hex>` branches.
 - Known gaps: a PR closed or merged after its CI and review settled shows so at the next turn or
   reattach; worktrees mirrored before P9 hold the target in the index and read as staged local
   edits until reset; Synara's `git status` still asks `gh` for the worktree's PR, which the Aether
