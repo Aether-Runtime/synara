@@ -115,6 +115,26 @@ export function closeServerRuntimePipeline(input: {
   );
 }
 
+/**
+ * Heals the turns the previous process left in flight, then starts the live runtime reconciler:
+ * a cloud provider's turn keeps running while Synara is down and is reattached here, and the
+ * reconciler's first pass would otherwise settle it as interrupted.
+ */
+export function reconcileProviderTurnsAtStartup<E1, R1, E2, R2, E3, R3>(input: {
+  readonly reconcileRestartStuckTurns: Effect.Effect<void, E1, R1>;
+  readonly reconcileSettledOpenTurns: Effect.Effect<void, E2, R2>;
+  readonly startRuntimeReconciler: Effect.Effect<void, E3, R3>;
+}): Effect.Effect<void, E1 | E2 | E3, R1 | R2 | R3> {
+  return input.reconcileRestartStuckTurns.pipe(
+    // The reconciliation above terminalizes durable turn projections without a
+    // provider terminal event. Remove their replay-ledger rows now so the next
+    // process start cannot replay state-dependent commands against the terminal
+    // projection.
+    Effect.andThen(input.reconcileSettledOpenTurns),
+    Effect.andThen(input.startRuntimeReconciler),
+  );
+}
+
 export const createEffectServer = Effect.fn(function* (
   shutdownController: ServerShutdownController,
 ) {
@@ -213,20 +233,18 @@ export const createEffectServer = Effect.fn(function* (
   yield* Scope.provide(automationRunReactor.start(), subscriptionsScope);
   yield* Scope.provide(threadDeletionReactor.start(), subscriptionsScope);
   yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
-  yield* Scope.provide(providerRuntimeReconciler.start(), subscriptionsScope);
   yield* readiness.markOrchestrationSubscriptionsReady;
   yield* readiness.markTerminalSubscriptionsReady;
   // Heal turns orphaned by the previous process exit (their in-memory runtimes
   // died, so they can never complete on their own) before clients can observe
   // the stale "Working" state.
-  yield* reconcileRestartStuckTurns.pipe(
-    Effect.provide(ProjectionPendingInteractionRepositoryLive),
-  );
-  // The reconciliation above terminalizes durable turn projections without a
-  // provider terminal event. Remove their replay-ledger rows now so the next
-  // process start cannot replay state-dependent commands against the terminal
-  // projection.
-  yield* orchestrationReactor.reconcileSettledOpenTurns;
+  yield* reconcileProviderTurnsAtStartup({
+    reconcileRestartStuckTurns: reconcileRestartStuckTurns.pipe(
+      Effect.provide(ProjectionPendingInteractionRepositoryLive),
+    ),
+    reconcileSettledOpenTurns: orchestrationReactor.reconcileSettledOpenTurns,
+    startRuntimeReconciler: Scope.provide(providerRuntimeReconciler.start(), subscriptionsScope),
+  });
   yield* recoverGitHandoffOperations((command) => orchestrationEngine.dispatch(command)).pipe(
     Effect.mapError(
       (cause) => new ServerLifecycleError({ operation: "recoverGitHandoffOperations", cause }),
