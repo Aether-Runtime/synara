@@ -315,7 +315,7 @@ function WorktreeSetupCard({
   steps,
   pendingAction,
   onResolve,
-  allowsWorkLocally = true,
+  allowsWorkLocally: allowsWorkLocallyProp,
 }: {
   steps: ReadonlyArray<WorktreeSetupStep>;
   pendingAction?: WorktreeSetupResolutionAction | null | undefined;
@@ -323,6 +323,7 @@ function WorktreeSetupCard({
   /** False for a provider that only runs in its own worktree: no local fallback. */
   allowsWorkLocally?: boolean | undefined;
 }) {
+  const allowsWorkLocally = allowsWorkLocallyProp ?? true;
   // The send pipeline only honors a resolution at checkpoints before the turn
   // dispatch, so hide the actions once "Starting session" is underway (or the
   // setup already failed) rather than offering a cancel that can no longer win.

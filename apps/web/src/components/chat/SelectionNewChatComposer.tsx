@@ -35,11 +35,12 @@ export function SelectionNewChatComposer({
   action,
   defaultEnvMode,
   canUseWorktree,
-  providerOwnsWorktree = false,
+  providerOwnsWorktree: providerOwnsWorktreeProp,
   onSend,
   onOpenInChat,
   onClose,
 }: SelectionNewChatComposerProps) {
+  const providerOwnsWorktree = providerOwnsWorktreeProp ?? false;
   const [prompt, setPrompt] = useState("");
   const [cursor, setCursor] = useState(0);
   const [envMode, setEnvMode] = useState(canUseWorktree ? defaultEnvMode : "local");
