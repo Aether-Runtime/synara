@@ -3001,18 +3001,27 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             yield* routed.adapter.stopSession(input.threadId);
             clearLiveRuntimeTasks(input.threadId);
             yield* waitForRuntimeIdleStop(input.threadId);
-            const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
-            yield* withBindingWriteLock(input.threadId, directory.remove(input.threadId));
-            // Unbound, the thread keeps nothing it held beyond a session.
-            if (routed.adapter.releaseThread !== undefined) {
-              yield* routed.adapter.releaseThread({
-                threadId: input.threadId,
-                resumeCursor: binding?.resumeCursor,
-              });
-            }
-            providerInterruptionFences.delete(input.threadId);
-            lease.retire();
-            retireRuntimeIdleGeneration(input.threadId);
+            yield* Effect.gen(function* () {
+              // Unbound, the thread keeps nothing it held beyond a session. Released first: a
+              // release that fails keeps the binding, whose cursor a retry needs.
+              if (routed.adapter.releaseThread !== undefined) {
+                const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+                yield* routed.adapter.releaseThread({
+                  threadId: input.threadId,
+                  resumeCursor: binding?.resumeCursor,
+                });
+              }
+              yield* withBindingWriteLock(input.threadId, directory.remove(input.threadId));
+            }).pipe(
+              // The session is stopped whether or not its binding could go.
+              Effect.ensuring(
+                Effect.sync(() => {
+                  providerInterruptionFences.delete(input.threadId);
+                  lease.retire();
+                  retireRuntimeIdleGeneration(input.threadId);
+                }),
+              ),
+            );
           }),
         );
       });

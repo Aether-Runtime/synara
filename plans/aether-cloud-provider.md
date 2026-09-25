@@ -177,7 +177,8 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
 - At construction the adapter claims again the worktree of every Aether thread neither archived
   nor deleted. A claim lasts until the thread is archived (the command reactor calls
   `ProviderService.releaseThread`, which keeps the binding so the thread can resume and claim it
-  again) or loses its binding (`ProviderService.stopSession`, as deleting a thread does); both
+  again) or loses its binding (`ProviderService.stopSession`, as deleting a thread does, releases it
+  before it removes the binding, so a failed release keeps the cursor for a retry); both
   reach the adapter's `releaseThread`, so retention and deletion can remove the worktree. It first
   stops (`POST /stop`, discarding queued messages) the turn the thread's persisted cursor says is
   in flight, since Synara could not stop it afterwards; a failed stop is logged with the task id

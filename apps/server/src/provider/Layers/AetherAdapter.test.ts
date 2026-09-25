@@ -1953,57 +1953,84 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
-    it.effect.each(["deleted", "archived", "archived, whose stop fails,"] as const)(
-      "stops the turn in flight of a thread %s and releases its worktree",
-      (retired) =>
-        Effect.gen(function* () {
-          const h = yield* makeHarness;
-          const gitCore = yield* GitCore;
-          const { adapter } = yield* h.makeAdapter();
-          h.aether.hooks.onTurn = (turn) =>
-            h.aether.say(turn, "text-live", "Working", { open: true });
-          yield* Effect.gen(function* () {
-            const providerService = yield* ProviderService;
-            yield* providerService.startSession(THREAD_ID, {
-              threadId: THREAD_ID,
-              provider: "aether",
-              cwd: h.worktree,
-              modelSelection: { provider: "aether", model: MODEL },
-              runtimeMode: "full-access",
+    it.effect.each([
+      "deleted",
+      "deleted, whose first stop fails,",
+      "archived",
+      "archived, whose stop fails,",
+    ] as const)("stops the turn in flight of a thread %s and releases its worktree", (retired) =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const gitCore = yield* GitCore;
+        const { adapter } = yield* h.makeAdapter();
+        h.aether.hooks.onTurn = (turn) =>
+          h.aether.say(turn, "text-live", "Working", { open: true });
+        yield* Effect.gen(function* () {
+          const providerService = yield* ProviderService;
+          yield* providerService.startSession(THREAD_ID, {
+            threadId: THREAD_ID,
+            provider: "aether",
+            cwd: h.worktree,
+            modelSelection: { provider: "aether", model: MODEL },
+            runtimeMode: "full-access",
+          });
+          yield* providerService.sendTurn({ threadId: THREAD_ID, input: "Go" });
+          yield* waitFor("the running turn", () => h.aether.turns[0]);
+          const refuseStop = () => {
+            h.aether.faults.refuseStop = new AetherApiHttpError({
+              endpoint: "POST /tasks/{taskID}/stop",
+              status: 503,
             });
-            yield* providerService.sendTurn({ threadId: THREAD_ID, input: "Go" });
-            yield* waitFor("the running turn", () => h.aether.turns[0]);
-            // Deleting a thread stops its session and removes its binding; archiving it stops
-            // its runtime, keeping the binding, then releases what the thread held.
-            if (retired === "deleted") {
-              yield* providerService.stopSession({ threadId: THREAD_ID });
+          };
+          // Deleting a thread stops its session and removes its binding; archiving it stops
+          // its runtime, keeping the binding, then releases what the thread held.
+          if (retired === "deleted") {
+            yield* providerService.stopSession({ threadId: THREAD_ID });
+          } else if (retired === "deleted, whose first stop fails,") {
+            refuseStop();
+            const failed = yield* providerService
+              .stopSession({ threadId: THREAD_ID })
+              .pipe(Effect.flip);
+            expect(failed).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+            // The binding, whose cursor names the turn in flight, stays for the retry.
+            const binding = yield* (yield* ProviderSessionDirectory).getBinding(THREAD_ID);
+            expect(Option.getOrUndefined(binding)?.resumeCursor).toMatchObject({ active: true });
+            yield* providerService.stopSession({ threadId: THREAD_ID });
+            expect(yield* (yield* ProviderSessionDirectory).getBinding(THREAD_ID)).toEqual(
+              Option.none(),
+            );
+          } else {
+            yield* providerService.stopRuntimeSession!({ threadId: THREAD_ID });
+            if (retired === "archived") {
+              yield* providerService.releaseThread!({ threadId: THREAD_ID });
             } else {
-              yield* providerService.stopRuntimeSession!({ threadId: THREAD_ID });
-              if (retired === "archived") {
-                yield* providerService.releaseThread!({ threadId: THREAD_ID });
-              } else {
-                h.aether.faults.refuseStop = new AetherApiHttpError({
-                  endpoint: "POST /tasks/{taskID}/stop",
-                  status: 503,
-                });
-                const failed = yield* providerService.releaseThread!({ threadId: THREAD_ID }).pipe(
-                  Effect.flip,
-                );
-                expect(failed).toMatchObject({
-                  _tag: "ProviderAdapterRequestError",
-                  method: "stopTask",
-                });
-              }
+              refuseStop();
+              const failed = yield* providerService.releaseThread!({ threadId: THREAD_ID }).pipe(
+                Effect.flip,
+              );
+              expect(failed).toMatchObject({
+                _tag: "ProviderAdapterRequestError",
+                method: "stopTask",
+              });
             }
-          }).pipe(
-            Effect.scoped,
-            Effect.provide(providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer))),
-          );
+          }
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer)),
+              sessionDirectoryLayer,
+            ),
+          ),
+        );
 
-          expect(h.aether.calls.stop).toEqual([{ discard_queued_messages: true }]);
-          yield* gitCore.removeWorktree({ cwd: h.repo, path: h.worktree });
-          expect(yield* h.exists("app.txt")).toBe(false);
-        }),
+        const stops = retired === "deleted, whose first stop fails," ? 2 : 1;
+        expect(h.aether.calls.stop).toEqual(
+          Array.from({ length: stops }, () => ({ discard_queued_messages: true })),
+        );
+        yield* gitCore.removeWorktree({ cwd: h.repo, path: h.worktree });
+        expect(yield* h.exists("app.txt")).toBe(false);
+      }),
     );
 
     it.effect.each(["stops it as idle", "shuts down"] as const)(
