@@ -487,14 +487,17 @@ describe("makeAetherConversationPoller", () => {
       },
       { seconds: 400 },
     );
-    const turnsTimes = calls.filter((call) => call.kind === "turns").map((call) => call.at);
-    // Once the wake's grace ends, a turns read a minute until CI settles; none after.
-    expect(turnsTimes.filter((at) => at > AETHER_POLL_WAKE_GRACE_MS)).toEqual([
-      AETHER_POLL_WAKE_GRACE_MS + AETHER_POLL_PULL_REQUEST_INTERVAL_MS,
-      AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_PULL_REQUEST_INTERVAL_MS,
+    // Once the wake's grace ends, one read a minute until CI settles, none after: a one-turn
+    // page, which carries the task and the head.
+    expect(
+      calls
+        .filter((call) => call.at > AETHER_POLL_WAKE_GRACE_MS)
+        .map((call) => [call.at, `${call.kind}/${String(call.detail)}`]),
+    ).toEqual([
+      [AETHER_POLL_WAKE_GRACE_MS + AETHER_POLL_PULL_REQUEST_INTERVAL_MS, "turns/1"],
+      [AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_PULL_REQUEST_INTERVAL_MS, "turns/1"],
     ]);
     expect(settledAt).toBe(AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_PULL_REQUEST_INTERVAL_MS);
-    expect(liveCallTimes(calls).at(-1)).toBe(settledAt);
     const ci = outputs.flatMap((output) => {
       if (output._tag !== "TaskUpdated") return [];
       const report = aetherThreadPullRequest(output.task);

@@ -18,8 +18,7 @@
 // waits on the user and nothing runs, it reads `/live` every 15 s instead, so an answer given
 // in Aether's own UI shows within one slow tick; `wake` (the adapter sent an answer) ticks at
 // once. Once idle, while the task's open pull request has CI or an Aether Review running, it
-// reads the turns page (which carries the task) once a minute, so the thread's PR shows them
-// settle. A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
+// reads the task (a one-turn page) once a minute, so the thread's PR shows them settle. A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
 // an outage longer than two minutes, or an error retrying cannot fix, stops the loop with a
 // typed failure until the next `wake`.
 
@@ -255,7 +254,7 @@ export const makeAetherConversationPoller = (
               wakeLatch.await,
             );
             yield* wakeLatch.close;
-            if (watchesPullRequest) ingest.refreshTurns();
+            if (watchesPullRequest) ingest.refreshTask();
             continue;
           }
           yield* Effect.sleep(AETHER_POLL_INTERVAL_MS);

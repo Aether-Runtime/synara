@@ -412,6 +412,8 @@ type AwaitingAnswer = Extract<
 interface IngestState {
   lastLiveHead: number | undefined;
   turnsRefreshPending: boolean;
+  /** The next tick reads the task (a one-turn page) in place of `/live`. */
+  taskReadPending: boolean;
   resetSequence: number | undefined;
   executing: boolean;
   task: AetherTask | undefined;
@@ -446,6 +448,7 @@ export class AetherConversationIngest {
   private state: IngestState = {
     lastLiveHead: undefined,
     turnsRefreshPending: true,
+    taskReadPending: false,
     resetSequence: undefined,
     executing: false,
     task: undefined,
@@ -530,9 +533,9 @@ export class AetherConversationIngest {
     );
   }
 
-  /** Reads the turns page, and with it the task, on the next tick. */
-  refreshTurns(): void {
-    this.state.turnsRefreshPending = true;
+  /** Reads the task, on a one-turn page in place of `/live`, on the next tick. */
+  refreshTask(): void {
+    this.state.taskReadPending = true;
   }
 
   /** Whether a surfaced question or plan waits on the user. */
@@ -585,10 +588,12 @@ export class AetherConversationIngest {
   /**
    * Whether the next tick reads the turns page in place of `/live`: while the task is queued
    * (its workspace boots, and nothing runs or is open), the head does not move but the task's
-   * status line does, and only the turns page carries it.
+   * status line does, and only the turns page carries it; and when the task alone is wanted
+   * (`refreshTask`).
    */
   readsTurnsInPlaceOfLive(): boolean {
-    return this.state.task?.status === "queued" && this.state.open.length === 0;
+    const { state } = this;
+    return state.taskReadPending || (state.task?.status === "queued" && state.open.length === 0);
   }
 
   /**
@@ -598,6 +603,7 @@ export class AetherConversationIngest {
    */
   applyTaskInPlaceOfLive(page: AetherConversationTurnsPage): boolean {
     const state = this.state;
+    state.taskReadPending = false;
     // A page older than the head already applied (a lagging replica) is dropped.
     if (state.lastLiveHead !== undefined && page.head_revision < state.lastLiveHead) return false;
     state.executing = false;
