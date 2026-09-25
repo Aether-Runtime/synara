@@ -8649,20 +8649,21 @@ describe("ChatView transcript geometry (full app)", () => {
       }),
       OTHER_THREAD_ID,
     );
+    // The added thread is last: an Aether thread with no turn yet, in worktree mode.
+    const addedThread = snapshot.threads.at(-1)!;
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: {
         ...snapshot,
-        threads: snapshot.threads.map((thread) =>
-          thread.id === OTHER_THREAD_ID
-            ? {
-                ...thread,
-                modelSelection: { provider: "aether", model: "claude-opus-5-5" },
-                envMode: "worktree" as const,
-                session: null,
-              }
-            : thread,
-        ),
+        threads: [
+          ...snapshot.threads.slice(0, -1),
+          {
+            ...addedThread,
+            modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+            envMode: "worktree",
+            session: null,
+          },
+        ],
       },
       configureFixture: (nextFixture) => {
         const providers: ServerConfig["providers"] = [
