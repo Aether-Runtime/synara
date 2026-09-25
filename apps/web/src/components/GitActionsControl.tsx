@@ -280,17 +280,26 @@ export default function GitActionsControl({
   const branchOwner = activeThread.branchOwner;
   const reportedPullRequest = activeThread.lastKnownPr;
   const turnRunning = activeThread.sessionStatus === "running";
-  // The session status when the request for a pull request was sent, until the session moves
-  // on (its turn runs, or fails to start) or the send fails; from then `turnRunning` covers it.
+  // Per thread (the pane can show another): the session status when its request for a pull
+  // request was sent, until its session moves on (its turn runs, or fails to start) or the send
+  // fails; from then `turnRunning` covers it.
   const [pullRequestAskedAt, setPullRequestAskedAt] = useState<
-    ThreadGitActionsMetadata["sessionStatus"] | undefined
-  >(undefined);
-  const pullRequestAsked = pullRequestAskedAt !== undefined;
+    ReadonlyMap<ThreadId, ThreadGitActionsMetadata["sessionStatus"]>
+  >(() => new Map());
+  const forgetPullRequestAsk = useCallback((threadId: ThreadId) => {
+    setPullRequestAskedAt((current) => {
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
+  }, []);
+  const pullRequestAsked = activeThreadId !== null && pullRequestAskedAt.has(activeThreadId);
   useEffect(() => {
-    if (pullRequestAskedAt !== undefined && activeThread.sessionStatus !== pullRequestAskedAt) {
-      setPullRequestAskedAt(undefined);
+    if (activeThreadId === null || !pullRequestAskedAt.has(activeThreadId)) return;
+    if (pullRequestAskedAt.get(activeThreadId) !== activeThread.sessionStatus) {
+      forgetPullRequestAsk(activeThreadId);
     }
-  }, [activeThread.sessionStatus, pullRequestAskedAt]);
+  }, [activeThread.sessionStatus, activeThreadId, forgetPullRequestAsk, pullRequestAskedAt]);
   const threadToastData = useMemo(
     () => (activeThreadId ? { threadId: activeThreadId } : undefined),
     [activeThreadId],
@@ -635,7 +644,8 @@ export default function GitActionsControl({
       });
       return;
     }
-    setPullRequestAskedAt(activeThread.sessionStatus);
+    const askedAt = activeThread.sessionStatus;
+    setPullRequestAskedAt((current) => new Map(current).set(thread.id, askedAt));
     void api.orchestration
       .dispatchCommand({
         type: "thread.turn.start",
@@ -655,7 +665,7 @@ export default function GitActionsControl({
         createdAt: new Date().toISOString(),
       })
       .catch((error: unknown) => {
-        setPullRequestAskedAt(undefined);
+        forgetPullRequestAsk(thread.id);
         toastManager.add({
           type: "error",
           title: "Unable to ask the agent for a pull request",
@@ -663,7 +673,14 @@ export default function GitActionsControl({
           data: threadToastData,
         });
       });
-  }, [activeThread.sessionStatus, activeThreadId, pullRequestAsked, threadToastData, turnRunning]);
+  }, [
+    activeThread.sessionStatus,
+    activeThreadId,
+    forgetPullRequestAsk,
+    pullRequestAsked,
+    threadToastData,
+    turnRunning,
+  ]);
 
   // Single entry point for every "Create PR" surface: opens the PR dialog when a
   // PR can be created, opens the existing PR when one is already open, and

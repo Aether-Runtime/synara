@@ -71,15 +71,21 @@ function mount(lastKnownPr: OrchestrationThreadPullRequest | null) {
     } as never,
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return {
-    dispatchCommand,
-    openExternal,
-    screen: render(
-      <QueryClientProvider client={queryClient}>
-        <GitActionsControl gitCwd={cwd} activeThreadId={threadId} />
-      </QueryClientProvider>,
-    ),
-  };
+  const control = (activeThreadId: ThreadId) => (
+    <QueryClientProvider client={queryClient}>
+      <GitActionsControl gitCwd={cwd} activeThreadId={activeThreadId} />
+    </QueryClientProvider>
+  );
+  return { dispatchCommand, openExternal, control, screen: render(control(threadId)) };
+}
+
+async function createPrMenuItemDisabled(): Promise<boolean> {
+  await page.getByRole("button", { name: "Git action options" }).click();
+  const item = page.getByRole("menuitem", { name: "Create PR", exact: true });
+  await expect.element(item).toBeVisible();
+  const disabled = item.element().hasAttribute("data-disabled");
+  await userEvent.keyboard("{Escape}");
+  return disabled;
 }
 
 describe("GitActionsControl on a thread whose agent owns the branch", () => {
@@ -138,6 +144,30 @@ describe("GitActionsControl on a thread whose agent owns the branch", () => {
     await expect
       .element(page.getByText(providerFeatureUnavailableMessage("aether", "branch-git")))
       .toBeVisible();
+  });
+
+  it("keeps a thread's pending request to that thread when the pane shows another", async () => {
+    const { dispatchCommand, control, screen } = mount(null);
+    const other = ThreadId.makeUnsafe("thread-aether-git-other");
+    useStore.setState((state) => ({
+      threadShellById: {
+        ...state.threadShellById,
+        [other]: { ...state.threadShellById![threadId]!, id: other, title: "Other thread" },
+      } as never,
+    }));
+
+    await page.getByRole("button", { name: "Git action options" }).click();
+    await page.getByRole("menuitem", { name: "Create PR" }).click();
+    await expect.poll(() => dispatchCommand.mock.calls.length).toBe(1);
+    expect(await createPrMenuItemDisabled()).toBe(true);
+
+    // The same pane moves to another thread: nothing is on its way there.
+    await (await screen).rerender(control(other));
+    expect(await createPrMenuItemDisabled()).toBe(false);
+    // Back on the first thread, its request is still on its way.
+    await (await screen).rerender(control(threadId));
+    expect(await createPrMenuItemDisabled()).toBe(true);
+    expect(dispatchCommand).toHaveBeenCalledTimes(1);
   });
 
   it("opens the PR the provider reported", async () => {
