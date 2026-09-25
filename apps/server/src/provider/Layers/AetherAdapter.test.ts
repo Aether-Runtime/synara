@@ -33,13 +33,13 @@ import {
   AetherApiHttpError,
   type AetherApiError,
 } from "../aether/aetherApiErrors.ts";
-import type { AetherWorkspaceId } from "../aether/aetherApiSchemas.ts";
+import { AetherToolId, type AetherWorkspaceId } from "../aether/aetherApiSchemas.ts";
 import {
   makeFakeAetherTask,
   FAKE_REPO_URL,
   type FakeTurn,
 } from "../aether/testing/aetherFakeTask.ts";
-import { PROJECT_ID } from "../aether/testing/aetherApiFixtures.ts";
+import { PROJECT_ID, TASK_ID } from "../aether/testing/aetherApiFixtures.ts";
 import {
   added,
   diffOf,
@@ -809,6 +809,60 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           expect(after.length).toBeGreaterThan(0);
           expect(after.every((event) => event.lifecycleGeneration === "generation-2")).toBe(true);
         }),
+    );
+    it.effect("points to Aether for a question Synara may no longer show, and reads it again", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.aether.hooks.onTurn = (turn) => {
+          h.aether.ask(turn, "toolu_ask", ["Pay now", "Place order"]);
+          h.finishTurns();
+        };
+        yield* adapter.sendTurn(h.send("Build checkout"));
+        yield* waitFor("the question", () =>
+          events.find((event) => event.type === "user-input.requested"),
+        );
+
+        // The loop stops while the question waits: the turn fails, and Synara settles the
+        // question as stale, so it shows it no more.
+        h.aether.faults.live = new AetherApiHttpError({
+          endpoint: "GET /tasks/{taskID}/conversation/live",
+          status: 404,
+        });
+        yield* adapter
+          .respondToUserInput(THREAD_ID, ApprovalRequestId.makeUnsafe("toolu_other"), {})
+          .pipe(Effect.flip);
+        const stopped = yield* waitFor("the failed turn", () => completions(events)[0]);
+        expect(stopped).toMatchObject({ payload: { state: "failed" } });
+
+        h.aether.faults.live = undefined;
+        const gate = yield* Latch.make(false);
+        h.aether.faults.liveGate = gate;
+        const refused = yield* adapter.sendTurn(h.send("Ship it")).pipe(Effect.flip);
+        expect(refused.message).toContain(
+          "Answer it before sending a new message, in Aether if Synara no longer shows it.",
+        );
+
+        // Answered in Aether's own UI: the loop the refusal woke picks the answer up.
+        yield* h.aether.client.respondToTask(TASK_ID, {
+          message: JSON.stringify({ answers: { "0": [1] } }),
+          client_message_id: "answered-in-aether",
+          tool_response: {
+            tool_name: "ask_user",
+            data: { answers: { "0": [1] } },
+            expected_tool_id: AetherToolId.makeUnsafe("toolu_ask"),
+          },
+        });
+        h.aether.faults.liveGate = undefined;
+        yield* gate.open;
+        yield* waitFor("the answer", () =>
+          events.find((event) => event.type === "user-input.resolved"),
+        );
+        const next = yield* adapter.sendTurn(h.send("Ship it"));
+        const completed = yield* waitFor("the next turn", () => completions(events)[1]);
+        expect(completed).toMatchObject({ turnId: next.turnId, payload: { state: "completed" } });
+      }),
     );
     it.effect("answers Aether's question shape: options by index, free text as custom", () =>
       Effect.gen(function* () {

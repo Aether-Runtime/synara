@@ -141,7 +141,9 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   steer, each recorded in `turns`); any other turn is from outside Synara.
 - While a surfaced question or plan waits and nothing runs, the poll loop reads `/live` every
   15 s instead of every second, so an answer given in Aether's own UI shows within 15 s; sending
-  an answer wakes it at once.
+  an answer wakes it at once. A message sent while a question waits is refused, pointing to Aether
+  when Synara no longer shows the question (its turn failed when the loop stopped), and wakes the
+  loop, which picks up an answer given there.
 - A turn completes exactly once: when its run settles, after the mirror; when the poll loop stops
   (failed); or on a stop that discards it before it ran (interrupted). ProviderService stops a
   local runtime after every interrupt (and rotates its gateway credential); for a provider whose

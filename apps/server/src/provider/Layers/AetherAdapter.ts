@@ -947,9 +947,12 @@ export const makeAetherAdapter = (
         const awaiting =
           page.task.status === "awaiting_input" ? page.task.awaiting_input : undefined;
         if (awaiting?.kind === "questions") {
+          // Synara stops showing a question whose turn failed (the loop stopped); an answer given
+          // in Aether is picked up by the loop this wakes.
+          yield* task.poller.wake;
           return yield* invalid(
             "sendTurn",
-            "Aether is waiting for an answer to its question. Answer it before sending a new message.",
+            "Aether is waiting for an answer to its question. Answer it before sending a new message, in Aether if Synara no longer shows it.",
           );
         }
         const note = yield* mirrorPending(session, task);
