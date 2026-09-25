@@ -19,7 +19,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
 } from "@synara/contracts";
-import { Effect, Exit, FileSystem, Layer, Option, Scope, Stream } from "effect";
+import { Effect, Exit, FileSystem, Latch, Layer, Option, Scope, Stream } from "effect";
 import { describe, expect } from "vitest";
 
 import { CheckpointStoreLive } from "../../checkpointing/Layers/CheckpointStore.ts";
@@ -988,6 +988,43 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(completions(events)).toHaveLength(1);
         expect(events.some((event) => event.type === "runtime.warning")).toBe(false);
       }),
+    );
+
+    it.effect(
+      "steers a run the loop has not listed yet, and a stop after it waits for its settle",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          // The poll loop cannot tick: the steer comes before it lists the turn just started.
+          const gate = yield* Latch.make(false);
+          h.aether.faults.liveGate = gate;
+          let running: FakeTurn | undefined;
+          h.aether.hooks.onTurn = (turn) => {
+            running = turn;
+            h.aether.say(turn, "text-live", "Working", { open: true });
+          };
+          const turn = yield* adapter.sendTurn(h.send("Refactor"));
+          const steered = yield* adapter.steerTurn!(h.send("Also rename the module"));
+          expect(steered.turnId).toBe(turn.turnId);
+          expect(h.aether.calls.respond.at(-1)).not.toHaveProperty("queue_for_later");
+          expect(h.aether.turns).toHaveLength(1);
+          expect(running!.items.at(-1)).toMatchObject({ content: "Also rename the module" });
+
+          // A stop now waits for the running run to settle and be mirrored.
+          yield* gate.open;
+          h.workspace.serve(diffOf(h.baseCommit, added("partial.txt", "made before stop\n")));
+          yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
+          const completed = yield* waitFor("turn.completed", () => completions(events)[0]);
+          expect(completed).toMatchObject({
+            turnId: turn.turnId,
+            payload: { state: "interrupted" },
+          });
+          expect(yield* h.read("partial.txt")).toBe("made before stop\n");
+          yield* Effect.sleep("1500 millis");
+          expect(completions(events)).toHaveLength(1);
+        }),
     );
 
     it.effect("runs a steer that arrives after the run settled as the same Synara turn", () =>

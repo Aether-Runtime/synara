@@ -1190,6 +1190,10 @@ export const makeAetherAdapter = (
               const page = yield* client
                 .getConversationTurns(task.cursor.taskId)
                 .pipe(Effect.mapError(apiFailure("getConversationTurns")));
+              // The loop may not have listed the turn just sent yet.
+              for (const turn of page.turns) {
+                bindOrigin(task, turn.id, turn.root_message.clientMessageId);
+              }
               const awaited = awaitedTurn(task.cursor, active);
               const running = page.turns.find(
                 (turn) =>

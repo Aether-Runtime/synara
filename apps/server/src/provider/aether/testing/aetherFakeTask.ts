@@ -6,7 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import { Effect, Schema } from "effect";
+import { Effect, type Latch, Schema } from "effect";
 
 import {
   AetherApiConflictError,
@@ -71,6 +71,8 @@ export function makeFakeAetherTask() {
     refuseRespond: AetherApiError | undefined;
     /** Every live read fails with this while it is set. */
     live: AetherApiError | undefined;
+    /** Every live read waits for this latch while it is set: the poll loop cannot tick. */
+    liveGate: Latch.Latch | undefined;
   } = {
     loseCreate: false,
     loseRespond: false,
@@ -79,6 +81,7 @@ export function makeFakeAetherTask() {
     refuseCreate: undefined,
     refuseRespond: undefined,
     live: undefined,
+    liveGate: undefined,
   };
   /** Called when a turn starts running: the test scripts what the VM does. */
   const hooks: { onTurn: (turn: FakeTurn) => void } = { onTurn: () => {} };
@@ -120,6 +123,31 @@ export function makeFakeAetherTask() {
       ...(status === "errored" ? { error: task!.error } : {}),
     };
   };
+
+  const readLive = (messageIds: ReadonlyArray<string>) =>
+    Effect.suspend((): Effect.Effect<AetherLiveConversationSnapshot, AetherApiError> => {
+      if (faults.live !== undefined) return Effect.fail(faults.live);
+      const current = turns.find((turn) => turn.state === "running");
+      return Effect.succeed(
+        decode(AetherLiveConversationSnapshot, {
+          ...(current === undefined
+            ? {}
+            : {
+                activeExecution: {
+                  conversationTurnId: current.id,
+                  processingMessageId: current.root.id,
+                },
+              }),
+          headRevision: head,
+          resetSequence: 0,
+          open: [...open.values()],
+          replacements: messageIds.flatMap((id) => {
+            const message = closed.get(id);
+            return message === undefined ? [] : [message];
+          }),
+        }),
+      );
+    });
 
   const client: AetherApiClientShape = {
     connection: Effect.die("the fake has no connection"),
@@ -249,29 +277,9 @@ export function makeFakeAetherTask() {
         });
       }),
     getLiveConversation: (_taskId, messageIds) =>
-      Effect.suspend(() => {
-        if (faults.live !== undefined) return Effect.fail(faults.live);
-        const current = turns.find((turn) => turn.state === "running");
-        return Effect.succeed(
-          decode(AetherLiveConversationSnapshot, {
-            ...(current === undefined
-              ? {}
-              : {
-                  activeExecution: {
-                    conversationTurnId: current.id,
-                    processingMessageId: current.root.id,
-                  },
-                }),
-            headRevision: head,
-            resetSequence: 0,
-            open: [...open.values()],
-            replacements: messageIds.flatMap((id) => {
-              const message = closed.get(id);
-              return message === undefined ? [] : [message];
-            }),
-          }),
-        );
-      }),
+      faults.liveGate === undefined
+        ? readLive(messageIds)
+        : faults.liveGate.await.pipe(Effect.andThen(readLive(messageIds))),
     connectWorkspace: () => Effect.die("the adapter test opens the workspace itself"),
   };
 
