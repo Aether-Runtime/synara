@@ -623,16 +623,23 @@ export const makeAetherAdapter = (
       }
     };
 
-    /** What the journal holds for the thread: ids to drop, and the text already streamed. */
-    const readJournal = (threadId: ThreadId) =>
+    /**
+     * What the journal holds of the turn in flight: the ids a resumed poll loop derives again (they
+     * are dropped), and the text already streamed. It holds every row of a turn until the turn
+     * completes; a resumed loop emits nothing for the turns before it (`resume.after`), whose
+     * rows the journal may have pruned.
+     */
+    const readJournal = (threadId: ThreadId, turnId: TurnId | null) =>
       Effect.gen(function* () {
-        const through = yield* journal.getHighWaterSequence;
         const replayed = new Set<string>();
         const emittedText = new Map<string, number>();
+        if (turnId === null) return { replayed, emittedText };
+        const through = yield* journal.getHighWaterSequence;
         let before: number | undefined;
         for (;;) {
           const page = yield* journal.readThreadEvents({
             threadId,
+            turnId,
             throughSequenceInclusive: through,
             limit: 200,
             ...(before === undefined ? {} : { beforeSequenceExclusive: before }),
@@ -745,7 +752,7 @@ export const makeAetherAdapter = (
         const state: Creating | Task =
           cursor.status === "creating"
             ? { _tag: "Creating", cursor }
-            : yield* readJournal(input.threadId).pipe(
+            : yield* readJournal(input.threadId, activeTurnId(cursor)).pipe(
                 Effect.flatMap(({ replayed, emittedText }) =>
                   follow(base, cursor, replayed, { after: cursor.after, emittedText }),
                 ),

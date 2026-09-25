@@ -151,9 +151,12 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   start checkpoint.
 - Startup reconciliation skips threads whose adapter declares `turnsSurviveRestart`. At
   construction the adapter claims every Aether thread's worktree again and reattaches a thread with
-  `activeTurnId`; a reattached loop reads everything again, so the adapter builds `emittedText`
-  from the `content.delta` events the runtime event journal holds and drops re-derived events whose
-  ids it holds.
+  a turn in flight.
+- A resumed loop emits nothing for the history `after` covers (every turn before its turn, and
+  its turn up to the run it names): Synara emitted it before, and the runtime event journal
+  prunes the rows of completed turns. It reads those rows only for their state. The journal holds
+  every row of the turn in flight, so the adapter reads that turn's events only: their ids, which
+  it drops when the loop derives them again, and the text already streamed (`emittedText`).
 
 ### Ingestion and settlement
 

@@ -734,6 +734,70 @@ describe("AetherConversationIngest: settlement", () => {
     expect(tags(caughtUp)).toEqual(["item.completed", "TurnSettled"]);
   });
 
+  it("emits nothing for the history the resume watermark covers", () => {
+    const first = turn({ state: "settled", revision_sequence: 7 });
+    const second = turn({
+      id: OTHER_TURN_ID,
+      root_message: userMessageBody({ id: "root-2" }),
+      state: "settled",
+      revision_sequence: 2,
+    });
+    const outputs = refresh(
+      makeIngest({ after: { turnId: OTHER_TURN_ID, runMessageId: "root-2" } }),
+      turnsBody(idleTask(), [first, second]),
+      {
+        [TURN_ID]: activityBody([toolRow("t1", { status: "output-available" })], 7),
+        [OTHER_TURN_ID]: activityBody(
+          [userMessageBody({ id: "root-2" }), textRow("m2", "Done."), toolRow("t2")],
+          2,
+        ),
+      },
+    );
+    // Synara emitted these before; its journal may no longer hold them.
+    expect(outputs).toEqual([]);
+  });
+
+  it("emits a watermark turn's rows only from the run after the watermark's", () => {
+    const planTask = taskBody("processing", {
+      status: "awaiting_input",
+      awaiting_input: { kind: "plan", tool_id: "plan-1", input: { plan: "1. Edit" } },
+    });
+    const planRow = toolRow("plan-1", { name: "propose_plan", status: "approval-requested" });
+    const ingest = makeIngest({ after: { turnId: TURN_ID, runMessageId: "root-1" } });
+    const waiting = refresh(
+      ingest,
+      turnsBody(planTask, [turn({ state: "awaiting_input", revision_sequence: 1 })]),
+      {
+        [TURN_ID]: activityBody(
+          [userMessageBody({ id: "root-1" }), textRow("m1", "Here is a plan."), planRow],
+          1,
+        ),
+      },
+    );
+    // The plan was shown before the restart, and is not shown again.
+    expect(waiting).toEqual([]);
+    expect(ingest.waitsOnUser()).toBe(true);
+
+    const approved = refresh(
+      ingest,
+      turnsBody(idleTask(), [turn({ state: "settled", revision_sequence: 2 })]),
+      {
+        [TURN_ID]: activityBody(
+          [
+            userMessageBody({ id: "root-1" }),
+            textRow("m1", "Here is a plan."),
+            planRow,
+            userMessageBody({ id: "approval-1" }),
+            textRow("m2", "Implemented."),
+          ],
+          2,
+        ),
+      },
+    );
+    expect(tags(approved)).toEqual(["item.completed", "TurnSettled"]);
+    expect(events(approved)[0]).toMatchObject({ itemId: "m2" });
+  });
+
   it("signals only the runs after the resume watermark, by page order, not revision", () => {
     // As on real tasks: turns are listed oldest first, and revisions are not monotonic across them.
     const first = turn({ state: "settled", revision_sequence: 7 });

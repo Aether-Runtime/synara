@@ -180,6 +180,18 @@ const makeHarness = Effect.gen(function* () {
     failure: undefined,
   };
   const journal: PersistedProviderRuntimeEvent[] = [];
+  let sequence = 0;
+  /** What the runtime event journal's retention does: drops the rows of completed turns. */
+  const pruneCompletedTurns = () => {
+    const completed = new Set(
+      journal.flatMap(({ event }) => (event.type === "turn.completed" ? [event.turnId] : [])),
+    );
+    journal.splice(
+      0,
+      journal.length,
+      ...journal.filter(({ event }) => event.turnId === undefined || !completed.has(event.turnId)),
+    );
+  };
 
   /** Starts an adapter in its own scope; closing the scope is the process going away. */
   const launch = (bindings: ReadonlyArray<ProviderRuntimeBinding> = []) =>
@@ -192,13 +204,14 @@ const makeHarness = Effect.gen(function* () {
             ? Effect.fail(vm.failure)
             : Effect.succeed(vm.running ? Option.some(workspace.workspace) : Option.none()),
         journal: {
-          getHighWaterSequence: Effect.sync(() => journal.length),
+          getHighWaterSequence: Effect.sync(() => sequence),
           readThreadEvents: (input) =>
             Effect.sync(() =>
               journal
                 .filter(
                   ({ sequence, event }) =>
                     event.threadId === input.threadId &&
+                    (input.turnId === undefined || event.turnId === input.turnId) &&
                     sequence <= input.throughSequenceInclusive &&
                     sequence < (input.beforeSequenceExclusive ?? Number.POSITIVE_INFINITY),
                 )
@@ -212,7 +225,7 @@ const makeHarness = Effect.gen(function* () {
       yield* Stream.runForEach(adapter.streamEvents, (event) =>
         Effect.sync(() => {
           events.push(event);
-          journal.push({ sequence: journal.length + 1, event });
+          journal.push({ sequence: (sequence += 1), event });
         }),
       ).pipe(Effect.forkIn(scope));
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
@@ -246,6 +259,7 @@ const makeHarness = Effect.gen(function* () {
     workspace,
     vm,
     journal,
+    pruneCompletedTurns,
     launch,
     start,
     send,
@@ -1191,6 +1205,44 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           );
           expect(streamed.join("")).toBe("Hello, world");
         }),
+    );
+
+    it.effect("reattaches after an idle stop, re-emitting no history the journal pruned", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.aether.hooks.onTurn = (turn) => {
+          h.aether.tool(turn, `toolu-${turn.id}`, "ls");
+          h.aether.say(turn, `text-${turn.id}`, "Done.");
+          h.aether.settle(turn);
+        };
+        yield* adapter.sendTurn(h.send("First"));
+        yield* waitFor("the first turn", () => completions(events)[0]);
+        yield* adapter.sendTurn(h.send("Second"));
+        yield* waitFor("the second turn", () => completions(events)[1]);
+
+        // The idle reaper stops the session; retention drops the settled turns' rows.
+        const [idle] = yield* adapter.listSessions();
+        yield* adapter.stopSession(THREAD_ID);
+        h.pruneCompletedTurns();
+        expect(h.journal).toEqual([]);
+        const before = events.length;
+        const resumed = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "aether",
+          cwd: h.worktree,
+          resumeCursor: idle!.resumeCursor,
+          runtimeMode: "full-access",
+        });
+        expect(resumed).toMatchObject({ status: "ready" });
+        yield* Effect.sleep("1500 millis");
+        expect(events.slice(before)).toEqual([]);
+
+        const third = yield* adapter.sendTurn(h.send("Third"));
+        yield* waitFor("the third turn", () => completions(events)[2]);
+        expect(events.slice(before).every((event) => event.turnId === third.turnId)).toBe(true);
+      }),
     );
 
     it.effect("holds the worktree across stopSession, and claims it again at boot", () =>

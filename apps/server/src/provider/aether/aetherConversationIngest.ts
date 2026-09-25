@@ -369,9 +369,18 @@ type RowRecord =
   | { readonly kind: "tasks"; readonly key: string | undefined; readonly terminal: boolean }
   | { readonly kind: "done" };
 
+/**
+ * How much of a turn `resume.after` covers, row by row: Synara already emitted those rows, and
+ * its journal may have pruned them, so they are read for their state but emit nothing. A turn
+ * listed before the mark's is covered whole; the mark's turn up to its run's message and the
+ * rows of that run (`to-mark`, then `at-mark`), and no longer from the next new user message.
+ */
+type Coverage = "whole" | "to-mark" | "at-mark" | "none";
+
 interface TurnRecord {
   readonly id: AetherTurnId;
   state: TurnState;
+  coverage: Coverage;
   /** `revision_sequence` from the latest turns page. */
   revision: number;
   /** The activity revision last applied; the activity is re-read while it trails `revision`. */
@@ -567,6 +576,7 @@ export class AetherConversationIngest {
       const covered = mark === null ? 0 : markAt === -1 ? page.turns.length : markAt + 1;
       state.resumed = new Set(page.turns.slice(0, covered).map((turn) => turn.id));
     }
+    const resumed = state.resumed;
     for (const turn of page.turns) {
       const known = state.turns.get(turn.id);
       if (known !== undefined) {
@@ -574,9 +584,15 @@ export class AetherConversationIngest {
         known.revision = turn.revision_sequence;
         continue;
       }
+      const coverage: Coverage = !resumed.has(turn.id)
+        ? "none"
+        : turn.id === this.resume.after?.turnId
+          ? "to-mark"
+          : "whole";
       state.turns.set(turn.id, {
         id: turn.id,
         state: turn.state,
+        coverage,
         revision: turn.revision_sequence,
         revisionRead: undefined,
         lastUserMessageId: turn.root_message.id,
@@ -584,6 +600,8 @@ export class AetherConversationIngest {
         lastInputId: undefined,
         rows: new Map(),
       });
+      // A covered turn was bound, or found to be from outside Synara, before.
+      if (coverage !== "none") continue;
       outputs.push({
         _tag: "TurnOrigin",
         turnId: turn.id,
@@ -640,6 +658,11 @@ export class AetherConversationIngest {
     const outputs: AetherIngestOutput[] = [];
     for (const item of items) {
       if (item.role === "user") {
+        if (turn.coverage === "to-mark" && item.id === this.resume.after?.runMessageId) {
+          turn.coverage = "at-mark";
+        } else if (turn.coverage === "at-mark" && !turn.rows.has(item.id)) {
+          turn.coverage = "none";
+        }
         turn.lastUserMessageId = item.id;
         const answered = turn.lastInputId;
         if (
@@ -653,6 +676,7 @@ export class AetherConversationIngest {
         turn.rows.set(item.id, { kind: "done" });
         continue;
       }
+      const rowOutputs: AetherIngestOutput[] = [];
       switch (item.variant) {
         case "text":
         case "thinking": {
@@ -661,16 +685,17 @@ export class AetherConversationIngest {
           if (this.state.open.some((message) => message.id === item.id)) break;
           const text = this.advanceText(item, turnId, true, "activity", observedAt);
           if (Result.isFailure(text)) return text;
-          outputs.push(...text.success);
+          rowOutputs.push(...text.success);
           break;
         }
         case "tool":
-          outputs.push(...this.applyTool(turn, item.id, item.tool, observedAt));
+          rowOutputs.push(...this.applyTool(turn, item.id, item.tool, observedAt));
           break;
         case "seam":
-          outputs.push(...this.applySeam(turn, item.id, item.seam.reason, observedAt));
+          rowOutputs.push(...this.applySeam(turn, item.id, item.seam.reason, observedAt));
           break;
       }
+      if (turn.coverage === "none") outputs.push(...rowOutputs);
     }
     // A read that trails the turns page is applied, and the turn is read again next tick.
     turn.revisionRead = revision;
@@ -900,6 +925,8 @@ export class AetherConversationIngest {
         turn.inputs.set(tool.id, undefined);
         turn.lastInputId = tool.id;
       }
+      // Synara showed a covered call's question or plan before; it is not shown again.
+      if (turn.coverage !== "none") this.state.surfacedToolIds.add(tool.id);
       turn.rows.set(rowId, { kind: "done" });
       return [];
     }
