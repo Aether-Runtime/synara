@@ -197,13 +197,25 @@ function created(session: Session): AetherCreatedCursor {
   return session.cursor;
 }
 
+/**
+ * An API failure as an adapter error. A request Aether refused changed nothing, so it is a
+ * validation error, which the command reactor treats as rejected; any other failure (5xx,
+ * timeout, transport) may have landed, so it stays a request error, which is uncertain.
+ */
 const apiFailure = (method: string) => (error: AetherApiError) =>
-  new ProviderAdapterRequestError({
-    provider: PROVIDER,
-    method,
-    detail: error.message,
-    cause: error,
-  });
+  sendRefused(error)
+    ? new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation: method,
+        issue: error.message,
+        cause: error,
+      })
+    : new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method,
+        detail: error.message,
+        cause: error,
+      });
 
 /** Why a mirror failed; only a workspace that is not running defers it (`openWorkspace`). */
 function mirrorFailure(
@@ -744,9 +756,9 @@ export const makeAetherAdapter = (
     /** The first turn: creates the task. Its Synara turn id is the idempotency key. */
     const createTask = (session: Session, turn: TurnRequest) =>
       Effect.gen(function* () {
-        if (session.cursor.status !== "creating")
-          throw new Error("The Aether task exists already.");
-        const { worktreePath, idempotencyKey } = session.cursor;
+        const creating = session.cursor;
+        if (creating.status !== "creating") throw new Error("The Aether task exists already.");
+        const { worktreePath, idempotencyKey } = creating;
         const turnId = TurnId.makeUnsafe(idempotencyKey);
         const agentType = resolveAetherAgentFamily(session.model);
         if (agentType === null) {
@@ -776,7 +788,17 @@ export const makeAetherAdapter = (
             auto_fix_pr_comments: false,
             auto_rebase: false,
           })
-          .pipe(Effect.mapError(apiFailure("createTask")));
+          .pipe(
+            Effect.tapError((error) =>
+              Effect.sync(() => {
+                // Nothing was created: the next send starts over with a new key.
+                if (sendRefused(error)) {
+                  session.cursor = { ...creating, idempotencyKey: randomUUID() };
+                }
+              }),
+            ),
+            Effect.mapError(apiFailure("createTask")),
+          );
         session.cursor = {
           schemaVersion: 1,
           status: "created",

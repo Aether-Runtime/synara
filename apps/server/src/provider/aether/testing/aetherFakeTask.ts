@@ -61,7 +61,22 @@ export function makeFakeAetherTask() {
     respond: [] as AetherRespondToTaskRequest[],
     stop: [] as Json[],
   };
-  const faults = { loseCreate: false, loseRespond: false, staleAnswer: false, payment: false };
+  const faults: {
+    loseCreate: boolean;
+    loseRespond: boolean;
+    staleAnswer: boolean;
+    payment: boolean;
+    /** The next create, or respond, fails with this and changes nothing. */
+    refuseCreate: AetherApiError | undefined;
+    refuseRespond: AetherApiError | undefined;
+  } = {
+    loseCreate: false,
+    loseRespond: false,
+    staleAnswer: false,
+    payment: false,
+    refuseCreate: undefined,
+    refuseRespond: undefined,
+  };
   /** Called when a turn starts running: the test scripts what the VM does. */
   const hooks: { onTurn: (turn: FakeTurn) => void } = { onTurn: () => {} };
 
@@ -125,6 +140,11 @@ export function makeFakeAetherTask() {
             }),
           );
         }
+        const refused = faults.refuseCreate;
+        if (refused !== undefined) {
+          faults.refuseCreate = undefined;
+          return Effect.fail(refused);
+        }
         if (!keys.has(request.idempotency_key)) {
           keys.add(request.idempotency_key);
           startTurn({ id: messageId(), role: "user", content: request.prompt }, false);
@@ -138,6 +158,11 @@ export function makeFakeAetherTask() {
     respondToTask: (_taskId, request) =>
       Effect.suspend((): Effect.Effect<Responded, AetherApiError> => {
         calls.respond.push(request);
+        const refused = faults.refuseRespond;
+        if (refused !== undefined) {
+          faults.refuseRespond = undefined;
+          return Effect.fail(refused);
+        }
         let id = messages.get(request.client_message_id);
         if (id === undefined) {
           const answer = request.tool_response;

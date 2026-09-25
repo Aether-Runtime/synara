@@ -44,6 +44,7 @@ import {
   modified,
   tooLarge,
 } from "../aether/testing/aetherMirrorFixtures.ts";
+import { classifyProviderAttemptOutcome } from "../../orchestration/Layers/ProviderCommandReactor.ts";
 import { providerAdapterConformanceIssues } from "../providerAdapterConformance.ts";
 import type { AetherAdapterShape } from "../Services/AetherAdapter.ts";
 import type { ProviderRuntimeBinding } from "../Services/ProviderSessionDirectory.ts";
@@ -410,6 +411,74 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(again.turnId).not.toBe(retry.turnId);
         yield* waitFor("the third turn", () => completions(events)[2]);
         expect(h.aether.turns).toHaveLength(3);
+      }),
+    );
+  });
+
+  describe("refusals", () => {
+    const attempt = (error: unknown) =>
+      classifyProviderAttemptOutcome(Exit.fail(error) as Exit.Exit<void, unknown>)._tag;
+
+    it.effect("rejects a create Aether refused, and the next send starts with a new key", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        const session = yield* h.start(adapter);
+        const { idempotencyKey } = session.resumeCursor as { readonly idempotencyKey: string };
+        h.finishTurns();
+        h.aether.faults.refuseCreate = new AetherApiHttpError({
+          endpoint: "POST /tasks",
+          status: 400,
+          serverMessage: "Reconnect Claude Code in Settings → Connections before starting a task.",
+        });
+        const refused = yield* adapter.sendTurn(h.send("First try")).pipe(Effect.flip);
+        // Rejected, not uncertain: the command reactor does not quarantine the thread.
+        expect(attempt(refused)).toBe("rejected");
+        expect(refused.message).toContain("Reconnect Claude Code in Settings");
+
+        yield* adapter.sendTurn(h.send("Second try"));
+        yield* waitFor("turn.completed", () => completions(events)[0]);
+        const [first, second] = h.aether.calls.create.map((call) => call.idempotency_key);
+        expect(first).toBe(idempotencyKey);
+        expect(second).not.toBe(idempotencyKey);
+      }),
+    );
+
+    it.effect("leaves a 5xx on create uncertain, and the retry reuses the key", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        h.aether.faults.refuseCreate = new AetherApiHttpError({
+          endpoint: "POST /tasks",
+          status: 502,
+        });
+        const failed = yield* adapter.sendTurn(h.send("Go")).pipe(Effect.flip);
+        expect(attempt(failed)).toBe("uncertain");
+        yield* adapter.sendTurn(h.send("Go"));
+        yield* waitFor("turn.completed", () => completions(events)[0]);
+        const [first, retry] = h.aether.calls.create.map((call) => call.idempotency_key);
+        expect(retry).toBe(first);
+      }),
+    );
+
+    it.effect("rejects a respond Aether refused", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        yield* adapter.sendTurn(h.send("First"));
+        yield* waitFor("turn.completed", () => completions(events)[0]);
+        h.aether.faults.refuseRespond = new AetherApiHttpError({
+          endpoint: "POST /tasks/{taskID}/respond",
+          status: 422,
+          serverMessage: "The message is too long.",
+        });
+        const refused = yield* adapter.sendTurn(h.send("Second")).pipe(Effect.flip);
+        expect(attempt(refused)).toBe("rejected");
+        expect(refused.message).toContain("The message is too long.");
       }),
     );
   });
