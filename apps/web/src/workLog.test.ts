@@ -3112,6 +3112,36 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[1]?.label).toBe("Turn interrupted");
   });
 
+  it("carries a failed turn's error on its outcome row", () => {
+    const turnId = TurnId.makeUnsafe("turn-mirror-paused");
+    const errorMessage =
+      "Synara paused mirroring Aether's changes: the worktree has local changes (README.md). Discard or move them; the next turn mirrors again. Nothing was overwritten.";
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "turn-failed",
+          createdAt: "2026-02-23T00:00:05.000Z",
+          kind: "turn.completed",
+          summary: "Turn failed",
+          tone: "error",
+          turnId,
+          payload: { state: "failed", errorMessage },
+        }),
+      ],
+      turnId,
+    );
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        id: "turn-failed",
+        label: "Turn failed",
+        tone: "error",
+        turnOutcome: "failed",
+        detail: errorMessage,
+      }),
+    ]);
+  });
+
   it("treats an explicitly interrupted tool completion as cancelled", () => {
     const entries = deriveWorkLogEntries(
       [

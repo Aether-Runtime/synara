@@ -3408,6 +3408,74 @@ describe("MessagesTimeline", () => {
     );
   });
 
+  it("keeps a failed turn's error in view after its answer", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.makeUnsafe("turn-mirror-paused");
+    const [failure] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "turn-failed",
+          createdAt: "2026-03-17T19:12:30.000Z",
+          kind: "turn.completed",
+          summary: "Turn failed",
+          tone: "error",
+          turnId,
+          payload: {
+            state: "failed",
+            errorMessage:
+              "Synara paused mirroring Aether's changes: the worktree has local changes (README.md).",
+          },
+        }),
+      ],
+      turnId,
+    );
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...makeTimelineBaseProps()}
+        nowIso="2026-03-17T19:12:31.000Z"
+        isWorking={false}
+        activeTurnInProgress={false}
+        timelineEntries={[
+          {
+            id: "entry-guard-tool",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-guard-tool",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Run command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "printf 'Guard.' >> docs/guard.md",
+              activityKind: "tool.completed",
+            },
+          },
+          {
+            id: "entry-guard-assistant",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            message: {
+              id: MessageId.makeUnsafe("message-guard"),
+              role: "assistant",
+              text: "Appended Guard. to docs/guard.md.",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              completedAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+              turnId,
+            },
+          },
+          { id: "entry-turn-failed", kind: "work", createdAt: failure!.createdAt, entry: failure! },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Worked for");
+    expect(markup.match(/Synara paused mirroring/g)).toHaveLength(1);
+    expect(markup.indexOf("Appended Guard.")).toBeLessThan(
+      markup.indexOf("Synara paused mirroring"),
+    );
+  });
+
   it("marks a turn stopped before it answered", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.makeUnsafe("turn-stopped-before-answer");

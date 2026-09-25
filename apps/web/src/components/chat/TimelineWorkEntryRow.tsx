@@ -578,6 +578,8 @@ export const TimelineWorkEntryRow = memo(function TimelineWorkEntryRow(props: {
               ? "mcp"
               : undefined;
   const { heading, preview, displayText } = workEntryDisplayParts(workEntry);
+  // A failed turn's reason is read in full, not cut to one line.
+  const wrapsDisplayText = workEntry.turnOutcome === "failed";
   const showInlineAgentTaskPreview =
     workEntry.itemType === "collab_agent_tool_call" &&
     Boolean(preview) &&
@@ -779,7 +781,7 @@ export const TimelineWorkEntryRow = memo(function TimelineWorkEntryRow(props: {
                   // Single-line tool labels size to their content so the disclosure
                   // chevron can sit right after the name; the multi-line markdown
                   // preview still needs the full row width.
-                  showInlineAgentTaskPreview && "flex-1",
+                  (showInlineAgentTaskPreview || wrapsDisplayText) && "flex-1",
                 )}
               >
                 {showInlineAgentTaskPreview ? (
@@ -809,7 +811,8 @@ export const TimelineWorkEntryRow = memo(function TimelineWorkEntryRow(props: {
                 ) : (
                   <p
                     className={cn(
-                      compact ? "truncate leading-5" : "truncate leading-6",
+                      compact ? "leading-5" : "leading-6",
+                      !wrapsDisplayText && "truncate",
                       // Match the leading icon's tone so the row reads as one muted unit, and
                       // brighten the whole row to foreground on hover/focus instead of a fill.
                       WORK_ROW_MUTED_HOVER_TONE["tool-row"],

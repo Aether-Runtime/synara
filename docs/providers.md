@@ -44,7 +44,7 @@ none, or more than one.
 - When a run settles, Synara mirrors the VM's changes into the worktree before the turn completes,
   so its checkpoint and diff include them. If the VM is suspended, the mirror waits for the next
   turn. Local changes in the worktree pause the mirror until they are discarded or moved; nothing
-  is overwritten.
+  is overwritten, and the turn fails with a notice under its reply that names the files.
 - Questions and plans can be answered in Synara or in Aether's own app; Synara picks up an answer
   given there within about 15 seconds. A question keeps its turn open however long it waits.
   **Implement** approves a plan, and any other message is feedback on it.
