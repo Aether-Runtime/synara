@@ -1191,6 +1191,16 @@ export const makeAetherAdapter = (
         }),
       reattachTurn: (input) =>
         Effect.gen(function* () {
+          // A second session would run a second poll loop on the task, emitting everything twice.
+          const existing = sessions.get(input.threadId);
+          if (existing !== undefined) {
+            const { state } = existing;
+            if (state._tag === "Task" && activeTurnId(state.cursor) === input.turnId) return;
+            return yield* invalid(
+              "reattachTurn",
+              `Synara already follows this Aether task, and its turn in flight is not ${input.turnId}.`,
+            );
+          }
           const cursor = yield* parseAetherResumeCursor(input.resumeCursor);
           if (cursor.status === "creating") {
             // Its request (the message) is not persisted, so the create cannot be retried here;

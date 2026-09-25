@@ -1726,6 +1726,37 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
       }),
     );
 
+    it.effect("reattaches a turn it already follows on its session, and refuses any other", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        let running: FakeTurn | undefined;
+        h.aether.hooks.onTurn = (turn) => {
+          running = turn;
+        };
+        const turn = yield* adapter.sendTurn(h.send("Go"));
+        const reattach = (turnId: TurnId) =>
+          adapter.reattachTurn!({
+            threadId: THREAD_ID,
+            turnId,
+            resumeCursor: turn.resumeCursor,
+            runtimeMode: "full-access",
+            lifecycleGeneration: undefined,
+          });
+        yield* reattach(turn.turnId);
+        const other = yield* reattach(TurnId.makeUnsafe("turn-other")).pipe(Effect.flip);
+        expect(other.message).toContain("Synara already follows this Aether task");
+
+        // One poll loop follows the task: the turn completes once.
+        h.aether.say(running!, "text-done", "Done.");
+        h.aether.settle(running!);
+        yield* waitFor("turn.completed", () => completions(events)[0]);
+        yield* Effect.sleep("1500 millis");
+        expect(completions(events)).toHaveLength(1);
+      }),
+    );
+
     it.effect.each(["deleted", "archived"] as const)(
       "releases the worktree of a thread %s, so it can be removed",
       (retired) =>
