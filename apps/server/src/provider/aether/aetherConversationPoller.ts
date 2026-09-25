@@ -28,8 +28,8 @@ import {
   makeAetherEventBase,
   type AetherIngestContext,
   type AetherIngestOutput,
+  type AetherIngestResume,
   type AetherPendingInputError,
-  type AetherRunKey,
   type AetherTranscriptDivergedError,
 } from "./aetherConversationIngest.ts";
 
@@ -111,8 +111,8 @@ export type AetherConversationReader = Pick<
 export interface AetherConversationPollerOptions {
   readonly client: AetherConversationReader;
   readonly context: AetherIngestContext;
-  /** The last run the adapter signalled, from its resume cursor. */
-  readonly resumeAfter?: AetherRunKey;
+  /** Where to pick up, from what Synara persisted: the last signalled run and emitted text. */
+  readonly resume: AetherIngestResume;
   /** Receives every output in order. The loop waits for it, so a slow consumer slows polling. */
   readonly emit: (output: AetherPollerOutput) => Effect.Effect<void>;
 }
@@ -147,7 +147,7 @@ export const makeAetherConversationPoller = (
 ): Effect.Effect<AetherConversationPoller, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { client, context, emit } = options;
-    let ingest = new AetherConversationIngest(context, options.resumeAfter);
+    let ingest = new AetherConversationIngest(context, options.resume);
     const wakeLatch = yield* Latch.make(false);
     const wakeState = { graceUntil: 0, sawActive: false };
 

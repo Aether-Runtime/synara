@@ -127,14 +127,15 @@ checked against recorded traffic in `provider/aether/testing/recordings/`:
   Each run settles once; a run is keyed by the turn's last user message, so a plan approval that
   resumes the same Aether turn settles again: `awaiting_input(plan)`, then `settled`. That is
   intended; P4 maps each settle to its own Synara turn, because approving a plan starts one.
-- After a restart P4 passes one resume watermark, the last run it signalled (`turnId`,
-  `runMessageId`). That run and every turn before it on the first turns page count as signalled,
-  so history does not settle again. There is no per-message seed, so a message streaming across
-  a restart is not continued safely: Synara appends deltas and uses the completion text only for
-  an empty message. If it is still open, it is re-sent whole under a new delta id (the text
-  repeats); if it closed while Synara was down, only its completion arrives (the text stays cut
-  short). P4's restart-mid-turn test must cover this, and P4 must repair the message on reattach
-  or P3 must take the lengths Synara holds back as a second input.
+- After a restart P4 passes one resume input, filled from what Synara already persisted:
+  `{ after, emittedText }`. `after` is the last run it signalled (`turnId`, `runMessageId`); that
+  run and every turn listed before its turn on the first turns page count as signalled, so
+  history does not settle again. `emittedText` maps each message id to the length of its text
+  Synara holds. A message still open continues from there (nothing repeats), and one that closed
+  while Synara was down emits only its missing suffix. A length longer than the server's text is
+  a loud `AetherTranscriptDivergedError`. Verified by the owner on real 8- and 32-turn tasks: the
+  turns page lists turns oldest first (root messages in ascending time), and `revision_sequence`
+  is not monotonic across turns, so turns are ordered only by their place on the page.
 - Questions (`awaiting_input.kind = "questions"`) are `user-input.requested` inside the turn and do
   not settle it. A plan (`kind = "plan"`) is `turn.proposed.completed` and settles the run as
   `awaiting_input(plan)`, matching Synara's plan flow. The recordings carry no input digest; the

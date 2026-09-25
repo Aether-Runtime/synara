@@ -13,6 +13,7 @@ import {
   AetherPendingInputError,
   AetherTranscriptDivergedError,
   type AetherIngestOutput,
+  type AetherIngestResume,
   type AetherRunKey,
 } from "./aetherConversationIngest.ts";
 import {
@@ -28,14 +29,14 @@ type Json = Record<string, unknown>;
 const AT = "2026-09-25T10:00:00.000Z";
 const OTHER_TURN_ID = AetherTurnId.makeUnsafe("9c8b7a6f-5e4d-4c3b-8a29-18f7e6d5c4b3");
 
-function makeIngest(resumeAfter?: AetherRunKey) {
+function makeIngest(resume: Partial<AetherIngestResume> = {}) {
   return new AetherConversationIngest(
     {
       taskId: TASK_ID,
       threadId: ThreadId.makeUnsafe("thread-1"),
       turnIdFor: (turnId) => TurnId.makeUnsafe(`synara-${turnId}`),
     },
-    resumeAfter,
+    { after: null, emittedText: new Map(), ...resume },
   );
 }
 
@@ -260,6 +261,64 @@ describe("AetherConversationIngest: text", () => {
       source: "live",
       streamedLength: 5,
       receivedLength: 4,
+    });
+  });
+
+  it("continues text across a restart from what Synara holds: still open, or closed while down", () => {
+    // Before the restart Synara streamed "Hello wor" of m1 and "Hel" of m2.
+    const before = live(
+      makeIngest(),
+      liveBody({ open: [message("m1", "Hello wor"), message("m2", "Hel")] }),
+    ).outputs;
+    // After it, m1 is still open and m2 closed while Synara was down (only activity shows it).
+    const ingest = makeIngest({
+      emittedText: new Map([
+        ["m1", 9],
+        ["m2", 3],
+      ]),
+    });
+    const after = [
+      ...live(ingest, liveBody({ open: [message("m1", "Hello world")] })).outputs,
+      ...refresh(ingest, turnsBody(processingTask(), [turn()]), {
+        [TURN_ID]: activityBody([textRow("m2", "Hello there."), textRow("m1", "Hello world")]),
+      }),
+    ];
+
+    expect(events(after).map((event) => [event.eventId, event.payload])).toEqual([
+      [`aether:${TASK_ID}:${TURN_ID}:m1:delta:11`, { streamKind: "assistant_text", delta: "ld" }],
+      [
+        `aether:${TASK_ID}:${TURN_ID}:m2:delta:12`,
+        { streamKind: "assistant_text", delta: "lo there." },
+      ],
+      [
+        `aether:${TASK_ID}:${TURN_ID}:m2:completed`,
+        { itemType: "assistant_message", status: "completed", detail: "Hello there." },
+      ],
+    ]);
+    // Nothing repeats and nothing is missing.
+    const text = (messageId: string) =>
+      events([...before, ...after])
+        .flatMap((event) =>
+          event.type === "content.delta" && event.itemId === messageId ? [event.payload.delta] : [],
+        )
+        .join("");
+    expect([text("m1"), text("m2")]).toEqual(["Hello world", "Hello there."]);
+  });
+
+  it("fails loudly when Synara holds more of a message than the server text has", () => {
+    const ingest = makeIngest({ emittedText: new Map([["m1", 20]]) });
+    const step = ingest.applyLive(
+      Schema.decodeUnknownSync(AetherLiveConversationSnapshot)(
+        liveBody({ open: [message("m1", "Hello world")] }),
+      ),
+      AT,
+    );
+    expect(Result.isFailure(step) && step.failure).toMatchObject({
+      _tag: "AetherTranscriptDivergedError",
+      messageId: "m1",
+      source: "resume",
+      streamedLength: 20,
+      receivedLength: 11,
     });
   });
 
@@ -675,16 +734,19 @@ describe("AetherConversationIngest: settlement", () => {
     expect(tags(caughtUp)).toEqual(["item.completed", "TurnSettled"]);
   });
 
-  it("signals only the runs after the resume watermark", () => {
+  it("signals only the runs after the resume watermark, by page order, not revision", () => {
+    // As on real tasks: turns are listed oldest first, and revisions are not monotonic across them.
+    const first = turn({ state: "settled", revision_sequence: 7 });
     const second = turn({
       id: OTHER_TURN_ID,
       root_message: userMessageBody({ id: "root-2" }),
       state: "settled",
+      revision_sequence: 2,
     });
-    const history = turnsBody(idleTask(), [turn({ state: "settled" }), second]);
-    const activity = { [TURN_ID]: activityBody([]), [OTHER_TURN_ID]: activityBody([]) };
-    const settledRuns = (resumeAfter?: AetherRunKey) =>
-      settles(refresh(makeIngest(resumeAfter), history, activity)).map((settle) =>
+    const history = turnsBody(idleTask(), [first, second]);
+    const activity = { [TURN_ID]: activityBody([], 7), [OTHER_TURN_ID]: activityBody([], 2) };
+    const settledRuns = (after: AetherRunKey | null = null) =>
+      settles(refresh(makeIngest({ after }), history, activity)).map((settle) =>
         settle._tag === "TurnSettled" ? settle.runMessageId : undefined,
       );
 
@@ -696,13 +758,13 @@ describe("AetherConversationIngest: settlement", () => {
     expect(settledRuns({ turnId: gone, runMessageId: "root-9" })).toEqual([]);
 
     // A new run in the watermark's turn (an approved plan) still settles.
-    const ingest = makeIngest({ turnId: OTHER_TURN_ID, runMessageId: "root-2" });
+    const ingest = makeIngest({ after: { turnId: OTHER_TURN_ID, runMessageId: "root-2" } });
     refresh(ingest, history, activity);
     expect(ingest.shouldKeepPolling()).toBe(false);
     const approved = refresh(
       ingest,
-      turnsBody(idleTask(), [turn({ state: "settled" }), { ...second, revision_sequence: 2 }]),
-      { [OTHER_TURN_ID]: activityBody([userMessageBody({ id: "approval-2" })], 2) },
+      turnsBody(idleTask(), [first, { ...second, revision_sequence: 3 }]),
+      { [OTHER_TURN_ID]: activityBody([userMessageBody({ id: "approval-2" })], 3) },
     );
     expect(settles(approved)).toEqual([
       { _tag: "TurnSettled", turnId: OTHER_TURN_ID, runMessageId: "approval-2", state: "settled" },

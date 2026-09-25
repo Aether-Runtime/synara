@@ -10,7 +10,8 @@
 // yields ids the durable journal already holds instead of new rows. Text is the exception: it
 // streams as deltas of the full accumulated content the live endpoint returns, and a delta's id
 // names the offset it ends at. A message first seen closed streams nothing; its completion
-// carries the whole text, which Synara uses only when it streamed none.
+// carries the whole text, which Synara uses only when it streamed none. After a restart a message
+// continues from the text Synara already holds (`AetherIngestResume.emittedText`).
 //
 // Settlement is not emitted as `turn.completed` here. The adapter runs the mirror sync first,
 // so this module only signals `TurnSettled`, derived from durable turn state.
@@ -64,6 +65,25 @@ export interface AetherRunKey {
   readonly runMessageId: string;
 }
 
+/**
+ * Where a new ingest picks up, from what Synara already persisted; empty for a new task.
+ *
+ * `after` is the last run the adapter signalled. That run, and every turn listed before its turn
+ * on the first turns page, count as signalled, so history does not settle again. If its turn is
+ * not on that page (the conversation was truncated past it), every turn there counts. Verified
+ * on real 8- and 32-turn tasks: the turns page lists turns oldest first (root messages in
+ * ascending time), and `revision_sequence` is not monotonic across turns, so turns are only ever
+ * ordered by their place on the page, never by revision.
+ *
+ * `emittedText` is how much of each message's text Synara already holds (UTF-16 length). The
+ * message continues from there: nothing repeats, and a message that closed in the meantime emits
+ * only its missing suffix. A length the server text cannot hold fails loudly.
+ */
+export interface AetherIngestResume {
+  readonly after: AetherRunKey | null;
+  readonly emittedText: ReadonlyMap<string, number>;
+}
+
 export type AetherPendingInputKind = "questions" | "plan";
 
 /** How a turn run ended, read from durable turn state. */
@@ -111,20 +131,25 @@ export type AetherIngestOutput =
   /** `resetSequence` moved: the conversation was truncated and is being re-read. */
   | { readonly _tag: "ConversationReset"; readonly resetSequence: number };
 
-/** Accumulated text stopped being a prefix extension of what was already streamed. */
+/**
+ * Accumulated text stopped being a prefix extension of what was already streamed, or the text
+ * Synara holds from before a restart (`source: "resume"`) does not fit the server's text.
+ */
 export class AetherTranscriptDivergedError extends Schema.TaggedErrorClass<AetherTranscriptDivergedError>()(
   "AetherTranscriptDivergedError",
   {
     taskId: Schema.String,
     turnId: Schema.String,
     messageId: Schema.String,
-    source: Schema.Literals(["live", "activity"]),
+    source: Schema.Literals(["live", "activity", "resume"]),
     streamedLength: Schema.Number,
     receivedLength: Schema.Number,
   },
 ) {
   override get message(): string {
-    return `Aether message ${this.messageId} (turn ${this.turnId}) no longer extends the ${this.streamedLength} characters already streamed (${this.source} sent ${this.receivedLength}).`;
+    return this.source === "resume"
+      ? `Synara holds ${this.streamedLength} characters of Aether message ${this.messageId} (turn ${this.turnId}), which does not fit its ${this.receivedLength} characters on the server.`
+      : `Aether message ${this.messageId} (turn ${this.turnId}) no longer extends the ${this.streamedLength} characters already streamed (${this.source} sent ${this.receivedLength}).`;
   }
 }
 
@@ -368,9 +393,9 @@ interface IngestState {
   executing: boolean;
   task: AetherTask | undefined;
   open: AetherLiveConversationSnapshot["open"];
-  /** Turns in page order, oldest first like activity rows. */
+  /** Turns in page order, oldest first (see `AetherIngestResume`); never sorted by revision. */
   turnOrder: ReadonlyArray<AetherTurnId>;
-  /** Turns the resume watermark covers, fixed at the first turns page. */
+  /** Turns `resume.after` covers, fixed at the first turns page. */
   resumed: ReadonlySet<AetherTurnId> | undefined;
   readonly turns: Map<AetherTurnId, TurnRecord>;
   readonly messages: Map<string, MessageRecord>;
@@ -394,7 +419,7 @@ const runKey = (turn: TurnRecord) => `${turn.id}:${turn.lastUserMessageId}`;
  */
 export class AetherConversationIngest {
   private readonly context: AetherIngestContext;
-  private readonly resumeAfter: AetherRunKey | undefined;
+  private readonly resume: AetherIngestResume;
   private state: IngestState = {
     lastLiveHead: undefined,
     turnsRefreshPending: true,
@@ -412,21 +437,14 @@ export class AetherConversationIngest {
     warnedOnce: new Set(),
   };
 
-  /**
-   * `resumeAfter` is the last run the adapter signalled before a restart: that run, and every
-   * turn listed before its turn on the first turns page, count as signalled, so history does not
-   * settle again. If its turn is not on that page (the conversation was truncated past it), every
-   * turn there counts. There is no per-message seed: a message streaming across a restart repeats
-   * or stays cut short unless the adapter repairs it (see the plan's P4 acceptance).
-   */
-  constructor(context: AetherIngestContext, resumeAfter?: AetherRunKey) {
+  constructor(context: AetherIngestContext, resume: AetherIngestResume) {
     this.context = context;
-    this.resumeAfter = resumeAfter;
+    this.resume = resume;
   }
 
   /** An independent copy to apply a tick to. */
   fork(): AetherConversationIngest {
-    const fork = new AetherConversationIngest(this.context, this.resumeAfter);
+    const fork = new AetherConversationIngest(this.context, this.resume);
     const state = this.state;
     fork.state = {
       ...state,
@@ -513,9 +531,9 @@ export class AetherConversationIngest {
     state.task = page.task;
     state.turnsRefreshPending = false;
     if (state.resumed === undefined) {
-      const mark = this.resumeAfter;
-      const markAt = mark === undefined ? -1 : page.turns.findIndex((t) => t.id === mark.turnId);
-      const covered = mark === undefined ? 0 : markAt === -1 ? page.turns.length : markAt + 1;
+      const mark = this.resume.after;
+      const markAt = mark === null ? -1 : page.turns.findIndex((t) => t.id === mark.turnId);
+      const covered = mark === null ? 0 : markAt === -1 ? page.turns.length : markAt + 1;
       state.resumed = new Set(page.turns.slice(0, covered).map((turn) => turn.id));
     }
     for (const turn of page.turns) {
@@ -687,8 +705,8 @@ export class AetherConversationIngest {
 
   private isSignalled(turn: TurnRecord): boolean {
     if (this.state.settledRuns.has(runKey(turn))) return true;
-    const mark = this.resumeAfter;
-    if (mark === undefined || this.state.resumed?.has(turn.id) !== true) return false;
+    const mark = this.resume.after;
+    if (mark === null || this.state.resumed?.has(turn.id) !== true) return false;
     return turn.id !== mark.turnId || turn.lastUserMessageId === mark.runMessageId;
   }
 
@@ -1000,7 +1018,21 @@ export class AetherConversationIngest {
   ): Result.Result<AetherIngestOutput[], AetherTranscriptDivergedError> {
     let record = this.state.messages.get(message.id);
     if (record === undefined) {
-      record = { streamed: "", final: undefined };
+      // After a restart, continue from the text Synara already holds.
+      const emitted = this.resume.emittedText.get(message.id) ?? 0;
+      if (!Number.isSafeInteger(emitted) || emitted < 0 || emitted > message.content.length) {
+        return Result.fail(
+          new AetherTranscriptDivergedError({
+            taskId: this.context.taskId,
+            turnId,
+            messageId: message.id,
+            source: "resume",
+            streamedLength: emitted,
+            receivedLength: message.content.length,
+          }),
+        );
+      }
+      record = { streamed: message.content.slice(0, emitted), final: undefined };
       this.state.messages.set(message.id, record);
     }
     const kept = record.final ?? record.streamed;
@@ -1021,7 +1053,8 @@ export class AetherConversationIngest {
     const outputs: AetherIngestOutput[] = [];
     const refs = { itemId: message.id } as const;
     const suffix = message.content.slice(record.streamed.length);
-    // A message first seen closed streams nothing: its completion carries the whole text.
+    // A message first seen closed streams nothing (its completion carries the whole text), unless
+    // Synara holds part of it from before a restart: then only the missing suffix streams.
     if (suffix !== "" && (!closed || record.streamed !== "")) {
       outputs.push(
         this.event(

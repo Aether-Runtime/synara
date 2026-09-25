@@ -66,6 +66,7 @@ async function replayThroughPoller(seconds = 120) {
         threadId: THREAD_ID,
         turnIdFor: (turnId) => TurnId.makeUnsafe(`synara-${turnId}`),
       },
+      resume: { after: null, emittedText: new Map() },
       emit: (output) => Effect.sync(() => void outputs.push(output)),
     });
     yield* poller.wake;
