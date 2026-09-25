@@ -128,6 +128,28 @@ async function makeReadModel(input: {
   };
 }
 
+/** The thread after its first turn started: bound to a session of `providerName`. */
+function withSession(readModel: OrchestrationReadModel, providerName: string) {
+  const [thread] = readModel.threads;
+  return {
+    ...readModel,
+    threads: [
+      {
+        ...thread!,
+        session: {
+          threadId: THREAD_ID,
+          status: "ready" as const,
+          providerName,
+          runtimeMode: "full-access" as const,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      },
+    ],
+  };
+}
+
 async function decide(command: OrchestrationCommand, readModel: OrchestrationReadModel) {
   const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
   return Array.isArray(decided) ? decided : [decided];
@@ -317,6 +339,46 @@ describe("decider provider capability gating", () => {
       );
     });
 
+    it("refuses moving a started thread off its worktree", async () => {
+      const started = withSession(await makeReadModel({ modelSelection: AETHER }), "aether");
+      for (const move of [
+        { worktreePath: null },
+        { envMode: "worktree" as const, worktreePath: null },
+        { envMode: "worktree" as const, worktreePath: "/tmp/project/.worktrees/other" },
+      ]) {
+        expect(
+          await refusal(
+            {
+              type: "thread.meta.update",
+              commandId: commandId("move-worktree"),
+              threadId: THREAD_ID,
+              ...move,
+            },
+            started,
+          ),
+        ).toBe(
+          "Orchestration command invariant failed (thread.meta.update): Aether owns this thread's worktree, so the thread cannot move to another checkout once a turn has started.",
+        );
+      }
+    });
+
+    it("lets a thread reset its worktree before a turn has started, but not to Local", async () => {
+      // A failed first send removes the worktree it made and resets the thread.
+      const readModel = await makeReadModel({ modelSelection: AETHER });
+      const reset = {
+        type: "thread.meta.update" as const,
+        commandId: commandId("reset-worktree"),
+        threadId: THREAD_ID,
+        envMode: "worktree" as const,
+        branch: null,
+        worktreePath: null,
+      };
+      expect((await decide(reset, readModel))[0]?.type).toBe("thread.meta-updated");
+      expect(await refusal({ ...reset, envMode: "local" }, readModel)).toContain(
+        "Aether threads run only in a worktree that Aether owns",
+      );
+    });
+
     it("refuses Computer Use on every dispatch path", async () => {
       const readModel = await makeReadModel({ modelSelection: AETHER });
       expect(await refusal(turnStart("hello", { enableComputerControl: true }), readModel)).toBe(
@@ -418,25 +480,10 @@ describe("decider provider capability gating", () => {
   });
 
   it("refuses a gated command on a thread bound to an unknown provider", async () => {
-    const readModel = await makeReadModel({ modelSelection: CODEX });
-    const [thread] = readModel.threads;
-    const unknownSession = {
-      ...readModel,
-      threads: [
-        {
-          ...thread!,
-          session: {
-            threadId: THREAD_ID,
-            status: "ready" as const,
-            providerName: "retired-provider",
-            runtimeMode: "full-access" as const,
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: NOW,
-          },
-        },
-      ],
-    };
+    const unknownSession = withSession(
+      await makeReadModel({ modelSelection: CODEX }),
+      "retired-provider",
+    );
     expect(await refusal(checkpointRevert("thread"), unknownSession)).toContain(
       "bound to unknown provider 'retired-provider'",
     );
@@ -446,6 +493,20 @@ describe("decider provider capability gating", () => {
     ["Codex", CODEX],
     ["Claude", CLAUDE],
   ] as const)("a %s thread", (_name, modelSelection) => {
+    it("moves between checkouts after a turn has started", async () => {
+      const started = withSession(await makeReadModel({ modelSelection }), modelSelection.provider);
+      const events = await decide(
+        {
+          type: "thread.meta.update",
+          commandId: commandId("move-worktree"),
+          threadId: THREAD_ID,
+          worktreePath: null,
+        },
+        started,
+      );
+      expect(events[0]?.type).toBe("thread.meta-updated");
+    });
+
     it("accepts every gated command", async () => {
       const readModel = await makeReadModel({ modelSelection, worktreePath: null });
       const accepted: ReadonlyArray<[OrchestrationCommand, string]> = [

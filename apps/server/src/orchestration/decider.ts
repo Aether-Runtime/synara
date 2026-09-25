@@ -1591,11 +1591,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         );
       }
       // A provider that owns its worktree only ever runs in it, whether or not a live session
-      // claims that worktree right now.
+      // claims that worktree right now. Once a turn has started it stays in that worktree;
+      // before then the worktree can be reset (a failed first send removes the one it made).
       if (command.envMode === "local") {
         yield* validateProviderFeature(
           command,
           "local-workspace",
+          yield* threadProviders(command, thread, command.modelSelection),
+        );
+      }
+      if (
+        command.worktreePath !== undefined &&
+        command.worktreePath !== thread.worktreePath &&
+        (thread.session !== null || thread.latestTurn !== null)
+      ) {
+        yield* validateProviderFeature(
+          command,
+          "worktree-change",
           yield* threadProviders(command, thread, command.modelSelection),
         );
       }
