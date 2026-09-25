@@ -1065,12 +1065,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                           path: entry.plannedWorktreePath,
                           ...(entry.newBranch ? { newBranch: entry.newBranch } : {}),
                           ...(entry.copyChangesFrom
-                            ? {
-                                copyChangesFrom: {
-                                  cwd: entry.copyChangesFrom,
-                                  provider: entry.target.provider,
-                                },
-                              }
+                            ? { copyChangesFrom: entry.copyChangesFrom }
                             : {}),
                         });
                         const trackedWorktree = {

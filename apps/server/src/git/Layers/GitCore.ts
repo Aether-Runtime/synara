@@ -38,10 +38,6 @@ import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@synara/shared/
 import { isWorkspaceRootWithin } from "@synara/shared/threadWorkspace";
 import { isWorkspaceRelativePathSafe } from "@synara/shared/path";
 import { decodeJsonResult } from "@synara/shared/schemaJson";
-import {
-  providerFeatureUnavailableMessage,
-  providerSupportsFeature,
-} from "@synara/shared/providerMetadata";
 
 import { GitCheckoutDirtyWorktreeError, GitCommandError, WorktreeOwnedError } from "../Errors.ts";
 import { parseGitBlamePorcelain } from "../gitBlameParsing.ts";
@@ -3586,17 +3582,9 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         );
         const resolvedRef = refResult.stdout.trim();
         if (input.copyChangesFrom) {
-          if (!providerSupportsFeature(input.copyChangesFrom.provider, "copy-changes")) {
-            return yield* createGitCommandError(
-              "GitCore.createDetachedWorktree",
-              input.cwd,
-              ["worktree", "add", "--detach", "<path>", input.ref],
-              providerFeatureUnavailableMessage(input.copyChangesFrom.provider, "copy-changes"),
-            );
-          }
           const sourceHead = yield* executeGit(
             "GitCore.createDetachedWorktree.resolveCopySource",
-            input.copyChangesFrom.cwd,
+            input.copyChangesFrom,
             ["rev-parse", "--verify", "HEAD^{commit}"],
           ).pipe(Effect.map((result) => result.stdout.trim()));
           if (sourceHead !== resolvedRef) {
@@ -3659,7 +3647,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
 
         if (input.copyChangesFrom) {
           yield* onPhase("copy-changes");
-          yield* copyCheckoutChanges(input.copyChangesFrom.cwd, worktreePath).pipe(
+          yield* copyCheckoutChanges(input.copyChangesFrom, worktreePath).pipe(
             Effect.onError(() =>
               executeGit(
                 "GitCore.createDetachedWorktree.rollback",

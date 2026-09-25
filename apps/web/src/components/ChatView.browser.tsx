@@ -8318,12 +8318,9 @@ describe("ChatView transcript geometry (full app)", () => {
               request._tag === WS_METHODS.gitCreateDetachedWorktree &&
               request.cwd === "/repo/project" &&
               request.ref === "main" &&
-              request.copyChangesFrom !== undefined,
+              request.copyChangesFrom === "/repo/project",
           );
-          expect(createWorktreeRequest?.copyChangesFrom).toEqual({
-            cwd: "/repo/project",
-            provider: "codex",
-          });
+          expect(createWorktreeRequest).toBeTruthy();
           const temporaryBranch = createWorktreeRequest?.newBranch;
           expect(typeof temporaryBranch).toBe("string");
           expect(temporaryBranch).toMatch(/^synara\/[0-9a-f]{8}$/);

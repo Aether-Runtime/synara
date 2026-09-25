@@ -1,6 +1,5 @@
 import { DEFAULT_GIT_RECENT_COMMIT_LIMIT } from "@synara/contracts";
 import type {
-  GitCreateDetachedWorktreeInput,
   GitHandoffThreadInput,
   GitReadWorkingTreeDiffInput,
   GitStackedAction,
@@ -890,7 +889,7 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
       cwd: string;
       ref: string;
       path?: string | null;
-      copyChangesFrom?: GitCreateDetachedWorktreeInput["copyChangesFrom"];
+      copyChangesFrom?: string;
       newBranch?: string;
       progressId?: string;
     }) => {

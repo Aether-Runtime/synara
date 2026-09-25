@@ -351,14 +351,7 @@ export function useChatTurnExecution({
                 ref: baseBranchForWorktree,
                 newBranch: buildTemporaryWorktreeBranchName(),
                 progressId: worktreeProgressId,
-                ...(worktreeCopiesLocalChanges
-                  ? {
-                      copyChangesFrom: {
-                        cwd: targetProjectCwdForSend,
-                        provider: selectedModelSelectionForSend.provider,
-                      },
-                    }
-                  : {}),
+                ...(worktreeCopiesLocalChanges ? { copyChangesFrom: targetProjectCwdForSend } : {}),
               }),
             resolution: worktreeSetupResolution,
             onCreationStep: (stepId) =>
