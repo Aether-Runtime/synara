@@ -24,6 +24,8 @@ interface SelectionNewChatComposerProps {
   action: PendingTranscriptSelectionAction;
   defaultEnvMode: ThreadEnvironmentMode;
   canUseWorktree: boolean;
+  /** Shown as a new worktree with no Local option; the chosen mode is still what is sent. */
+  providerOwnsWorktree?: boolean;
   onSend: (prompt: string, envMode: ThreadEnvironmentMode) => Promise<void>;
   onOpenInChat: (prompt: string, envMode: ThreadEnvironmentMode) => Promise<void>;
   onClose: () => void;
@@ -33,6 +35,7 @@ export function SelectionNewChatComposer({
   action,
   defaultEnvMode,
   canUseWorktree,
+  providerOwnsWorktree = false,
   onSend,
   onOpenInChat,
   onClose,
@@ -201,9 +204,14 @@ export function SelectionNewChatComposer({
               ) : null}
               <div className={cn(COMPOSER_FOOTER_ROW_CLASS_NAME, "gap-2")}>
                 <ComposerEnvironmentPicker
-                  environmentPresentation={resolveThreadEnvironmentPresentation({ envMode })}
+                  environmentPresentation={resolveThreadEnvironmentPresentation({
+                    envMode: providerOwnsWorktree ? "worktree" : envMode,
+                  })}
                   onEnvModeChange={setEnvMode}
-                  canSwitchToWorktree={canUseWorktree && envMode === "local"}
+                  canSwitchToWorktree={
+                    !providerOwnsWorktree && canUseWorktree && envMode === "local"
+                  }
+                  canSwitchToLocal={!providerOwnsWorktree}
                   disabled={busy}
                   onOpenChange={(open) => {
                     environmentMenuOpenRef.current = open;

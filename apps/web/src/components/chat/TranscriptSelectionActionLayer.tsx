@@ -17,6 +17,7 @@ interface TranscriptSelectionActionLayerProps {
   action: PendingTranscriptSelectionAction | null;
   defaultEnvMode: ThreadEnvironmentMode;
   canUseWorktree: boolean;
+  providerOwnsWorktree?: boolean;
   canAddToSide: boolean;
   onDismiss: () => void;
   onAddToChat: () => void;
@@ -42,6 +43,7 @@ export function TranscriptSelectionActionLayer(props: TranscriptSelectionActionL
         action={composerAction}
         defaultEnvMode={props.defaultEnvMode}
         canUseWorktree={props.canUseWorktree}
+        providerOwnsWorktree={props.providerOwnsWorktree ?? false}
         onSend={(prompt, envMode) =>
           props.onNewChat(composerAction.selection, prompt, envMode, "send")
         }

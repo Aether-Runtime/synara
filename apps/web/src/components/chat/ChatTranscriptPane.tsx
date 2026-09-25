@@ -113,6 +113,7 @@ interface ChatTranscriptPaneProps {
     typeof MessagesTimeline
   >["worktreeSetupPendingAction"];
   onResolveWorktreeSetup?: ComponentProps<typeof MessagesTimeline>["onResolveWorktreeSetup"];
+  worktreeSetupAllowsWorkLocally?: boolean;
   findHighlightStore?: ThreadFindHighlightStore | null;
 }
 
@@ -189,6 +190,7 @@ export function ChatTranscriptPane({
   worktreeSetup,
   worktreeSetupPendingAction,
   onResolveWorktreeSetup,
+  worktreeSetupAllowsWorkLocally,
   findHighlightStore: findHighlightStoreProp,
 }: ChatTranscriptPaneProps) {
   // The composer floats over the transcript's bottom edge, so the scroll-to-bottom
@@ -253,6 +255,9 @@ export function ChatTranscriptPane({
             worktreeSetup={worktreeSetup}
             worktreeSetupPendingAction={worktreeSetupPendingAction ?? null}
             {...(onResolveWorktreeSetup ? { onResolveWorktreeSetup } : {})}
+            {...(worktreeSetupAllowsWorkLocally === false
+              ? { worktreeSetupAllowsWorkLocally }
+              : {})}
             activeTurnId={activeTurnId ?? null}
             activeTurnInProgress={activeTurnInProgress}
             activeTurnStartedAt={activeTurnStartedAt}

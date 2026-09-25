@@ -5,6 +5,7 @@ import type {
   GitStackedAction,
   ModelSelection,
   NativeApi,
+  ProviderKind,
   ProviderStartOptions,
 } from "@synara/contracts";
 import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react-query";
@@ -883,6 +884,7 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
       ref,
       path,
       copyChangesFrom,
+      provider,
       newBranch,
       progressId,
     }: {
@@ -890,6 +892,7 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
       ref: string;
       path?: string | null;
       copyChangesFrom?: string;
+      provider?: ProviderKind;
       newBranch?: string;
       progressId?: string;
     }) => {
@@ -900,6 +903,7 @@ export function gitCreateDetachedWorktreeMutationOptions(input: { queryClient: Q
         ref,
         path: path ?? null,
         ...(copyChangesFrom ? { copyChangesFrom } : {}),
+        ...(provider ? { provider } : {}),
         ...(newBranch ? { newBranch } : {}),
         ...(progressId ? { progressId } : {}),
       });

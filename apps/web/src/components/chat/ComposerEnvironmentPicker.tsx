@@ -52,6 +52,8 @@ interface ComposerEnvironmentPickerProps {
   environmentPresentation: ThreadEnvironmentPresentation;
   onEnvModeChange: (mode: ThreadEnvironmentMode) => void;
   canSwitchToWorktree: boolean;
+  /** False hides the Local row, for a provider that only runs in its own worktree. */
+  canSwitchToLocal?: boolean;
   canHandoffToLocal?: boolean;
   canHandoffToWorktree?: boolean;
   onHandoffToLocal?: (() => void) | undefined;
@@ -67,6 +69,7 @@ export function ComposerEnvironmentPicker({
   environmentPresentation,
   onEnvModeChange,
   canSwitchToWorktree,
+  canSwitchToLocal = true,
   canHandoffToLocal = false,
   canHandoffToWorktree = false,
   onHandoffToLocal,
@@ -125,13 +128,13 @@ export function ComposerEnvironmentPicker({
               label={environmentPresentation.localOptionLabel}
               selected
             />
-          ) : (
+          ) : canSwitchToLocal ? (
             <WorkInMenuItem
               icon={<CentralIcon name="macbook-air" className={ENV_MENU_ICON_CLASS_NAME} />}
               label={environmentPresentation.localOptionLabel}
               onSelect={() => onEnvModeChange("local")}
             />
-          )}
+          ) : null}
           {canSwitchToWorktree ? (
             <WorkInMenuItem
               icon={<WorktreeIcon className={ENV_MENU_ICON_CLASS_NAME} />}

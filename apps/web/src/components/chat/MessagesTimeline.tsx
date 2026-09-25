@@ -315,10 +315,13 @@ function WorktreeSetupCard({
   steps,
   pendingAction,
   onResolve,
+  allowsWorkLocally = true,
 }: {
   steps: ReadonlyArray<WorktreeSetupStep>;
   pendingAction?: WorktreeSetupResolutionAction | null | undefined;
   onResolve?: ((action: WorktreeSetupResolutionAction) => void) | undefined;
+  /** False for a provider that only runs in its own worktree: no local fallback. */
+  allowsWorkLocally?: boolean | undefined;
 }) {
   // The send pipeline only honors a resolution at checkpoints before the turn
   // dispatch, so hide the actions once "Starting session" is underway (or the
@@ -376,14 +379,16 @@ function WorktreeSetupCard({
       </ol>
       {canResolve ? (
         <div className="mt-2.5 flex items-center gap-1.5">
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={pendingAction != null}
-            onClick={() => onResolve("work-locally")}
-          >
-            {pendingAction === "work-locally" ? "Switching to local..." : "Work locally"}
-          </Button>
+          {allowsWorkLocally ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={pendingAction != null}
+              onClick={() => onResolve("work-locally")}
+            >
+              {pendingAction === "work-locally" ? "Switching to local..." : "Work locally"}
+            </Button>
+          ) : null}
           <Button
             size="xs"
             variant="ghost"
@@ -410,6 +415,8 @@ interface MessagesTimelineProps {
   worktreeSetupPendingAction?: WorktreeSetupResolutionAction | null;
   /** Resolve the in-flight worktree preparation (cancel the send or fall back to the local checkout). */
   onResolveWorktreeSetup?: (action: WorktreeSetupResolutionAction) => void;
+  /** False hides the local-checkout fallback, for a provider that owns its worktree. */
+  worktreeSetupAllowsWorkLocally?: boolean;
   followLiveOutput?: boolean;
   emptyStateContent?: ReactNode;
   listRef?: RefObject<LegendListRef | null>;
@@ -525,6 +532,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   worktreeSetup: worktreeSetupProp,
   worktreeSetupPendingAction: worktreeSetupPendingActionProp,
   onResolveWorktreeSetup,
+  worktreeSetupAllowsWorkLocally,
   followLiveOutput: followLiveOutputProp,
   listRef,
   controllerRef,
@@ -2580,6 +2588,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               steps={row.steps}
               pendingAction={worktreeSetupPendingAction}
               onResolve={onResolveWorktreeSetup}
+              allowsWorkLocally={worktreeSetupAllowsWorkLocally}
             />
           </div>
         </DisclosureRegion>

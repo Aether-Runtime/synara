@@ -9,6 +9,7 @@ import {
   buildPromptThreadTitleFallback,
 } from "@synara/shared/chatThreads";
 import { getDefaultModel } from "@synara/shared/model";
+import { providerSupportsFeature } from "@synara/shared/providerMetadata";
 import type { QueryClient } from "@tanstack/react-query";
 import { gitStatusQueryOptions } from "~/lib/gitReactQuery";
 import { newCommandId, newProjectId } from "~/lib/utils";
@@ -32,6 +33,7 @@ import {
   waitForRecoverableProjectForDuplicateCreate,
 } from "../../lib/projectCreateRecovery";
 import { formatTerminalContextLabel, type TerminalContextDraft } from "../../lib/terminalContext";
+import { resolveProviderEnvMode } from "../../lib/threadEnvironment";
 import { buildModelSelection } from "../../providerModelOptions";
 import { readActiveSpaceId } from "../../spacesUiStore";
 import { useStore } from "../../store";
@@ -180,7 +182,11 @@ export async function prepareChatSendWorkspace({
       }
     : firstSendTarget.target;
   let nextRuntimeModeForSend = runtimeModeForSend;
-  let nextThreadEnvMode = envModeForSend;
+  // Send-time overlay only: the draft keeps its persisted mode (see resolveProviderEnvMode).
+  let nextThreadEnvMode = resolveProviderEnvMode(
+    envModeForSend,
+    selectedModelSelectionForSend.provider,
+  );
   let nextThreadBranch = isStudioContainer ? null : activeThread.branch;
   let nextThreadWorktreePath = isStudioContainer ? null : activeThread.worktreePath;
   let nextThreadWorkingDirectory = isStudioContainer
@@ -340,8 +346,12 @@ export async function prepareChatSendWorkspace({
   const worktreeSetupScriptName = setupScriptForWorktree?.name ?? null;
   // Branching off the checkout's current branch also carries its uncommitted
   // changes into the worktree, which the setup card surfaces as its own step.
+  // A provider that owns its worktree clones from origin and resets it every turn, so copied
+  // changes would be erased; the server refuses them too.
   const worktreeCopiesLocalChanges =
-    Boolean(baseBranchForWorktree) && baseBranchForWorktree === activeRootBranch;
+    Boolean(baseBranchForWorktree) &&
+    baseBranchForWorktree === activeRootBranch &&
+    providerSupportsFeature(selectedModelSelectionForSend.provider, "copy-changes");
   return {
     threadIdForSend,
     title,

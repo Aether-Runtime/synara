@@ -129,6 +129,7 @@ interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   providerStatusesSnapshot: ServerConfig["providers"] | null;
+  serverSettings?: ReturnType<typeof createBrowserTestServerSettings>;
   welcome: WsWelcomePayload;
   gitBranchByCwd: Record<string, string>;
 }
@@ -1211,7 +1212,7 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return createAutomationDefinitionFromCreateRequest(body);
   }
   if (tag === WS_METHODS.serverGetSettings) {
-    return createBrowserTestServerSettings(NOW_ISO);
+    return fixture.serverSettings ?? createBrowserTestServerSettings(NOW_ISO);
   }
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
@@ -8324,6 +8325,183 @@ describe("ChatView transcript geometry (full app)", () => {
             associatedWorktreePath: "/repo/.codex/worktrees/generated/synara",
             associatedWorktreeBranch: temporaryBranch,
             associatedWorktreeRef: "0123456789abcdef0123456789abcdef01234567",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+      restoreNativeApi();
+    }
+  });
+
+  it("shows an Aether draft in a new worktree without persisting the overlay", async () => {
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-aether-overlay-test" as MessageId,
+        targetText: "aether overlay test",
+      }),
+      configureFixture: (nextFixture) => {
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForEnvironmentModeButton("Local");
+      const draftEnvMode = () =>
+        useComposerDraftStore.getState().getDraftThread(newThreadId)?.envMode;
+      const projectEnvMode = () =>
+        useProjectEnvironmentStore.getState().envModeByProjectId[PROJECT_ID];
+      const projectEnvModeBefore = projectEnvMode();
+      expect(draftEnvMode()).toBe("local");
+
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+      const picker = await waitForEnvironmentModeButton("Worktree");
+      // The branch selector picks a base branch under the overlay; the draft and the
+      // project preference keep their persisted Local mode.
+      await vi.waitFor(
+        () => {
+          expect(useComposerDraftStore.getState().getDraftThread(newThreadId)).toMatchObject({
+            envMode: "local",
+            branch: "main",
+            worktreePath: null,
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(projectEnvMode()).toBe(projectEnvModeBefore);
+
+      picker.click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Worktree", exact: true }))
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Local project", exact: true }))
+        .not.toBeInTheDocument();
+      await expect.element(page.getByText("Hand off to local")).not.toBeInTheDocument();
+      await expect.element(page.getByText("Hand off to new worktree")).not.toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+
+      // Switching the fresh draft to another provider returns to the persisted default.
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "codex", model: "gpt-5.4" });
+      await waitForEnvironmentModeButton("Local");
+      expect(draftEnvMode()).toBe("local");
+      expect(projectEnvMode()).toBe(projectEnvModeBefore);
+    } finally {
+      await mounted.cleanup();
+      restoreNativeApi();
+    }
+  });
+
+  it("sends an Aether draft into a new worktree without copying local changes", async () => {
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-aether-send-test" as MessageId,
+        targetText: "aether send test",
+      }),
+      configureFixture: (nextFixture) => {
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+        const settings = createBrowserTestServerSettings(NOW_ISO);
+        nextFixture.serverSettings = {
+          ...settings,
+          providers: {
+            ...settings.providers,
+            aether: { ...settings.providers.aether, enabled: true },
+          },
+        };
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForEnvironmentModeButton("Local");
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+      await waitForEnvironmentModeButton("Worktree");
+      useComposerDraftStore.getState().setPrompt(newThreadId, "Ship it in the cloud");
+      await vi.waitFor(
+        () => {
+          expect(useComposerDraftStore.getState().getDraftThread(newThreadId)).toMatchObject({
+            envMode: "local",
+            branch: "main",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      await sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const createWorktreeRequest = wsRequests.find(
+            (request) =>
+              request._tag === WS_METHODS.gitCreateDetachedWorktree &&
+              request.cwd === "/repo/project" &&
+              request.ref === "main",
+          );
+          expect(createWorktreeRequest).toMatchObject({ provider: "aether" });
+          expect(createWorktreeRequest).not.toHaveProperty("copyChangesFrom");
+          const createThreadRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              typeof request.command === "object" &&
+              request.command !== null &&
+              "type" in request.command &&
+              request.command.type === "thread.create",
+          );
+          expect(createThreadRequest?.command).toMatchObject({
+            envMode: "worktree",
+            worktreePath: "/repo/.codex/worktrees/generated/synara",
+            modelSelection: { provider: "aether" },
           });
         },
         { timeout: 8_000, interval: 16 },

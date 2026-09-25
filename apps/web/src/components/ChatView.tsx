@@ -1301,6 +1301,8 @@ export default function ChatView({
   const sidechatsAvailable = providerLackingFeature(threadGateProviders, "sidechat") === null;
   const conversationRollbackAvailable =
     providerLackingFeature(threadGateProviders, "conversation-rollback") === null;
+  const localWorkspaceAvailable =
+    providerLackingFeature(threadGateProviders, "local-workspace") === null;
   const {
     selectedComposerSkills,
     selectedComposerMentions,
@@ -4901,6 +4903,7 @@ export default function ChatView({
     onHandoffToLocal,
     handoffBusy,
     onComposerFocusRequest: scheduleComposerFocus,
+    providerOwnsWorktree: !localWorkspaceAvailable,
     ...(isStudioContainer ? { fixedLocalWorkspaceCwd: threadWorkspaceCwd } : {}),
     ...(canCheckoutPullRequestIntoThread
       ? { onCheckoutPullRequestRequest: openPullRequestDialog }
@@ -5965,6 +5968,7 @@ export default function ChatView({
                     worktreeSetup={activeWorktreeSetup}
                     worktreeSetupPendingAction={worktreeSetupPendingAction}
                     onResolveWorktreeSetup={onResolveWorktreeSetup}
+                    worktreeSetupAllowsWorkLocally={localWorkspaceAvailable}
                     activeTurnInProgress={activeTurnInProgress}
                     activeTurnStartedAt={activeWorkStartedAt}
                     listRef={legendListRef}
@@ -6208,6 +6212,7 @@ export default function ChatView({
           action={pendingTranscriptSelectionAction}
           defaultEnvMode={selectionChatEnvMode ?? settings.defaultThreadEnvMode}
           canUseWorktree={isGitRepo && !isContainerLandingProject}
+          providerOwnsWorktree={!localWorkspaceAvailable}
           canAddToSide={
             isServerThread && sidechatsAvailable && !activeThread.sidechatSourceThreadId
           }
