@@ -1324,6 +1324,46 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         }),
       );
 
+      it.effect("leaves nothing half-done when a commit races the fast-forward", () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          const pushed = yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          // The user commits from a terminal between Synara reading HEAD and moving the branch.
+          const gitCore = yield* GitCore;
+          let local: string | undefined;
+          const inWorktree = (args: ReadonlyArray<string>) =>
+            gitCore
+              .execute({ operation: "aetherMirrorSync.test", cwd: mirror.worktree, args })
+              .pipe(Effect.map((result) => result.stdout.trim()));
+          const racing: GitCoreShape = {
+            ...gitCore,
+            execute: (input) =>
+              input.args[0] === "update-ref" && input.args.includes(pushed) && local === undefined
+                ? inWorktree(["commit", "-q", "--allow-empty", "-m", "Mine"]).pipe(
+                    Effect.andThen(inWorktree(["rev-parse", "HEAD"])),
+                    Effect.tap((head) => Effect.sync(() => void (local = head))),
+                    Effect.andThen(gitCore.execute(input)),
+                  )
+                : gitCore.execute(input),
+          };
+
+          const raced = yield* mirror.syncBranch().pipe(Effect.provideService(GitCore, racing));
+          expect(raced).toMatchObject({ _tag: "held", reason: "moved" });
+          expect(yield* mirror.head).toBe(local);
+
+          // Nothing is left to finish: the next mirror and branch sync go on as for any local
+          // commit, with the warning.
+          mirror.serve([added("a.md", "a\n"), added("b.md", "b\n")]);
+          expect((yield* mirror.sync())._tag).toBe("synced");
+          const held = yield* mirror.syncBranch();
+          expect(held).toMatchObject({ _tag: "held", reason: "diverged" });
+          expect(held._tag === "held" && held.detail).toContain(local!.slice(0, 12));
+          expect(yield* mirror.head).toBe(local);
+        }),
+      );
+
       it.effect("records what origin had only once a crashed fast-forward moved the branch", () =>
         Effect.gen(function* () {
           const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });

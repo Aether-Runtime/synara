@@ -23,7 +23,8 @@
 // crash either tree is accepted. A fast-forward records `fastForward` before it moves the branch
 // (`update-ref` with the old value, so a concurrent commit is never lost) and resets the index to
 // the new HEAD; after a crash in between, the next sync finishes it when HEAD is at either end
-// and the index holds either end's tree.
+// and the index holds either end's tree. An `update-ref` refused because the branch moved takes
+// the intent back out of the record at once, leaving an ordinary local commit.
 //
 // The record also keeps origin's last tip that the local branch holds (`origin`), written with
 // the fast-forward that reached it and kept by every other write. When origin deletes the branch
@@ -94,7 +95,7 @@ export type AetherBranchSyncResult =
   /** The branch was left where it is, for the reason `detail` gives; the mirror goes on. */
   | {
       readonly _tag: "held";
-      readonly reason: "ahead" | "diverged" | "other-branch" | "branch-exists";
+      readonly reason: "ahead" | "diverged" | "moved" | "other-branch" | "branch-exists";
       readonly detail: string;
     };
 
@@ -796,7 +797,22 @@ export const syncAetherBranch = (
             ...keptOrigin(local.record),
           });
           // With the old value: a commit made meanwhile makes this fail rather than vanish.
-          yield* git(["update-ref", ref, remote, head]);
+          const moved = yield* execute(["update-ref", ref, remote, head]);
+          const now = moved.code === 0 ? remote : yield* ops.revParse(`${ref}^{commit}`);
+          if (now !== remote) {
+            // Nothing moved: the intent goes, so no later sync has a fast-forward to finish.
+            yield* ops.writeRecord({
+              taskId: input.taskId,
+              target: local.tree,
+              ...keptOrigin(local.record),
+            });
+            if (now === head) return yield* mirrorError("apply-failed", moved.stderr.trim());
+            return {
+              _tag: "held",
+              reason: "moved",
+              detail: `The local branch ${branch} moved to ${short(now)} while Synara was moving it to ${REMOTE}/${branch} (${short(remote)}): Synara leaves it there. ${reverted}`,
+            } as const;
+          }
           // The index follows HEAD; the working tree stays as the mirror wrote it.
           yield* git(["reset", "-q"]);
           yield* ops.writeRecord({
