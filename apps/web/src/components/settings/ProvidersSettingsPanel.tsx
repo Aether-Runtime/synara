@@ -1352,7 +1352,7 @@ export function ProvidersSettingsPanel({
       <div>
         <SettingsSection title="Provider tools">
           <SettingsRow
-            title="Installed CLIs"
+            title="CLIs and cloud providers"
             description="Review provider versions and update tools. Open a row only when you need binary overrides."
             status={
               !settings.enableProviderUpdateChecks
