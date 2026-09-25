@@ -1280,22 +1280,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Source thread '${command.sourceThreadId}' belongs to a different project.`,
         });
       }
-      if (command.sidechatSourceThreadId) {
-        yield* validateProviderFeature(
-          command,
-          "sidechat",
-          yield* threadProviders(command, sourceThread, command.modelSelection),
-        );
-      }
-      // A fork into the source's worktree shares it, which a provider that owns its worktree
-      // cannot allow: two threads would drive (and reset) one checkout.
-      if (command.worktreePath !== null && command.worktreePath === sourceThread.worktreePath) {
-        yield* validateProviderFeature(
-          command,
-          "shared-worktree",
-          yield* threadProviders(command, sourceThread, command.modelSelection),
-        );
-      }
+      yield* validateProviderFeature(
+        command,
+        command.sidechatSourceThreadId ? "sidechat" : "thread-fork",
+        yield* threadProviders(command, sourceThread, command.modelSelection),
+      );
 
       const createdEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({

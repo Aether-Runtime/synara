@@ -17,10 +17,15 @@ import { describe, expect } from "vitest";
 import { GitCoreLive } from "./GitCore.ts";
 import { WorktreeOwnedError } from "../Errors.ts";
 import { GitCore, type WorktreeOwner } from "../Services/GitCore.ts";
+import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { ServerConfig } from "../../config.ts";
 import { WorkspaceLayerLive } from "../../workspace/runtimeLayer.ts";
 import { WorkspaceFileSystem } from "../../workspace/Services/WorkspaceFileSystem.ts";
-import { toWsRpcError, writeWorkspaceFileOutsideOwnedWorktree } from "../../wsRpc.ts";
+import {
+  removeWorktreeReleasingDeletedOwner,
+  toWsRpcError,
+  writeWorkspaceFileOutsideOwnedWorktree,
+} from "../../wsRpc.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "synara-git-ownership-test-",
@@ -325,6 +330,127 @@ it.layer(TestLayer)("GitCore worktree ownership", (it) => {
         expect(yield* git(repo, ["branch", "--list", "feature/owned"])).toContain("feature/owned");
       }),
     );
+
+    describe("the git.removeWorktree RPC", () => {
+      /** A read model holding only the claim's owner, deleted or not. */
+      const ownerReadModel = (deletedAt: string | null) =>
+        Effect.succeed({ threads: [{ id: aetherOwner.threadId, deletedAt }] });
+      const stopFailure = new ProviderAdapterRequestError({
+        provider: "aether",
+        method: "stopTask",
+        detail: "Aether API unavailable",
+      });
+
+      it.effect(
+        "stops a deleted owner's session, which releases its claim, before removing its worktree",
+        () =>
+          Effect.gen(function* () {
+            const { repo, owned } = yield* makeRepository();
+            const gitCore = yield* GitCore;
+            const { release } = yield* claimInNewScope(owned, aetherOwner);
+            // The mirror leaves the worktree dirty.
+            yield* Effect.promise(() => fs.writeFile(path.join(owned, "mirrored.txt"), "cloud\n"));
+            const events: Array<string> = [];
+
+            yield* removeWorktreeReleasingDeletedOwner(
+              {
+                git: {
+                  withMutation: gitCore.withMutation,
+                  removeWorktree: (input) =>
+                    gitCore.removeWorktree(input).pipe(
+                      Effect.tapError((error) => Effect.sync(() => events.push(error._tag))),
+                      Effect.tap(() => Effect.sync(() => events.push("removed"))),
+                    ),
+                },
+                providerService: {
+                  stopSession: (input) =>
+                    Effect.sync(() => events.push(`stopSession ${input.threadId}`)).pipe(
+                      Effect.andThen(release),
+                    ),
+                },
+                readModel: ownerReadModel("2026-09-25T00:00:00.000Z"),
+              },
+              { cwd: repo, path: owned, force: true },
+            );
+
+            expect(events).toEqual([
+              "WorktreeOwnedError",
+              `stopSession ${aetherOwner.threadId}`,
+              "removed",
+            ]);
+            expect(existsSync(owned)).toBe(false);
+          }),
+      );
+
+      it.effect("removes the worktree when the owner's stop fails after releasing its claim", () =>
+        Effect.gen(function* () {
+          const { repo, owned } = yield* makeRepository();
+          const gitCore = yield* GitCore;
+          const { release } = yield* claimInNewScope(owned, aetherOwner);
+
+          // Aether's release closes the claim even when its POST /stop fails.
+          yield* removeWorktreeReleasingDeletedOwner(
+            {
+              git: gitCore,
+              providerService: {
+                stopSession: () => release.pipe(Effect.andThen(Effect.fail(stopFailure))),
+              },
+              readModel: ownerReadModel("2026-09-25T00:00:00.000Z"),
+            },
+            { cwd: repo, path: owned, force: true },
+          );
+
+          expect(existsSync(owned)).toBe(false);
+        }),
+      );
+
+      it.effect("reports the owner's failed stop when its claim is still held", () =>
+        Effect.gen(function* () {
+          const { repo, owned } = yield* makeRepository();
+          const gitCore = yield* GitCore;
+          yield* gitCore.claimWorktree(owned, aetherOwner);
+
+          const refused = yield* removeWorktreeReleasingDeletedOwner(
+            {
+              git: gitCore,
+              providerService: { stopSession: () => Effect.fail(stopFailure) },
+              readModel: ownerReadModel("2026-09-25T00:00:00.000Z"),
+            },
+            { cwd: repo, path: owned, force: true },
+          ).pipe(Effect.flip);
+
+          expect(refused).toBe(stopFailure);
+          expect(existsSync(owned)).toBe(true);
+        }),
+      );
+
+      it.effect("still refuses a worktree whose owner thread is not deleted", () =>
+        Effect.gen(function* () {
+          const { repo, owned } = yield* makeRepository();
+          const gitCore = yield* GitCore;
+          yield* gitCore.claimWorktree(owned, aetherOwner);
+          let stopped = false;
+
+          const refused = yield* removeWorktreeReleasingDeletedOwner(
+            {
+              git: gitCore,
+              providerService: {
+                stopSession: () =>
+                  Effect.sync(() => {
+                    stopped = true;
+                  }),
+              },
+              readModel: ownerReadModel(null),
+            },
+            { cwd: repo, path: owned, force: true },
+          ).pipe(Effect.flip);
+
+          expect(refused).toBeInstanceOf(WorktreeOwnedError);
+          expect(stopped).toBe(false);
+          expect(existsSync(owned)).toBe(true);
+        }),
+      );
+    });
 
     it.effect("refuses creating a worktree inside the owned worktree", () =>
       Effect.gen(function* () {

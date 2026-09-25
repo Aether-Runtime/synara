@@ -13,6 +13,7 @@ import {
   ProviderReadPluginInput,
   type ProviderSkillDescriptor,
 } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { Effect, Layer, Option, Schema, SchemaIssue } from "effect";
 
 import { ServerConfig } from "../../config.ts";
@@ -123,6 +124,11 @@ const make = Effect.gen(function* () {
       const capabilities = adapter.getComposerCapabilities
         ? yield* adapter.getComposerCapabilities()
         : disabledCapabilitiesForProvider(parsed.provider);
+      // The Synara skills catalog is read from this machine, which a cloud provider's agent
+      // never sees.
+      if (providerIsCloudService(parsed.provider)) {
+        return capabilities;
+      }
       // The unified Synara skills catalog backs skill discovery for every
       // provider, including ones without native skill support.
       return {
@@ -145,6 +151,9 @@ const make = Effect.gen(function* () {
           source: "disabled",
           cached: false,
         };
+      }
+      if (providerIsCloudService(parsed.provider)) {
+        return { skills: [], source: "unsupported", cached: false };
       }
       const adapter = yield* registry.getByProvider(parsed.provider);
       const nativeResult: ProviderListSkillsResult | null = adapter.listSkills

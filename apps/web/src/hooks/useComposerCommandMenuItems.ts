@@ -29,6 +29,7 @@ import {
   getProviderNativeSlashCommandSearchTerms,
   shouldHideProviderNativeCommandFromComposerMenu,
 } from "../composerSlashCommands";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { threadMentionPathForThreadId } from "@synara/shared/threadMentions";
 
 import type { ComposerCommandItem } from "../components/chat/ComposerCommandMenu";
@@ -294,7 +295,6 @@ export function useComposerCommandMenuItems(input: {
     provider,
     providerPlugins,
     providerNativeCommands,
-    providerSkills,
     workspaceEntries,
     searchableModelOptions,
     supportsFastSlashCommand,
@@ -308,6 +308,9 @@ export function useComposerCommandMenuItems(input: {
     dynamicAgents,
     threadMentionSources,
   } = input;
+  // Skills are read from this machine, which a cloud provider's agent never sees. Discovery can
+  // still hold the previous provider's list while it is off for this one.
+  const providerSkills = providerIsCloudService(provider) ? [] : input.providerSkills;
 
   if (!composerTrigger) return [];
 

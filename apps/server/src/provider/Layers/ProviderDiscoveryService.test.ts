@@ -1,7 +1,7 @@
 // FILE: ProviderDiscoveryService.test.ts
 // Purpose: Verifies the discovery service merges provider-native skills with the
 //          unified Synara catalog, filters user-disabled skills, and reports
-//          skill discovery as supported for every provider.
+//          skill discovery as supported for every provider that runs on this machine.
 // Layer: Server provider tests
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -91,7 +91,10 @@ const runListSkills = (input: {
 }) => {
   const baseLayer = Layer.mergeAll(
     makeConfigLayer(),
-    ServerSettingsService.layerTest({ skills: { disabled: input.disabled ?? [] } }),
+    ServerSettingsService.layerTest({
+      skills: { disabled: input.disabled ?? [] },
+      providers: { [input.provider]: { enabled: true } },
+    }),
     makeRegistryLayer(input.adapter),
   ).pipe(Layer.provideMerge(NodeServices.layer));
   const testLayer = ProviderDiscoveryServiceLive.pipe(Layer.provideMerge(baseLayer));
@@ -187,6 +190,15 @@ describe("ProviderDiscoveryService.listSkills", () => {
     expect(result.skills.map((skill) => skill.name)).toEqual(["portable"]);
   });
 
+  it("serves no local skills to a cloud provider", async () => {
+    await writeSkill(path.join(baseDir, "skills", "portable"), "portable");
+    await writeSkill(path.join(homeDir, ".codex", "skills", "openai-docs"), "openai-docs");
+
+    const result = await runListSkills({ adapter: {}, provider: "aether" });
+
+    expect(result).toEqual({ skills: [], source: "unsupported", cached: false });
+  });
+
   it("falls back to the catalog when native discovery fails", async () => {
     await writeSkill(path.join(baseDir, "skills", "portable"), "portable");
 
@@ -209,24 +221,35 @@ describe("ProviderDiscoveryService.listSkills", () => {
 });
 
 describe("ProviderDiscoveryService.getComposerCapabilities", () => {
-  it("reports skill discovery as supported even when the adapter declines it", async () => {
+  const runGetComposerCapabilities = (provider: ProviderKind) => {
     const baseLayer = Layer.mergeAll(
       makeConfigLayer(),
-      ServerSettingsService.layerTest(),
+      ServerSettingsService.layerTest({ providers: { [provider]: { enabled: true } } }),
       makeRegistryLayer({}),
     ).pipe(Layer.provideMerge(NodeServices.layer));
     const testLayer = ProviderDiscoveryServiceLive.pipe(Layer.provideMerge(baseLayer));
 
     const program = Effect.gen(function* () {
       const discovery = yield* ProviderDiscoveryService;
-      return yield* discovery.getComposerCapabilities({ provider: "grok" });
+      return yield* discovery.getComposerCapabilities({ provider });
     }).pipe(Effect.provide(testLayer));
-    const capabilities = await Effect.runPromise(
+    return Effect.runPromise(
       program as unknown as Effect.Effect<ProviderComposerCapabilities, never, never>,
     );
+  };
+
+  it("reports skill discovery as supported even when the adapter declines it", async () => {
+    const capabilities = await runGetComposerCapabilities("grok");
 
     expect(capabilities.supportsSkillDiscovery).toBe(true);
     expect(capabilities.supportsSkillMentions).toBe(true);
+  });
+
+  it("reports no skills for a cloud provider, whose agent never sees this machine", async () => {
+    const capabilities = await runGetComposerCapabilities("aether");
+
+    expect(capabilities.supportsSkillDiscovery).toBe(false);
+    expect(capabilities.supportsSkillMentions).toBe(false);
   });
 });
 

@@ -12,7 +12,7 @@ import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import { getThreadFromState, getThreadsFromState } from "../threadDerivation";
 import type { Thread } from "../types";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
+import { getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { reconcileDeletedThreadFromClient } from "./deletedThreadClientReconciliation";
 import { newCommandId } from "./utils";
 
@@ -73,9 +73,6 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
     (candidate) => candidate.id === input.threadId || !deletedThreadIds.has(candidate.id),
   );
   const orphanedWorktreePath = getOrphanedWorktreePathForThread(survivingThreads, input.threadId);
-  const displayWorktreePath = orphanedWorktreePath
-    ? formatWorktreePathForDisplay(orphanedWorktreePath)
-    : null;
   const shouldDeleteWorktree =
     (input.worktreeCleanupMode ?? "prompt") === "prompt" &&
     orphanedWorktreePath !== null &&
@@ -83,7 +80,7 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
     (await api.dialogs.confirm(
       [
         "This thread is the only one linked to this worktree:",
-        displayWorktreePath ?? orphanedWorktreePath,
+        orphanedWorktreePath,
         "",
         "Delete the worktree too?",
       ].join("\n"),
@@ -111,6 +108,8 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
     await input.onDeleted({ thread: deletedThread, prepared });
   }
 
+  // A provider that owns the worktree (Aether) keeps its claim until the server's deletion
+  // cleanup stops the thread's session; the server's git.removeWorktree runs that stop first.
   if (!shouldDeleteWorktree || !orphanedWorktreePath || !project) return;
   try {
     await input.removeWorktree({
@@ -132,7 +131,7 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
     toastManager.add({
       type: "error",
       title: "Thread deleted, but worktree removal failed",
-      description: `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
+      description: `Could not remove ${orphanedWorktreePath}. ${message}`,
     });
   }
 }

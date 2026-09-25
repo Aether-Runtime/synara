@@ -45,7 +45,9 @@ export function showConfirmDialogFallback(message: string): Promise<boolean> {
 
     if (description) {
       const descEl = document.createElement("p");
-      descEl.className = "text-muted-foreground text-ui-lg leading-5";
+      // Keeps the message's line breaks, and wraps a long path anywhere.
+      descEl.className =
+        "whitespace-pre-line text-muted-foreground text-ui-lg leading-5 [overflow-wrap:anywhere]";
       descEl.textContent = description;
       header.appendChild(descEl);
     }

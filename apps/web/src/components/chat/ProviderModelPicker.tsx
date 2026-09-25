@@ -5,6 +5,10 @@
 
 import { type ModelSlug, type ProviderKind, type ServerProviderStatus } from "@synara/contracts";
 import { resolveSelectableModel } from "@synara/shared/model";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  providerIsCloudService,
+} from "@synara/shared/providerMetadata";
 import * as Schema from "effect/Schema";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { type ProviderPickerKind, PROVIDER_OPTIONS } from "../../session-logic";
@@ -454,11 +458,15 @@ export function resolveProviderModelLabel(input: {
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ProviderModelOption>>;
 }): string {
   const activeProvider = input.lockedProvider ?? input.provider;
-  return resolveSelectedModelLabel({
+  const modelLabel = resolveSelectedModelLabel({
     provider: activeProvider,
     model: input.model,
     options: input.modelOptionsByProvider[activeProvider],
   });
+  // A cloud provider runs the same models as the local runtimes, so its name leads the label.
+  return providerIsCloudService(activeProvider)
+    ? `${PROVIDER_DESCRIPTOR_BY_KIND[activeProvider].displayName} · ${modelLabel}`
+    : modelLabel;
 }
 
 export function getProviderIconClassName(

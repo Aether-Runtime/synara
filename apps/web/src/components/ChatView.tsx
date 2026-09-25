@@ -1309,9 +1309,7 @@ export default function ChatView({
     providerLackingFeature(threadGateProviders, "conversation-rollback") === null;
   const localWorkspaceAvailable =
     providerLackingFeature(threadGateProviders, "local-workspace") === null;
-  // "Fork Into Local" and forking from a turn reuse this thread's worktree.
-  const sharedWorktreeAvailable =
-    providerLackingFeature(threadGateProviders, "shared-worktree") === null;
+  const forkAvailable = providerLackingFeature(threadGateProviders, "thread-fork") === null;
   const {
     selectedComposerSkills,
     selectedComposerMentions,
@@ -2143,20 +2141,16 @@ export default function ChatView({
           label: "Fork Into New Worktree",
           description: "Continue in a new worktree",
         },
-        ...(sharedWorktreeAvailable
-          ? [
-              {
-                id: "fork-target:local",
-                type: "fork-target" as const,
-                target: "local" as const,
-                label: "Fork Into Local",
-                description:
-                  activeThread?.worktreePath || activeThread?.envMode === "worktree"
-                    ? "Continue in this local worktree"
-                    : "Continue in the current local thread",
-              },
-            ]
-          : []),
+        {
+          id: "fork-target:local",
+          type: "fork-target" as const,
+          target: "local" as const,
+          label: "Fork Into Local",
+          description:
+            activeThread?.worktreePath || activeThread?.envMode === "worktree"
+              ? "Continue in this local worktree"
+              : "Continue in the current local thread",
+        },
       ];
     }
     if (composerCommandPicker === "review-target") {
@@ -2184,7 +2178,6 @@ export default function ChatView({
     activeThread?.worktreePath,
     composerCommandPicker,
     normalComposerMenuItems,
-    sharedWorktreeAvailable,
   ]);
   const composerMenuOpen = Boolean(composerTrigger || composerCommandPicker);
   // The `+` panel yields the floating slot to the slash/mention menu as soon as a
@@ -2246,6 +2239,11 @@ export default function ChatView({
     [activeThread, providerStatuses, serverSettingsQuery.data?.providers],
   );
   const handoffActionLabel = activeThread ? "Hand off thread" : "Create handoff thread";
+  const handoffLackingProvider = providerLackingFeature(threadGateProviders, "provider-handoff");
+  const handoffUnavailableReason =
+    handoffLackingProvider === null
+      ? null
+      : providerFeatureUnavailableMessage(handoffLackingProvider, "provider-handoff");
   const activeProviderStatus = useMemo(
     () => findProviderStatus(providerStatuses, selectedProvider),
     [selectedProvider, providerStatuses],
@@ -5783,6 +5781,7 @@ export default function ChatView({
           handoffBadgeLabel={handoffBadgeLabel}
           handoffActionLabel={handoffActionLabel}
           handoffDisabled={handoffDisabled}
+          handoffUnavailableReason={handoffUnavailableReason}
           handoffActionTargetProviders={handoffTargetProviders}
           handoffBadgeSourceProvider={handoffBadgeSourceProvider}
           handoffBadgeTargetProvider={handoffBadgeTargetProvider}
@@ -6028,9 +6027,7 @@ export default function ChatView({
                     pinnedMessageIds={pinnedMessageIds}
                     canPinMessage={canPinMessage}
                     onTogglePinMessage={handleTogglePinMessageGuarded}
-                    {...(sharedWorktreeAvailable
-                      ? { onForkFromMessage: handleForkFromMessage }
-                      : {})}
+                    {...(forkAvailable ? { onForkFromMessage: handleForkFromMessage } : {})}
                     goalAchievements={goalAchievements}
                     enteringUserMessageIds={enteringUserMessageIds}
                     tailAnchorMessageId={

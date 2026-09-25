@@ -3058,6 +3058,94 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.toolStatus).toBe("cancelled");
   });
 
+  // Codex and Claude report a stop as "interrupted"; Cursor, Devin, Grok and ACP as "cancelled".
+  it.each(["interrupted", "cancelled"] as const)(
+    "marks a %s turn and cancels the tool it cut off",
+    (state) => {
+      const turnId = TurnId.makeUnsafe("turn-stopped");
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "stopped-command-start",
+            createdAt: "2026-02-23T00:00:01.000Z",
+            kind: "tool.started",
+            summary: "Run command started",
+            tone: "tool",
+            turnId,
+            payload: {
+              itemType: "command_execution",
+              status: "inProgress",
+              title: "Run command",
+              data: { toolCallId: "stopped-command" },
+            },
+          }),
+          makeActivity({
+            id: "stopped-command-update",
+            createdAt: "2026-02-23T00:00:02.000Z",
+            kind: "tool.updated",
+            summary: "Run command",
+            tone: "tool",
+            turnId,
+            payload: {
+              itemType: "command_execution",
+              status: "inProgress",
+              title: "Run command",
+              detail: "sleep 90",
+              data: { toolCallId: "stopped-command" },
+            },
+          }),
+          makeActivity({
+            id: "turn-stopped",
+            createdAt: "2026-02-23T00:00:05.000Z",
+            kind: "turn.completed",
+            summary: "Turn interrupted",
+            tone: "info",
+            turnId,
+            payload: { state },
+          }),
+        ],
+        turnId,
+      );
+
+      expect(entries.map((entry) => [entry.id, entry.toolStatus, entry.turnOutcome])).toEqual([
+        ["stopped-command-start", "cancelled", undefined],
+        ["turn-stopped", undefined, "interrupted"],
+      ]);
+      expect(entries[0]?.liveActivity?.state).toBe("cancelled");
+      expect(entries[1]?.label).toBe("Turn interrupted");
+    },
+  );
+
+  it("carries a failed turn's error on its outcome row", () => {
+    const turnId = TurnId.makeUnsafe("turn-mirror-paused");
+    const errorMessage =
+      "Synara paused mirroring Aether's changes: the worktree has local changes (README.md). Discard or move them; the next turn mirrors again. Nothing was overwritten.";
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "turn-failed",
+          createdAt: "2026-02-23T00:00:05.000Z",
+          kind: "turn.completed",
+          summary: "Turn failed",
+          tone: "error",
+          turnId,
+          payload: { state: "failed", errorMessage },
+        }),
+      ],
+      turnId,
+    );
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        id: "turn-failed",
+        label: "Turn failed",
+        tone: "error",
+        turnOutcome: "failed",
+        detail: errorMessage,
+      }),
+    ]);
+  });
+
   it("treats an explicitly interrupted tool completion as cancelled", () => {
     const entries = deriveWorkLogEntries(
       [

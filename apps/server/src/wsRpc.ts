@@ -24,6 +24,7 @@ import {
   type ComputerEvent,
   type GitActionProgressEvent,
   type GitHubProjectProvisionProgressEvent,
+  type GitRemoveWorktreeInput,
   type GitWorktreeSetupProgressEvent,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -31,13 +32,26 @@ import {
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadDetailSnapshot,
+  type OrchestrationThread,
   type OrchestrationThreadStreamItem,
   type ServerConfigStreamEvent,
   type ServerDiagnosticsResult,
   type ServerLifecycleStreamEvent,
 } from "@synara/contracts";
 import { clamp } from "effect/Number";
-import { Effect, FileSystem, Layer, Option, Path, Queue, Schema, Scope, Stream } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Queue,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcMiddleware, RpcSchema, RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -112,7 +126,8 @@ import { recoverUnregisteredGitHubCheckout } from "./project/githubProjectRegist
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { getEnabledProviderAdapter } from "./provider/enabledProviderAdapter";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
-import { ProviderService } from "./provider/Services/ProviderService";
+import type { ProviderServiceError } from "./provider/Errors";
+import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { consumeCodexResetCreditEffect, listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { ProfileStatsQuery } from "./profileStats";
@@ -354,6 +369,66 @@ export const writeWorkspaceFileOutsideOwnedWorktree = (
   services.git
     .assertWorktreeNotOwned(services.path.resolve(input.cwd, input.relativePath))
     .pipe(Effect.andThen(services.workspaceFileSystem.writeFile(input)));
+
+/**
+ * `git.removeWorktree`, releasing first a claim that a deleted thread still holds. The app removes
+ * the worktree the user chose to delete right after `thread.delete` is accepted, while the
+ * deletion reactor stops the thread's provider session, which releases the worktree a provider
+ * such as Aether owns, only later. That same stop runs here first; a claim held by a thread that
+ * is not deleted still refuses the removal.
+ *
+ * A stop can fail after it released the claim (Aether's POST /stop failed), so the removal is
+ * tried either way. A failed stop keeps the thread's binding, so the deletion cleanup tries it
+ * again; this call reports it only when the claim it should have released still blocks removal.
+ */
+export const removeWorktreeReleasingDeletedOwner = (
+  services: {
+    readonly git: Pick<GitCoreShape, "withMutation" | "removeWorktree">;
+    readonly providerService: Pick<ProviderServiceShape, "stopSession">;
+    readonly readModel: Effect.Effect<{
+      readonly threads: ReadonlyArray<Pick<OrchestrationThread, "id" | "deletedAt">>;
+    }>;
+  },
+  input: GitRemoveWorktreeInput,
+) => {
+  const remove = services.git.withMutation(input.cwd, services.git.removeWorktree(input));
+  return remove.pipe(
+    Effect.catchTag("WorktreeOwnedError", (owned) =>
+      services.readModel.pipe(
+        Effect.flatMap((readModel) =>
+          readModel.threads.some(
+            (thread) => thread.id === owned.ownerThreadId && thread.deletedAt !== null,
+          )
+            ? services.providerService.stopSession({ threadId: owned.ownerThreadId }).pipe(
+                Effect.exit,
+                Effect.flatMap((stopped) =>
+                  remove.pipe(
+                    Effect.catchTag(
+                      "WorktreeOwnedError",
+                      (
+                        stillOwned,
+                      ): Effect.Effect<never, WorktreeOwnedError | ProviderServiceError> =>
+                        Exit.isFailure(stopped)
+                          ? Effect.failCause(stopped.cause)
+                          : Effect.fail(stillOwned),
+                    ),
+                    Effect.tap(() =>
+                      Exit.isFailure(stopped)
+                        ? Effect.logWarning(
+                            "git.removeWorktree removed a deleted thread's worktree after its session stop failed",
+                            { threadId: owned.ownerThreadId, cause: Cause.pretty(stopped.cause) },
+                          )
+                        : Effect.void,
+                    ),
+                  ),
+                ),
+              )
+            : Effect.fail(owned),
+        ),
+      ),
+    ),
+  );
+};
 
 // Process-wide so a subscriber's restart chain survives its own reconnects
 // (the client id is stable across a socket reconnect), but keyed per
@@ -1610,7 +1685,10 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             refreshGitStatusAfter(
               input.cwd,
-              git.withMutation(input.cwd, git.removeWorktree(input)),
+              removeWorktreeReleasingDeletedOwner(
+                { git, providerService, readModel: orchestrationEngine.getReadModel() },
+                input,
+              ),
             ),
             "Failed to remove worktree",
           ),

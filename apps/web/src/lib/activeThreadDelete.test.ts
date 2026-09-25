@@ -53,7 +53,6 @@ vi.mock("../threadDerivation", () => ({
 }));
 
 vi.mock("../worktreeCleanup", () => ({
-  formatWorktreePathForDisplay: (path: string) => path,
   getOrphanedWorktreePathForThread: harness.orphanResolver,
 }));
 
@@ -161,6 +160,34 @@ describe("deleteActiveThreadFromClient", () => {
         description: "Could not remove /repo-worktree. busy",
       }),
     );
+  });
+
+  it("names the full worktree path in the prompt and removes it after the delete", async () => {
+    const worktreePath = "/Users/me/.synara/worktrees/acme-checkout/synara";
+    harness.orphanedWorktreePath = worktreePath;
+    harness.confirm.mockImplementation(async () => {
+      harness.events.push("confirm");
+      return true;
+    });
+    const removeWorktree = vi.fn(async () => {
+      harness.events.push("removeWorktree");
+    });
+
+    await deleteActiveThreadFromClient({ threadId: THREAD_ID, onDeleted: vi.fn(), removeWorktree });
+
+    expect(harness.confirm).toHaveBeenCalledWith(
+      `This thread is the only one linked to this worktree:\n${worktreePath}\n\nDelete the worktree too?`,
+    );
+    // The server releases a claim the deleted thread still holds before it removes the worktree.
+    expect(harness.events).toEqual([
+      "confirm",
+      "thread.delete",
+      "terminal.dispose",
+      "terminal.dispose",
+      "reconcile",
+      "removeWorktree",
+    ]);
+    expect(removeWorktree).toHaveBeenCalledWith({ cwd: "/repo", path: worktreePath, force: true });
   });
 
   it("excludes every planned batch deletion and skips worktree prompting when requested", async () => {

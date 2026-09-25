@@ -8579,7 +8579,7 @@ describe("ChatView transcript geometry (full app)", () => {
         // Edit and resend (conversation rollback). An existing goal stays visible so it can
         // always be cleared, whatever the provider.
         const editButton = page.getByRole("button", { name: "Edit message" });
-        // Forking from a turn stays in this thread's worktree, which Aether cannot share.
+        // Forking is unavailable in a thread whose provider owns its worktree.
         const forkButton = page.getByRole("button", { name: "Fork thread from this turn" });
         await expect.element(page.getByRole("button", { name: "Edit goal" })).toBeInTheDocument();
         if (expectsGatedControls) {
@@ -8601,6 +8601,44 @@ describe("ChatView transcript geometry (full app)", () => {
       }
     },
   );
+
+  it("explains on hover why Hand off is unavailable on an Aether thread", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-aether-handoff" as MessageId,
+      targetText: "aether handoff test",
+    });
+    const thread = snapshot.threads[0]!;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: [
+          {
+            ...thread,
+            modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+            session: { ...thread.session!, providerName: "aether" },
+          },
+        ],
+      },
+    });
+
+    try {
+      await waitForComposerEditor();
+      const handoff = page.getByRole("button", { name: "Hand off thread" });
+      await expect.element(handoff).toBeDisabled();
+      // The disabled button drops pointer events; its wrapper owns the hover.
+      await userEvent.hover(handoff.element().parentElement!);
+      await expect
+        .element(
+          page.getByText(
+            "Handing a thread off to or from Aether is not available yet: Aether needs a clean, pushed worktree that it owns.",
+          ),
+        )
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
   it.each([
     ["codex", "gpt-5", true],

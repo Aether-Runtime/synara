@@ -124,6 +124,8 @@ export interface WorkLogEntry {
   computerControlDenied?: WorkLogComputerControlDenied;
   computerSetupRequired?: WorkLogComputerSetupRequired;
   providerContextLifecycle?: ProviderContextLifecycleInfo;
+  /** How a turn that did not complete ended; the timeline keeps this row in view. */
+  turnOutcome?: "interrupted" | "failed";
   // Source activity kind, kept so the timeline can pick a kind-specific icon
   // (e.g. user-input.requested -> question glyph) instead of the generic
   // tone fallback. Same rationale as `toolName` below.
@@ -430,7 +432,21 @@ function isQuietTurnLifecycleActivity(activity: OrchestrationThreadActivity): bo
     return false;
   }
   // Provider lifecycle rows close internal state; assistant/result text is rendered from messages.
-  return activity.tone !== "error";
+  // A failed or interrupted turn keeps its row: nothing else says the turn did not finish.
+  return activity.tone !== "error" && !turnCompletedAsStopped(activity);
+}
+
+/** The state a `turn.completed` activity recorded, from its payload. */
+function turnCompletedState(activity: OrchestrationThreadActivity): string | null {
+  if (activity.kind !== "turn.completed") return null;
+  const state = asRecord(activity.payload)?.state;
+  return typeof state === "string" ? state : null;
+}
+
+/** A stop: "interrupted" from Codex and Claude, "cancelled" from Cursor, Devin, Grok and ACP. */
+function turnCompletedAsStopped(activity: OrchestrationThreadActivity): boolean {
+  const state = turnCompletedState(activity);
+  return state === "interrupted" || state === "cancelled";
 }
 
 function isUninformativeCommandStartEntry(entry: DerivedWorkLogEntry): boolean {
@@ -630,6 +646,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const toolName = extractToolName(payload);
   const toolCallId = extractToolCallId(payload);
   const toolStatus = deriveToolLifecycleStatus(activity.kind, payload);
+  const turnOutcome = turnCompletedAsStopped(activity)
+    ? "interrupted"
+    : turnCompletedState(activity) === "failed"
+      ? "failed"
+      : null;
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
@@ -641,9 +662,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     ...(toolName ? { toolName } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolStatus ? { toolStatus } : {}),
+    ...(turnOutcome ? { turnOutcome } : {}),
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  // The reason a turn failed is the one thing its outcome row has to say.
+  if (turnOutcome === "failed" && typeof payload?.errorMessage === "string") {
+    entry.detail = stripTerminalControlSequences(payload.errorMessage);
+  }
   if (payload && typeof payload.detail === "string" && payload.detail.length > 0) {
     const detail = stripTrailingExitCode(stripTerminalControlSequences(payload.detail)).output;
     if (detail) {
@@ -1427,7 +1453,12 @@ function reconcileSettledLiveActivities(
       });
     } else if (activity.kind === "turn.completed") {
       terminalByTurnId.set(activity.turnId, {
-        state: activity.tone === "error" ? "failed" : "completed",
+        state:
+          activity.tone === "error"
+            ? "failed"
+            : turnCompletedAsStopped(activity)
+              ? "cancelled"
+              : "completed",
         settledAt: activity.createdAt,
       });
     }

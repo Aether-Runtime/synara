@@ -29,12 +29,13 @@ the app.
 Aether runs the agent in a cloud VM, so the repository must be on GitHub and imported as a project
 in Aether. Its threads always run in a new worktree that Aether owns and, once a turn has started,
 never leave it. The features that need Synara's local agent gateway, the local checkout, or a
-second thread in that worktree are unavailable for them: thread goals, Computer Use, browser and
-device tools, side chats, forking into the same worktree, automations (including heartbeats on an
-Aether thread), reverting or editing earlier messages, branch picks, and handing a thread off to
-Local or to or from Aether. The app hides these controls and the server refuses them. Local changes
-are never copied into an Aether worktree: neither the app nor the agent gateway copies them, so an
-Aether worktree starts from its base commit alone.
+second thread in or from that worktree are unavailable for them: thread goals, Computer Use,
+browser and device tools, side chats, forking (into the same worktree or a new one), automations
+(including heartbeats on an Aether thread), reverting or editing earlier messages, branch picks,
+and handing a thread off to Local or to or from Aether. The app hides these controls and the server
+refuses them. Skills installed on this machine are not offered either, since the agent in the VM
+cannot use them. Local changes are never copied into an Aether worktree: neither the app nor the
+agent gateway copies them, so an Aether worktree starts from its base commit alone.
 
 The VM clones from origin, so the first message needs a clean worktree whose HEAD is the tip of a
 branch on origin. The task is based on the project's default branch when that branch's tip is HEAD,
@@ -44,7 +45,7 @@ none, or more than one.
 - When a run settles, Synara mirrors the VM's changes into the worktree before the turn completes,
   so its checkpoint and diff include them. If the VM is suspended, the mirror waits for the next
   turn. Local changes in the worktree pause the mirror until they are discarded or moved; nothing
-  is overwritten.
+  is overwritten, and the turn fails with a notice under its reply that names the files.
 - Questions and plans can be answered in Synara or in Aether's own app; Synara picks up an answer
   given there within about 15 seconds. A question keeps its turn open however long it waits.
   **Implement** approves a plan, and any other message is feedback on it.
@@ -129,6 +130,11 @@ saves it together with its current effort and speed, so one click (or `mod+1`…
 picker is open) restores the whole combination. A task that has started stays on its provider: only
 that provider's tab and starred entries are offered. Supported provider executables can be pointed
 at custom binary locations.
+
+A cloud provider's models share their names with the local runtimes, so the model button names the
+provider first, for example `Aether · Claude Opus 5.5`. With the effort slider, picking a model
+keeps the effort the slider showed when the new model offers it; otherwise the slider stays open on
+the model's default.
 
 Starred models absent from the current catalog remain saved and can be removed, but cannot be
 selected. They become selectable again when discovery or custom model settings add them to the
