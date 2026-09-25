@@ -146,9 +146,16 @@ As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResum
   once only when no turn is in flight; otherwise (ProviderService stops the session after every
   interrupt) the session keeps following the task and reporting the turn as running, so the live
   reconciler leaves it alone, and detaches once the turn has completed. The settle records `after`
-  and clears `active` in the cursor first. If the workspace is not running the turn completes
-  and `mirrorPending` mirrors at the next turn start, from inside `sendTurn`, after the reactor's
-  start checkpoint.
+  and clears `active` in the cursor first. If the workspace is not running (starting, or its
+  connect refused for its state) the turn completes and `mirrorPending` mirrors at the next turn
+  start, from inside `sendTurn`, after the reactor's start checkpoint; any other mirror failure
+  (an API or socket error, local edits, a file too large, a refused path, a moved base) fails the
+  turn with its reason.
+- A request Aether refused (not configured, 402, 409, a 4xx other than 408 and 429) changed
+  nothing, so it fails as a validation error, which the command reactor rejects without
+  quarantining the thread; a 5xx, timeout or transport error may have landed and stays
+  uncertain. A refused create also replaces the creating cursor's idempotency key. Aether's own
+  error messages are shown as they are.
 - At construction the adapter claims every Aether thread's worktree again. Startup
   reconciliation asks the provider to follow each turn in flight again
   (`ProviderService.reattachTurn` → the adapter's `reattachTurn`): a reattached turn and its
