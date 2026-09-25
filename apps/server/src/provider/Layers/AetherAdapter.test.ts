@@ -912,6 +912,69 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         });
       }),
     );
+
+    it.effect(
+      "keeps a turn waiting on a question past the live reconciler's no-progress limit",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter } = yield* h.makeAdapter();
+          yield* Effect.gen(function* () {
+            const providerService = yield* ProviderService;
+            const directory = yield* ProviderSessionDirectory;
+            const accepted: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(providerService.streamEvents, (event) =>
+              Effect.sync(() => void accepted.push(event)),
+            ).pipe(Effect.forkScoped);
+            yield* providerService.startSession(THREAD_ID, {
+              threadId: THREAD_ID,
+              provider: "aether",
+              cwd: h.worktree,
+              modelSelection: { provider: "aether", model: MODEL },
+              runtimeMode: "full-access",
+            });
+            h.aether.hooks.onTurn = (turn) =>
+              h.aether.ask(turn, "toolu_ask", ["Pay now", "Place order"]);
+            const turn = yield* providerService.sendTurn({
+              threadId: THREAD_ID,
+              input: "Build checkout",
+            });
+            yield* waitFor("the question", () =>
+              accepted.find((event) => event.type === "user-input.requested"),
+            );
+
+            // An hour on, nothing has moved on the thread: the question still waits.
+            const quietSince = new Date(Date.now() - 60 * 60_000).toISOString();
+            const bindings = yield* directory.listBindings();
+            const liveSessions = yield* providerService.listSessions();
+            const pumpHealth = yield* providerService.getRuntimeEventPumpHealth!();
+            const reconcile = (hasPendingUserInput: boolean) =>
+              planProviderRuntimeReconciliation({
+                threads: [{ ...reconcilableThread(turn.turnId, quietSince), hasPendingUserInput }],
+                bindings,
+                liveSessions,
+                pumpHealth,
+                nowMs: Date.now(),
+              });
+            expect(reconcile(true)).toEqual([]);
+            // Had it asked nothing, the same quiet turn would be settled.
+            expect(reconcile(false)).toEqual([
+              expect.objectContaining({
+                action: "settle-interrupted",
+                projectedTurnId: turn.turnId,
+              }),
+            ]);
+          }).pipe(
+            Effect.scoped,
+            Effect.provide(
+              Layer.mergeAll(
+                providerServiceOver(adapter).pipe(Layer.provide(sessionDirectoryLayer)),
+                sessionDirectoryLayer,
+              ),
+            ),
+          );
+        }),
+    );
   });
 
   describe("plans", () => {

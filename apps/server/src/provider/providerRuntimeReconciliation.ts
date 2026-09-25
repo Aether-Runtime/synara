@@ -14,6 +14,7 @@ import {
   type ProviderSession,
   type ThreadId,
 } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { nonEmptyTrimmed } from "@synara/shared/text";
 
 import type { ProviderRuntimeEventPumpHealth } from "./Services/ProviderService.ts";
@@ -28,6 +29,12 @@ export const DEFAULT_RUNTIME_RECONCILIATION_STALE_AFTER_MS = 15_000;
  * can be absent when a provider wedges mid-turn. `thread.updatedAt` advances on
  * every appended message, so a legitimately long-running turn keeps resetting
  * this clock and is never affected.
+ *
+ * A cloud provider's turn that waits on the user's answer is exempt: the
+ * question is held by the provider, not by a local process that could wedge
+ * holding it, and its adapter keeps reading it (a loop that stops fails the
+ * turn), so it can wait for hours at no cost. The other signals still settle it.
+ * A local provider's question lives in its process, so the clock still applies.
  */
 export const RUNTIME_RECONCILIATION_MAX_TURN_AGE_MS = 45 * 60_000;
 
@@ -223,8 +230,12 @@ export function planProviderRuntimeReconciliation(input: {
     // provider instead of dropping the candidate.
     const provider = binding?.provider ?? thread.modelSelection.provider;
     const detail = pumpDetail(provider, healthByProvider);
+    const waitsOnUserInCloud =
+      providerIsCloudService(provider) && thread.hasPendingUserInput === true;
     const abandoned =
-      lifecycleAgeMs >= maxTurnAgeMs && threadActivityAgeMs(thread, input.nowMs) >= maxTurnAgeMs;
+      !waitsOnUserInCloud &&
+      lifecycleAgeMs >= maxTurnAgeMs &&
+      threadActivityAgeMs(thread, input.nowMs) >= maxTurnAgeMs;
     const abandonedDetail = ` Nothing has progressed on this thread for over ${Math.round(maxTurnAgeMs / 60_000)} minutes.${detail}`;
 
     // Native child threads share a parent session and intentionally have no

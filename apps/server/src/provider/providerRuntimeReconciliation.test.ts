@@ -768,6 +768,56 @@ describe("planProviderRuntimeReconciliation", () => {
     expect(plans[0]?.reason).toContain("runtime-event pump is recovering");
   });
 
+  describe("past the no-progress limit", () => {
+    // An hour without progress: past the default 45 minutes.
+    const quietSince = "2026-07-23T19:00:00.000Z";
+    const quietThread = (
+      provider: "aether" | "codex",
+      overrides: Partial<OrchestrationThreadShell> = {},
+    ) =>
+      threadShell({
+        modelSelection:
+          provider === "aether"
+            ? { provider, model: "claude-opus-5" }
+            : { provider, model: "gpt-5.6" },
+        updatedAt: quietSince,
+        session: { ...threadShell().session!, providerName: provider, updatedAt: quietSince },
+        ...overrides,
+      });
+    const plan = (thread: OrchestrationThreadShell, live: ReadonlyArray<ProviderSession>) =>
+      planProviderRuntimeReconciliation({
+        threads: [thread],
+        bindings: [binding(OLD_TURN_ID, thread.modelSelection.provider)],
+        liveSessions: live,
+        pumpHealth: [],
+        nowMs: NOW,
+      });
+    const running = (provider: "aether" | "codex") => [
+      liveSession({ status: "running", activeTurnId: OLD_TURN_ID, provider }),
+    ];
+
+    it("leaves a cloud turn that waits on the user's answer to its provider", () => {
+      expect(plan(quietThread("aether", { hasPendingUserInput: true }), running("aether"))).toEqual(
+        [],
+      );
+    });
+
+    it("settles a cloud turn that asked nothing, or whose provider no longer follows it", () => {
+      expect(plan(quietThread("aether"), running("aether"))).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+      expect(plan(quietThread("aether", { hasPendingUserInput: true }), [])).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+    });
+
+    it("settles a local turn that waits on the user's answer", () => {
+      expect(plan(quietThread("codex", { hasPendingUserInput: true }), running("codex"))).toEqual([
+        expect.objectContaining({ action: "settle-interrupted", projectedTurnId: OLD_TURN_ID }),
+      ]);
+    });
+  });
+
   it("does not treat an actively streaming turn as stale when only the session row is quiet", () => {
     // thread.updatedAt advances on every appended message. A turn that is
     // streaming output must never become a settle candidate just because the
