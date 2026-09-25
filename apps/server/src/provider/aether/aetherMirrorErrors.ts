@@ -42,7 +42,10 @@ export class MirrorTooLargeError extends Schema.TaggedErrorClass<MirrorTooLargeE
   }
 }
 
-/** A diff path is absolute, has a `..` or `.git` segment, or reaches through a symlink. */
+/**
+ * A diff path is absolute, has a `..` or `.git` segment, is a name Git refuses (such as one Windows
+ * or macOS resolves to `.git`), or reaches through a symlink.
+ */
 export class MirrorPathEscapeError extends Schema.TaggedErrorClass<MirrorPathEscapeError>()(
   "MirrorPathEscapeError",
   {

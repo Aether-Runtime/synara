@@ -116,7 +116,33 @@ describe("planAetherMirror", () => {
     );
     expect(result.patch).toBe("");
     expect(result.removals).toEqual(["img/old.png", "img/a.png", "data/huge.json"]);
-    expect(result.writes).toEqual(["img/new.png", "img/logo.png", "img/b.png"]);
+    // Additions and rename targets must not exist yet; a modification overwrites.
+    expect(result.writes).toEqual([
+      { path: "img/new.png", create: true },
+      { path: "img/logo.png", create: false },
+      { path: "img/b.png", create: true },
+    ]);
+  });
+
+  it("lists the files the patch creates and every path Git must check", () => {
+    const result = plan(
+      added("notes.md", "hi\n"),
+      modified("app.txt", hunk(1, 1, "-a", "+b")),
+      deleted("gone.txt", "bye\n"),
+      renamed("lib.txt", "src/lib.txt"),
+      binary("added", "/dev/null", "img/new.png"),
+      tooLarge("deleted", "data/huge.json", 1_048_576),
+    );
+    expect(result.patchCreates).toEqual(["notes.md", "src/lib.txt"]);
+    expect(result.paths).toEqual([
+      "notes.md",
+      "app.txt",
+      "gone.txt",
+      "lib.txt",
+      "src/lib.txt",
+      "img/new.png",
+      "data/huge.json",
+    ]);
   });
 
   it("refuses every too-large file it would have to write, with its limit", () => {

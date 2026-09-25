@@ -4,16 +4,20 @@
 // Layer: Server provider boundary (Aether). The adapter runs it before `turn.completed` (P4).
 //
 // One sync, ordered so that the common failures change nothing:
-//   1. Outside the repository lock: read the cumulative diff (merge-base to VM working tree) and
-//      every binary file over the workspace socket, plan the patch, and check that it applies to
-//      the task base in a scratch index.
+//   1. Outside the repository lock: read the cumulative diff (merge-base to VM working tree),
+//      plan the patch, have Git check every path and `git apply --check` the patch against the
+//      task base in scratch indexes, then read every binary file over the workspace socket.
 //   2. Inside `GitCore.withMutation`, as the worktree's owner, so no local Git mutation can
-//      interleave: verify the worktree is still the tree the last sync recorded; `git reset
-//      --hard <base>` and `git clean -fd` (never `-x`: ignored files such as dependencies stay);
-//      `git apply` the patch from stdin; remove, then write, the binary files; fingerprint the
-//      result and record it.
+//      interleave: verify the worktree is still the tree the last sync recorded; remove the files
+//      that sync created; `git reset --hard <base>`; `git apply` the patch from stdin; remove,
+//      then write, the binary files; fingerprint the result and record it.
 // Reset-then-apply rebuilds the whole state from the base every time, so turn N+1 never needs
 // an interdiff and a failed sync heals on the next one.
+//
+// There is no `git clean`: after the reset it would judge untracked files by the base's ignore
+// rules, not the ones the worktree was using, and delete files only the mirrored `.gitignore`
+// protects. The record lists the files each sync created instead, and only those are removed.
+// Ignored files, and files a mirrored ignore rule stopped ignoring, are never deleted.
 //
 // The reset target is the commit the caller created the task from. The diff's own `baseRef` names
 // a ref on the VM (such as `origin/main`) and is not used. A diff taken against a merge-base that
@@ -47,7 +51,7 @@ import {
   MirrorPathEscapeError,
   MirrorTransportError,
 } from "./aetherMirrorErrors.ts";
-import { type AetherMirrorPlan, planAetherMirror } from "./aetherMirrorPatch.ts";
+import { type AetherMirrorPlan, mirrorPathEscape, planAetherMirror } from "./aetherMirrorPatch.ts";
 import type { AetherGitDiffResult } from "./aetherWorkspaceProtocol.ts";
 import type { AetherWorkspaceSocket } from "./aetherWorkspaceSocket.ts";
 
@@ -71,7 +75,11 @@ export type AetherMirrorSyncResult =
       /** Mode-only changes on the VM, which the wire cannot carry: not mirrored, warn about them. */
       readonly modeOnlyPaths: ReadonlyArray<string>;
     }
-  /** The worktree already held this state; nothing was written. */
+  /**
+   * The worktree holds the same tree as before the sync. Usually nothing was written: the record
+   * showed this exact diff already applied. After a failed sync, or when a different diff builds
+   * the same tree, the files were rewritten to the same content.
+   */
   | { readonly _tag: "unchanged"; readonly fingerprint: AetherMirrorFingerprint };
 
 export interface AetherMirrorSyncInput {
@@ -94,6 +102,8 @@ const MirrorRecord = Schema.Struct({
   tree: Schema.String,
   /** Digest of the diff and binary bytes the tree was built from; null after a failed sync. */
   contentDigest: Schema.NullOr(Schema.String),
+  /** Files the sync created, which the next sync removes before its reset. */
+  created: Schema.Array(Schema.String),
 });
 type MirrorRecord = typeof MirrorRecord.Type;
 const decodeMirrorRecord = decodeJsonResult(MirrorRecord);
@@ -170,8 +180,9 @@ export const syncAetherMirror = (
     const planned = planAetherMirror(diff);
     if (Result.isFailure(planned)) return yield* planned.failure;
     const plan = planned.success;
+    yield* checkPlan(context, base, plan);
     const bytes = new Map<string, Uint8Array>();
-    for (const file of plan.writes) {
+    for (const { path: file } of plan.writes) {
       const read = yield* input.workspace.readFile(file).pipe(
         Effect.mapError(
           (error) =>
@@ -186,7 +197,6 @@ export const syncAetherMirror = (
       bytes.set(file, Buffer.from(read.content, read.encoding === "base64" ? "base64" : "utf8"));
     }
     const digest = contentDigest(base, diff, bytes);
-    yield* checkPatch(context, base, plan.patch);
 
     // 2. The worktree, as its owner.
     const mirror = Effect.gen(function* () {
@@ -205,17 +215,33 @@ export const syncAetherMirror = (
         return { _tag: "unchanged", fingerprint: before } as const;
       }
 
+      // The files the last sync created, which the reset leaves behind as untracked files. Kept
+      // current as files are removed and created, so a failed sync records what is really there.
+      // Trusted only when the worktree is exactly what that sync left.
+      const created = new Set(
+        record !== undefined && sameFingerprint(before, record) ? record.created : [],
+      );
       const after = yield* Effect.gen(function* () {
+        yield* removeCreated(context, created);
         yield* runGit(context, "reset", ["reset", "--hard", "--quiet", base]);
-        yield* runGit(context, "reset", ["clean", "-fd", "--quiet"]);
-        yield* applyPatch(context, plan.patch);
-        yield* writeBinaries(context, plan, bytes);
+        // `git apply` creates all of its files or none: they are the mirror's once it succeeds.
+        yield* Effect.uninterruptible(
+          applyPatch(context, plan.patch).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                for (const file of plan.patchCreates) created.add(file);
+              }),
+            ),
+          ),
+        );
+        yield* writeBinaries(context, plan, bytes, created);
         const synced = yield* captureFingerprint(context, "fingerprint");
         yield* writeRecord(context, {
           taskId: input.taskId,
           baseCommit: base,
           ...synced,
           contentDigest: digest,
+          created: [...created],
         });
         return synced;
       }).pipe(
@@ -231,6 +257,7 @@ export const syncAetherMirror = (
                     baseCommit: base,
                     ...left,
                     contentDigest: null,
+                    created: [...created],
                   }),
                 ),
                 Effect.catch((error) =>
@@ -276,45 +303,87 @@ const contentDigest = (
   return hash.digest("hex");
 };
 
-/** `git apply --check` against the base in a scratch index: a stale or broken diff changes nothing. */
-const checkPatch = (context: MirrorContext, base: string, patch: string) =>
-  patch.length === 0
-    ? Effect.void
-    : Effect.gen(function* () {
-        const directory = yield* context.fs.makeTempDirectoryScoped({
-          prefix: "synara-aether-mirror-",
-        });
-        const env = { GIT_INDEX_FILE: context.path.join(directory, "index") };
-        const operation = `${OPERATION}.check`;
-        yield* context.git.execute({
+/**
+ * Before anything is read or written. Git checks every path the plan touches, with its Windows and
+ * macOS `.git` protections on whatever the platform: binary files are written with `node:fs`, which
+ * would follow a name such as `.git.` or `GIT~1` into the real `.git` on those systems. Then the
+ * patch is checked against the base. Both use scratch indexes, so a hostile or stale diff changes
+ * nothing.
+ */
+const checkPlan = (context: MirrorContext, base: string, plan: AetherMirrorPlan) =>
+  Effect.gen(function* () {
+    const directory = yield* context.fs.makeTempDirectoryScoped({
+      prefix: "synara-aether-mirror-",
+    });
+    const operation = `${OPERATION}.check`;
+    const cwd = context.worktree;
+    if (plan.paths.length > 0) {
+      const protect = ["-c", "core.protectNTFS=true", "-c", "core.protectHFS=true"];
+      const blob = (yield* context.git.execute({
+        operation,
+        cwd,
+        args: ["hash-object", "--stdin"],
+        stdin: "",
+      })).stdout.trim();
+      const addPaths = (index: string, paths: ReadonlyArray<string>) =>
+        context.git.execute({
           operation,
-          cwd: context.worktree,
-          args: ["read-tree", base],
-          env,
+          cwd,
+          args: [...protect, "update-index", "--add", "--replace", "-z", "--index-info"],
+          env: { GIT_INDEX_FILE: context.path.join(directory, index) },
+          stdin: paths.map((file) => `100644 ${blob}\t${file}\0`).join(""),
         });
-        const checked = yield* context.git.execute({
-          operation,
-          cwd: context.worktree,
-          args: ["apply", "--cached", "--check", "--whitespace=nowarn", "-"],
-          env,
-          stdin: patch,
-          allowNonZeroExit: true,
-        });
-        if (checked.code !== 0) {
-          return yield* context.failed(
-            "check",
-            `The diff does not apply to the task base: ${checked.stderr.trim()}`,
-          );
+      const listPaths = (index: string) =>
+        context.git
+          .execute({
+            operation,
+            cwd,
+            args: ["ls-files", "-z"],
+            env: { GIT_INDEX_FILE: context.path.join(directory, index) },
+          })
+          .pipe(Effect.map((result) => new Set(result.stdout.split("\0"))));
+      // `--index-info` skips a path Git refuses ("Ignoring path"), so see what it kept.
+      yield* addPaths("paths", plan.paths);
+      const kept = yield* listPaths("paths");
+      // A missing path can also be one `--replace` dropped for a file/directory clash in the
+      // batch, so each is checked again on its own.
+      for (const [position, file] of plan.paths.filter((p) => !kept.has(p)).entries()) {
+        yield* addPaths(`path-${position}`, [file]);
+        if (!(yield* listPaths(`path-${position}`)).has(file)) {
+          return yield* new MirrorPathEscapeError({
+            path: file,
+            detail: "Git refuses it as a worktree path (it can name '.git' on Windows or macOS)",
+          });
         }
-      }).pipe(
-        Effect.scoped,
-        Effect.catchTags({
-          GitCommandError: (error) =>
-            Effect.fail(context.failed("check", error.detail, { cause: error })),
-          PlatformError: (error) =>
-            Effect.fail(context.failed("check", error.message, { cause: error })),
-        }),
-      );
+      }
+    }
+    if (plan.patch.length > 0) {
+      const env = { GIT_INDEX_FILE: context.path.join(directory, "index") };
+      yield* context.git.execute({ operation, cwd, args: ["read-tree", base], env });
+      const checked = yield* context.git.execute({
+        operation,
+        cwd,
+        args: ["apply", "--cached", "--check", "--whitespace=nowarn", "-"],
+        env,
+        stdin: plan.patch,
+        allowNonZeroExit: true,
+      });
+      if (checked.code !== 0) {
+        return yield* context.failed(
+          "check",
+          `The diff does not apply to the task base: ${checked.stderr.trim()}`,
+        );
+      }
+    }
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      GitCommandError: (error) =>
+        Effect.fail(context.failed("check", error.detail, { cause: error })),
+      PlatformError: (error) =>
+        Effect.fail(context.failed("check", error.message, { cause: error })),
+    }),
+  );
 
 const applyPatch = (context: MirrorContext, patch: string) =>
   patch.length === 0
@@ -461,56 +530,115 @@ const lstatOrUndefined = (target: string) =>
   });
 
 /**
+ * One filesystem step. Uninterruptible, so the `created` bookkeeping it does always matches the
+ * disk when a failed or interrupted sync records what it left.
+ */
+const attemptFs = <A>(
+  context: MirrorContext,
+  step: "remove" | "write",
+  file: string,
+  action: () => Promise<A>,
+) =>
+  Effect.uninterruptible(
+    Effect.tryPromise({
+      try: action,
+      catch: (cause) =>
+        cause instanceof MirrorPathEscapeError || cause instanceof MirrorApplyFailedError
+          ? cause
+          : context.failed(step, describe(cause), { path: file, cause }),
+    }),
+  );
+
+/** Unlinks a file (or symlink) at `target` if one is there; a directory is an error. */
+const unlinkFile = async (target: string) => {
+  const stat = await lstatOrUndefined(target);
+  if (stat?.isDirectory() === true) throw new Error("It is a directory in the worktree.");
+  if (stat !== undefined) await nodeFs.unlink(target);
+};
+
+/**
+ * Removes the files the last sync created, and the directories above them that are left empty,
+ * deleting each from `created` as it goes. Nothing else in the worktree is touched.
+ */
+const removeCreated = (context: MirrorContext, created: Set<string>) =>
+  Effect.gen(function* () {
+    if (created.size === 0) return;
+    const root = yield* attemptFs(context, "remove", ".", () => nodeFs.realpath(context.worktree));
+    // Deleting the entry being visited is safe while iterating a Set.
+    for (const file of created) {
+      const escape = mirrorPathEscape(file);
+      if (escape !== undefined) {
+        return yield* new MirrorPathEscapeError({ path: file, detail: escape });
+      }
+      yield* attemptFs(context, "remove", file, async () => {
+        const target = await resolveTarget(context, root, file, "remove", false);
+        if (target !== undefined) {
+          await unlinkFile(target);
+          for (
+            let directory = nodePath.dirname(target);
+            directory.length > root.length && directory.startsWith(root);
+            directory = nodePath.dirname(directory)
+          ) {
+            // Stops at the first directory that still holds something (or cannot be removed).
+            const removed = await nodeFs.rmdir(directory).then(
+              () => true,
+              () => false,
+            );
+            if (!removed) break;
+          }
+        }
+        created.delete(file);
+      });
+    }
+  });
+
+/**
  * Removes, then writes: one cumulative diff can name a path as one entry's removal and another's
  * write (a deleted `a` beside a rename to `a`). Every path is resolved before anything changes,
- * so a refusal removes nothing.
+ * so a refusal removes nothing. A file the diff adds must not exist yet (as `git apply` insists
+ * for text files): whatever is there, such as an ignored local file, is not the mirror's.
  */
 const writeBinaries = (
   context: MirrorContext,
   plan: AetherMirrorPlan,
   bytes: ReadonlyMap<string, Uint8Array>,
+  created: Set<string>,
 ) =>
   Effect.gen(function* () {
-    const attempt = <A>(step: "remove" | "write", file: string, action: () => Promise<A>) =>
-      Effect.tryPromise({
-        try: action,
-        catch: (cause) =>
-          cause instanceof MirrorPathEscapeError || cause instanceof MirrorApplyFailedError
-            ? cause
-            : context.failed(step, describe(cause), { path: file, cause }),
-      });
     if (plan.removals.length === 0 && plan.writes.length === 0) return;
-    const root = yield* attempt("write", ".", () => nodeFs.realpath(context.worktree));
+    const root = yield* attemptFs(context, "write", ".", () => nodeFs.realpath(context.worktree));
     const resolve = (step: "remove" | "write", file: string, create: boolean) =>
-      attempt(step, file, () => resolveTarget(context, root, file, step, create));
+      attemptFs(context, step, file, () => resolveTarget(context, root, file, step, create));
 
     const removals: Array<readonly [string, string | undefined]> = [];
     for (const file of plan.removals) removals.push([file, yield* resolve("remove", file, false)]);
-    for (const file of plan.writes) yield* resolve("write", file, false);
+    for (const write of plan.writes) yield* resolve("write", write.path, false);
 
     for (const [file, target] of removals) {
-      if (target === undefined) continue;
-      yield* attempt("remove", file, async () => {
-        const stat = await lstatOrUndefined(target);
-        if (stat?.isDirectory() === true) throw new Error("It is a directory in the worktree.");
-        if (stat !== undefined) await nodeFs.unlink(target);
-      });
+      if (target !== undefined) yield* attemptFs(context, "remove", file, () => unlinkFile(target));
     }
-    for (const file of plan.writes) {
-      const target = yield* resolve("write", file, true);
-      yield* attempt("write", file, async () => {
-        const stat = await lstatOrUndefined(target!);
+    for (const write of plan.writes) {
+      const file = write.path;
+      const target = (yield* resolve("write", file, true))!;
+      yield* attemptFs(context, "write", file, async () => {
+        const stat = await lstatOrUndefined(target);
+        if (write.create && stat !== undefined) {
+          throw context.failed("write", "Something is already there in the local worktree.", {
+            path: file,
+          });
+        }
         // A symlink is replaced, never followed. A regular file is truncated in place so it
-        // keeps its mode; anything new is created exclusively.
-        if (stat?.isSymbolicLink() === true) await nodeFs.unlink(target!);
+        // keeps its mode. Anything new is created exclusively, and is the mirror's.
+        if (stat?.isSymbolicLink() === true) await nodeFs.unlink(target);
         const handle =
           stat?.isFile() === true
-            ? await nodeFs.open(target!, fsConstants.O_WRONLY | fsConstants.O_TRUNC | O_NOFOLLOW)
+            ? await nodeFs.open(target, fsConstants.O_WRONLY | fsConstants.O_TRUNC | O_NOFOLLOW)
             : await nodeFs.open(
-                target!,
+                target,
                 fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | O_NOFOLLOW,
                 0o666,
               );
+        if (stat === undefined) created.add(file);
         try {
           await handle.writeFile(bytes.get(file)!);
         } finally {

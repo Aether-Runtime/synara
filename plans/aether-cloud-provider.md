@@ -134,12 +134,16 @@ diffs, checkpoints and revert work unchanged (`refs/synara/checkpoints`, same me
 Built in P5b as `syncAetherMirror` (`apps/server/src/provider/aether/aetherMirrorSync.ts`); P4
 wires it into the adapter:
 
-- Network reads (the diff and every binary file) and a `git apply --cached --check` against the
-  base happen before the repository lock, so a transport failure or a stale diff changes nothing.
-  The reset, apply, binary writes and fingerprint then run inside `GitCore.withMutation` with the
-  provider's claim.
+- Network reads (the diff and every binary file), a Git check of every path (with the NTFS and
+  HFS `.git` protections forced on), and a `git apply --cached --check` against the base happen
+  before the repository lock, so a transport failure, a hostile path or a stale diff changes
+  nothing. The removal of the last sync's files, the reset, apply, binary writes and fingerprint
+  then run inside `GitCore.withMutation` with the provider's claim.
+- No `git clean`: after the reset it would apply the base's ignore rules and delete files only the
+  mirrored `.gitignore` protects. The record lists the files each sync created, and the next sync
+  removes exactly those. A file the diff adds must not already exist locally.
 - Result: `synced {fingerprint, filesChanged, modeOnlyPaths}` or `unchanged {fingerprint}` (the
-  worktree already held that state and was not rewritten). Failures are tagged errors:
+  worktree holds the same tree as before; usually nothing was rewritten). Failures are tagged errors:
   `MirrorDiffRebuildError`, `MirrorApplyFailedError`, `MirrorTooLargeError` (path and `maxBytes`),
   `MirrorPathEscapeError`, `MirrorLocalEditsError`, `MirrorTransportError`, and P5a's
   `WorktreeOwnedError` if the claim is gone.

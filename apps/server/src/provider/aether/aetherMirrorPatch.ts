@@ -7,7 +7,8 @@
 // The wire has no file modes, so new files are written 100644 and a text entry whose only change
 // is its mode is reported rather than applied. `binary` entries are never patched: their bytes
 // come over the files channel. A `too_large` entry fails the plan unless it is a deletion, which
-// needs no content. Every path is checked here, before anything touches the worktree.
+// needs no content. Every path is checked lexically here, and the sync has Git check `paths` again
+// (Git also refuses the names Windows and macOS resolve to `.git`) before touching the worktree.
 
 import { isWorkspaceRelativePathSafe } from "@synara/shared/path";
 import { Result } from "effect";
@@ -19,13 +20,23 @@ import {
 } from "./aetherMirrorErrors.ts";
 import type { AetherGitDiffFile, AetherGitDiffResult } from "./aetherWorkspaceProtocol.ts";
 
+export interface AetherMirrorWrite {
+  readonly path: string;
+  /** The entry adds the file (an addition or a rename target), so nothing may be there yet. */
+  readonly create: boolean;
+}
+
 export interface AetherMirrorPlan {
+  /** Every worktree path the plan reads, writes or removes. */
+  readonly paths: ReadonlyArray<string>;
   /** One unified patch covering every text entry; empty when there is none. */
   readonly patch: string;
+  /** Files the patch adds: text additions and rename targets. */
+  readonly patchCreates: ReadonlyArray<string>;
   /** Removed directly, after the patch and before any write: binary deletions and rename sources. */
   readonly removals: ReadonlyArray<string>;
   /** Written directly, last, with bytes read over the files channel. */
-  readonly writes: ReadonlyArray<string>;
+  readonly writes: ReadonlyArray<AetherMirrorWrite>;
   /** Text entries whose only change is the file mode. Not applied. */
   readonly modeOnly: ReadonlyArray<string>;
   /** Entries the plan applies: every entry except the mode-only ones. */
@@ -205,15 +216,21 @@ export const planAetherMirror = (
   if (tooLarge.length > 0) return Result.fail(new MirrorTooLargeError({ files: tooLarge }));
 
   const patches: Array<string> = [];
+  const patchCreates: Array<string> = [];
   const removals: Array<string> = [];
-  const writes: Array<string> = [];
+  const writes: Array<AetherMirrorWrite> = [];
   const modeOnly: Array<string> = [];
   for (const file of diff.files) {
     if (file.kind === "too_large") {
       removals.push(file.oldPath);
     } else if (file.kind === "binary") {
       if (file.status === "deleted" || file.status === "renamed") removals.push(file.oldPath);
-      if (file.status !== "deleted") writes.push(file.newPath);
+      if (file.status !== "deleted") {
+        writes.push({
+          path: file.newPath,
+          create: file.status === "added" || file.status === "renamed",
+        });
+      }
     } else if (file.status === "modified" && file.hunks.length === 0) {
       // A bare `diff --git` header makes `git apply` reject the whole patch.
       modeOnly.push(file.newPath);
@@ -221,10 +238,13 @@ export const planAetherMirror = (
       const rendered = renderTextEntry(file);
       if (Result.isFailure(rendered)) return Result.fail(rendered.failure);
       patches.push(rendered.success);
+      if (file.status === "added" || file.status === "renamed") patchCreates.push(file.newPath);
     }
   }
   return Result.succeed({
+    paths: diff.files.flatMap(entryPaths),
     patch: patches.join(""),
+    patchCreates,
     removals,
     writes,
     modeOnly,

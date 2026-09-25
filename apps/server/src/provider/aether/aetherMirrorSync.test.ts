@@ -136,7 +136,8 @@ const makeMirror = (options: { readonly symlinks?: Readonly<Record<string, strin
           const entries: Record<string, string> = {};
           for (const file of files) {
             const stat = await fs.lstat(inWorktree(file)).catch(() => undefined);
-            if (stat === undefined) continue;
+            // The index still lists base files the worktree removed or replaced with a directory.
+            if (stat === undefined || stat.isDirectory()) continue;
             entries[file] = stat.isSymbolicLink()
               ? `link:${await fs.readlink(inWorktree(file))}`
               : file.startsWith("assets/")
@@ -229,6 +230,23 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
           'we"ird\\name.txt': 'we"ird\\name.txt\n',
           "ünïcödé/日本語.txt": "こんにちは\n",
         });
+      }),
+    );
+
+    it.effect("turns a file into a directory and back", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        mirror.fake.serve(diffOf(deleted("lib.txt", "lib\n"), added("lib.txt/inner.txt", "x\n")));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.tree).toEqual({
+          ...without(BASE_TREE, "lib.txt"),
+          "lib.txt/inner.txt": "x\n",
+        });
+
+        // The directory the mirror created must go before the reset can restore the file.
+        mirror.fake.serve(diffOf(added("notes.md", "turn two\n")));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.tree).toEqual({ ...BASE_TREE, "notes.md": "turn two\n" });
       }),
     );
 
@@ -349,6 +367,13 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
           binary("added", "/dev/null", sentinel),
           added("../escape.txt", "x\n"),
           binary("added", "/dev/null", ".git/hooks/post-checkout"),
+          // Names Windows or macOS resolve to `.git`, which Git refuses as worktree paths.
+          binary("added", "/dev/null", ".git./config"),
+          binary("added", "/dev/null", ".git /config"),
+          binary("added", "/dev/null", "GIT~1/hooks/post-checkout"),
+          binary("added", "/dev/null", "a/.git::$INDEX_ALLOCATION/x"),
+          binary("added", "/dev/null", ".g\u200cit/config"),
+          binary("deleted", ".git.", "/dev/null"),
           binary("deleted", "../outside-sentinel.txt", "/dev/null"),
           renamed("lib.txt", "../lib.txt"),
         ];
@@ -364,6 +389,37 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         expect(yield* Effect.promise(() => fs.readFile(sentinel, "utf8"))).toBe("sentinel\n");
         expect(yield* mirror.exists(path.join(mirror.root, "escape.txt"))).toBe(false);
         expect(mirror.fake.reads).toEqual([]);
+      }),
+    );
+
+    it.effect("refuses to create a file over an ignored local file", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        yield* mirror.write("build/keep.bin", "mine\n");
+        yield* mirror.write("build/keep.txt", "mine too\n");
+
+        mirror.fake.serve(diffOf(binary("added", "/dev/null", "build/keep.bin")), {
+          "build/keep.bin": LOGO,
+        });
+        expect(yield* Effect.flip(mirror.sync())).toMatchObject({
+          _tag: "MirrorApplyFailedError",
+          step: "write",
+          path: "build/keep.bin",
+        });
+        expect(yield* mirror.read("build/keep.bin")).toBe("mine\n");
+
+        mirror.fake.serve(diffOf(added("build/keep.txt", "theirs\n")));
+        expect(yield* Effect.flip(mirror.sync())).toMatchObject({
+          _tag: "MirrorApplyFailedError",
+          step: "apply",
+        });
+        expect(yield* mirror.read("build/keep.txt")).toBe("mine too\n");
+
+        // Neither file is the mirror's, so later syncs leave both alone.
+        mirror.fake.serve(diffOf(added("notes.md", "fine\n")));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.read("build/keep.bin")).toBe("mine\n");
+        expect(yield* mirror.read("build/keep.txt")).toBe("mine too\n");
       }),
     );
 
@@ -454,7 +510,7 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
           diffOf(
             modified("app.txt", hunk(1, 1, " one", "-two", "-three", "+TWO", "+THREE", "+four")),
             added("notes.md", "hello\nworld\n"),
-            added("fresh.txt", "new in turn two\n"),
+            added("src/gen/fresh.txt", "new in turn two\n"),
             deleted("lib.txt", "lib\n"),
           ),
         );
@@ -463,7 +519,7 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
           ...without(BASE_TREE, "lib.txt"),
           "app.txt": "one\nTWO\nTHREE\nfour\n",
           "notes.md": "hello\nworld\n",
-          "fresh.txt": "new in turn two\n",
+          "src/gen/fresh.txt": "new in turn two\n",
         });
 
         // Turn 3: the agent reverted its notes and restored lib.txt; they leave the diff.
@@ -471,6 +527,8 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         mirror.fake.serve(turn3);
         expect((yield* mirror.sync())._tag).toBe("synced");
         expect(yield* mirror.tree).toEqual({ ...BASE_TREE, "app.txt": "one\nTWO\nthree\n" });
+        // The directories the mirror created for its files go with them.
+        expect(yield* mirror.exists(path.join(mirror.worktree, "src"))).toBe(false);
 
         // Turn 4 changed nothing: the worktree is not rewritten.
         const before = yield* mirror.stat("app.txt");
@@ -478,6 +536,50 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         expect((yield* mirror.sync())._tag).toBe("unchanged");
         const after = yield* mirror.stat("app.txt");
         expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
+      }),
+    );
+
+    it.effect("keeps a local file that only the mirrored .gitignore ignores", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        const ignoreEnv = modified(".gitignore", hunk(1, 1, " build/", "+.env.local"));
+        mirror.fake.serve(diffOf(ignoreEnv));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+
+        yield* mirror.write(".env.local", "SECRET=1\n");
+        mirror.fake.serve(diffOf(ignoreEnv, added("notes.md", "turn two\n")));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.read(".env.local")).toBe("SECRET=1\n");
+        expect(yield* mirror.tree).toEqual({
+          ...BASE_TREE,
+          ".gitignore": "build/\n.env.local\n",
+          "notes.md": "turn two\n",
+        });
+      }),
+    );
+
+    it.effect("keeps local files the mirror stopped ignoring", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        yield* mirror.write("build/cache.txt", "artifact\n");
+        const unignoreBuild = modified(".gitignore", hunk(1, 0, "-build/"));
+        mirror.fake.serve(diffOf(unignoreBuild));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.tree).toEqual({
+          ...BASE_TREE,
+          ".gitignore": "",
+          "build/cache.txt": "artifact\n",
+        });
+
+        mirror.fake.serve(diffOf(unignoreBuild, added("notes.md", "turn two\n")));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.read("build/cache.txt")).toBe("artifact\n");
+
+        // The agent restores the ignore rule: the local build output is ignored again, and kept.
+        mirror.fake.serve(diffOf(added("notes.md", "turn three\n")));
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.read("build/cache.txt")).toBe("artifact\n");
+        expect(yield* mirror.tree).toEqual({ ...BASE_TREE, "notes.md": "turn three\n" });
       }),
     );
 
