@@ -64,6 +64,7 @@ import {
 import type { AetherApiError } from "../aether/aetherApiErrors.ts";
 import type {
   AetherRespondToTaskRequest,
+  AetherTask,
   AetherToolId,
   AetherTurnId,
   AetherWorkspaceId,
@@ -81,7 +82,11 @@ import {
   type AetherPollerOutput,
 } from "../aether/aetherConversationPoller.ts";
 import type { AetherMirrorError } from "../aether/aetherMirrorErrors.ts";
-import { syncAetherMirror, type AetherMirrorWorkspace } from "../aether/aetherMirrorSync.ts";
+import {
+  syncAetherBranch,
+  syncAetherMirror,
+  type AetherMirrorWorkspace,
+} from "../aether/aetherMirrorSync.ts";
 import {
   activeTurnId,
   awaitedTurn,
@@ -201,10 +206,15 @@ function forget(task: Task, clientMessageId: string) {
   });
 }
 
+/** `branch` is why the worktree's branch did not follow the task's, when it did not. */
 type MirrorOutcome =
-  | { readonly _tag: "Mirrored"; readonly note: string | undefined }
+  | {
+      readonly _tag: "Mirrored";
+      readonly note: string | undefined;
+      readonly branch: string | undefined;
+    }
   /** The workspace is not running: mirror when the next turn starts or settles. */
-  | { readonly _tag: "Deferred"; readonly note: string }
+  | { readonly _tag: "Deferred"; readonly note: string; readonly branch: string | undefined }
   | { readonly _tag: "Failed"; readonly note: string };
 
 type TurnSettled = Extract<AetherIngestOutput, { readonly _tag: "TurnSettled" }>;
@@ -288,10 +298,22 @@ function mirrorFailure(
   };
 }
 
-const deferred = (reason: string): MirrorOutcome => ({
-  _tag: "Deferred",
-  note: `Synara did not mirror Aether's changes yet (${reason}). It tries again when the next turn starts or settles.`,
-});
+const deferred = (reason: string) =>
+  ({
+    _tag: "Deferred",
+    note: `Synara did not mirror Aether's changes yet (${reason}). It tries again when the next turn starts or settles.`,
+  }) as const;
+
+/** Why the worktree's branch did not follow the task's branch. */
+function branchFailure(error: AetherMirrorError | WorktreeOwnedError | AetherApiError): string {
+  if (error._tag !== "AetherMirrorError") {
+    return `Synara could not follow the Aether task's branch: ${error.message}`;
+  }
+  if (error.reason === "local-edits") {
+    return `Synara did not move the worktree's branch to what the agent pushed: the worktree has local changes (${error.paths.join(", ") || error.detail}). Discard or move them; the next turn follows it again.`;
+  }
+  return `Synara could not follow the Aether task's branch (${error.reason}): ${error.detail}`;
+}
 
 /** Aether's `ask_user` answer: option indexes by question index, `-1` for a typed answer. */
 function askUserAnswer(input: unknown, answers: ProviderUserInputAnswers) {
@@ -566,27 +588,56 @@ export const makeAetherAdapter = (
     // Mirror
     // -----------------------------------------------------------------------
 
-    /** Mirrors the VM's working tree into the worktree; never boots a suspended VM. */
+    /**
+     * Puts the worktree on the task's branch and fast-forwards it to what the VM pushed; why it
+     * did not, when it did not. The working tree must hold what the mirror last wrote.
+     */
+    const followBranch = (session: SessionBase, task: Task, remote: AetherTask) =>
+      remote.head_branch === undefined
+        ? Effect.succeed(
+            "Aether has not named this task's branch, so Synara cannot follow what the agent pushes.",
+          )
+        : syncAetherBranch({
+            claim: session.claim,
+            taskId: task.cursor.taskId,
+            branch: remote.head_branch,
+          }).pipe(
+            Effect.map((result) => (result._tag === "held" ? result.detail : undefined)),
+            Effect.provideServices(services),
+            Effect.catch((error) => Effect.succeed(branchFailure(error))),
+          );
+
+    /**
+     * Mirrors the VM's working tree into the worktree, then follows the task's branch; never
+     * boots a suspended VM.
+     */
     const mirror = (session: SessionBase, task: Task): Effect.Effect<MirrorOutcome> =>
       Effect.gen(function* () {
         const { cursor } = task;
         const page = yield* client.getConversationTurns(cursor.taskId, { limit: 1 });
-        const workspaceId = page.task.run_context?.workspace_id;
-        if (workspaceId === undefined) return deferred("the task has no workspace yet");
-        const workspace = yield* openWorkspace(workspaceId);
-        if (Option.isNone(workspace)) return deferred("its workspace is not running");
-        const result = yield* syncAetherMirror({
-          workspace: workspace.value,
-          claim: session.claim,
-          taskId: cursor.taskId,
-          baseCommit: cursor.baseCommit,
+        const mirrored = yield* Effect.gen(function* () {
+          const workspaceId = page.task.run_context?.workspace_id;
+          if (workspaceId === undefined) return deferred("the task has no workspace yet");
+          const workspace = yield* openWorkspace(workspaceId);
+          if (Option.isNone(workspace)) return deferred("its workspace is not running");
+          const result = yield* syncAetherMirror({
+            workspace: workspace.value,
+            claim: session.claim,
+            taskId: cursor.taskId,
+            baseCommit: cursor.baseCommit,
+          });
+          return {
+            _tag: "Mirrored",
+            note:
+              result._tag === "synced" && result.modeOnlyPaths.length > 0
+                ? `Aether changed only the mode of ${result.modeOnlyPaths.join(", ")}; the worktree keeps the old mode.`
+                : undefined,
+          } as const;
         });
+        // Pushes reach origin whether or not the workspace runs.
         return {
-          _tag: "Mirrored",
-          note:
-            result._tag === "synced" && result.modeOnlyPaths.length > 0
-              ? `Aether changed only the mode of ${result.modeOnlyPaths.join(", ")}; the worktree keeps the old mode.`
-              : undefined,
+          ...mirrored,
+          branch: yield* followBranch(session, task, page.task),
         } satisfies MirrorOutcome;
       }).pipe(
         Effect.scoped,
@@ -597,11 +648,29 @@ export const makeAetherAdapter = (
     /** Mirrors a run a suspended workspace kept back, before the next turn is sent. */
     const mirrorPending = (session: SessionBase, task: Task) =>
       Effect.gen(function* () {
-        if (!task.cursor.mirrorPending) return undefined;
+        if (!task.cursor.mirrorPending) return { note: undefined, branch: undefined };
         const outcome = yield* mirror(session, task);
         transition(task, (cursor) => ({ ...cursor, mirrorPending: outcome._tag === "Deferred" }));
-        return outcome._tag === "Deferred" ? undefined : outcome.note;
+        return {
+          note: outcome._tag === "Deferred" ? undefined : outcome.note,
+          branch: outcome._tag === "Failed" ? undefined : outcome.branch,
+        };
       });
+
+    /** After a reattach: follow the task's branch, which the VM may have pushed meanwhile. */
+    const followAfterAttach = (session: SessionBase, task: Task) =>
+      client.getConversationTurns(task.cursor.taskId, { limit: 1 }).pipe(
+        Effect.flatMap((page) => followBranch(session, task, page.task)),
+        Effect.catch((error) => Effect.succeed(branchFailure(error))),
+        Effect.flatMap((note) =>
+          note === undefined
+            ? Effect.void
+            : Effect.flatMap(nowIso, (at) =>
+                warn(session, task, undefined, ["branch", "attach", at], note),
+              ),
+        ),
+        session.lock.withPermit,
+      );
 
     // -----------------------------------------------------------------------
     // Poll loop outputs
@@ -631,6 +700,15 @@ export const makeAetherAdapter = (
             turnId,
             ["mirror", settled.turnId, settled.runMessageId],
             note,
+          );
+        }
+        if (outcome._tag !== "Failed" && outcome.branch !== undefined) {
+          yield* warn(
+            session,
+            task,
+            turnId,
+            ["branch", settled.turnId, settled.runMessageId],
+            outcome.branch,
           );
         }
         if (!completes) return;
@@ -1025,7 +1103,7 @@ export const makeAetherAdapter = (
           { after: null, emittedText: new Map() },
         );
         session.state = task;
-        return { task, turnId, note: undefined, ended: undefined };
+        return { task, turnId, note: undefined, branch: undefined, ended: undefined };
       });
 
     /** A later turn: a new message, or the answer to a proposed plan; with a note to show. */
@@ -1046,7 +1124,7 @@ export const makeAetherAdapter = (
             "Aether is waiting for an answer to its question. Answer it before sending a new message, in Aether if Synara no longer shows it.",
           );
         }
-        const note = yield* mirrorPending(session, task);
+        const { note, branch } = yield* mirrorPending(session, task);
         if (awaiting?.kind === "plan") {
           const waiting = page.turns.filter((candidate) => candidate.state === "awaiting_input");
           if (waiting.length !== 1) {
@@ -1059,7 +1137,13 @@ export const makeAetherAdapter = (
           const sent = yield* respond(task, "sendTurn", planAnswer(turn, awaiting.tool_id), {
             aetherTurnId: waiting[0]!.id,
           });
-          return { task, turnId: TurnId.makeUnsafe(sent.clientMessageId), note, ended: undefined };
+          return {
+            task,
+            turnId: TurnId.makeUnsafe(sent.clientMessageId),
+            note,
+            branch,
+            ended: undefined,
+          };
         }
         // A retry of a send whose response was lost, even across a restart, is the same request
         // with the same id: its Aether turn may have started, and even settled, meanwhile. A lost
@@ -1108,16 +1192,16 @@ export const makeAetherAdapter = (
             (landedAt === afterAt &&
               (sent.messageId === landed.root_message.id ||
                 sent.messageId === after.runMessageId)));
-        if (!settledAlready) return { task, turnId, note, ended: undefined };
-        if (landed.state === "settled") return { task, turnId, note, ended: [] };
+        if (!settledAlready) return { task, turnId, note, branch, ended: undefined };
+        if (landed.state === "settled") return { task, turnId, note, branch, ended: [] };
         if (landed.state === "errored") {
           const error =
             page.task.status === "errored"
               ? page.task.error
               : "Aether reported the turn as failed.";
-          return { task, turnId, note, ended: [error] };
+          return { task, turnId, note, branch, ended: [error] };
         }
-        return { task, turnId, note, ended: undefined };
+        return { task, turnId, note, branch, ended: undefined };
       });
 
     const startTurn = (session: Session, input: ProviderSendTurnInput) =>
@@ -1133,7 +1217,7 @@ export const makeAetherAdapter = (
           implementsPlan: input.sourceProposedPlan !== undefined,
         };
         const { state } = session;
-        const { task, turnId, note, ended } =
+        const { task, turnId, note, branch, ended } =
           state._tag === "Creating"
             ? yield* createTask(session, state.cursor, turn)
             : yield* respondTurn(session, state, turn);
@@ -1145,6 +1229,9 @@ export const makeAetherAdapter = (
           payload: { model: session.model, ...(effort === undefined ? {} : { effort }) },
         });
         if (note !== undefined) yield* warn(session, task, turnId, ["mirror", "turn-start"], note);
+        if (branch !== undefined) {
+          yield* warn(session, task, turnId, ["branch", "turn-start"], branch);
+        }
         // Its run already settled, and was mirrored when it did: the turn ends now.
         if (ended !== undefined) {
           yield* complete(session, task, turnId, ended.length > 0 ? "failed" : "completed", ended);
@@ -1265,8 +1352,12 @@ export const makeAetherAdapter = (
             model,
             lifecycleGeneration: input.lifecycleGeneration,
           });
-          // Reattached: read the task again, including anything answered in Aether meanwhile.
-          if (session.state._tag === "Task") yield* session.state.poller.wake;
+          // Reattached: read the task again, including anything answered in Aether meanwhile,
+          // and follow its branch.
+          if (session.state._tag === "Task") {
+            yield* session.state.poller.wake;
+            yield* Effect.forkIn(followAfterAttach(session, session.state), session.scope);
+          }
           return snapshot(session);
         }),
       reattachTurn: (input) =>
@@ -1303,7 +1394,10 @@ export const makeAetherAdapter = (
             model: cursor.model,
             lifecycleGeneration: input.lifecycleGeneration,
           });
-          if (session.state._tag === "Task") yield* session.state.poller.wake;
+          if (session.state._tag === "Task") {
+            yield* session.state.poller.wake;
+            yield* Effect.forkIn(followAfterAttach(session, session.state), session.scope);
+          }
         }),
       sendTurn: (input) =>
         withSession(input.threadId, (session) =>

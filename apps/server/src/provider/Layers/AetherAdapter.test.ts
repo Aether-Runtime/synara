@@ -55,6 +55,7 @@ import {
 import { AetherToolId, type AetherWorkspaceId } from "../aether/aetherApiSchemas.ts";
 import {
   makeFakeAetherTask,
+  FAKE_HEAD_BRANCH,
   FAKE_REPO_URL,
   type FakeTurn,
 } from "../aether/testing/aetherFakeTask.ts";
@@ -229,7 +230,8 @@ const makeHarness = Effect.gen(function* () {
   yield* git(repo, ["remote", "add", "origin", FAKE_REPO_URL]);
   yield* git(repo, ["config", `url.${origin}.insteadOf`, FAKE_REPO_URL]);
   yield* git(repo, ["push", "origin", "main"]);
-  yield* git(repo, ["worktree", "add", "-b", "synara/aether-thread", worktree, "main"]);
+  // Synara names a new thread's worktree branch `synara/<8 hex>`.
+  yield* git(repo, ["worktree", "add", "-b", "synara/0a1b2c3d", worktree, "main"]);
   const baseCommit = yield* git(worktree, ["rev-parse", "HEAD"]);
 
   const aether = makeFakeAetherTask();
@@ -326,11 +328,46 @@ const makeHarness = Effect.gen(function* () {
     };
   };
 
+  /** The VM's clone of origin, on the task's branch from the base: it commits and pushes. */
+  const vmClone = path.join(root, "vm");
+  const vmPush = (files: Readonly<Record<string, string>>, message: string, rewrite = false) =>
+    Effect.gen(function* () {
+      if (!existsSync(vmClone)) {
+        yield* git(root, ["clone", "-q", origin, vmClone]);
+        yield* git(vmClone, ["config", "user.email", "agent@test.com"]);
+        yield* git(vmClone, ["config", "user.name", "Agent"]);
+        yield* git(vmClone, ["checkout", "-q", "-b", FAKE_HEAD_BRANCH, baseCommit]);
+      }
+      if (rewrite) yield* git(vmClone, ["reset", "-q", "--hard", "HEAD~1"]);
+      yield* Effect.promise(async () => {
+        for (const [file, content] of Object.entries(files)) {
+          await fs.writeFile(path.join(vmClone, file), content);
+        }
+      });
+      yield* git(vmClone, ["add", "-A"]);
+      yield* git(vmClone, ["commit", "-q", "-m", message]);
+      yield* git(vmClone, ["push", "-q", "--force", "origin", FAKE_HEAD_BRANCH]);
+      return yield* git(vmClone, ["rev-parse", "HEAD"]);
+    });
+
   return {
     root,
     repo,
     worktree,
     baseCommit,
+    vmPush,
+    status: Effect.gen(function* () {
+      const gitCore = yield* GitCore;
+      const result = yield* gitCore.execute({
+        operation: "AetherAdapter.test",
+        cwd: worktree,
+        args: ["status", "--porcelain=v1", "--untracked-files=all"],
+      });
+      return result.stdout
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .toSorted();
+    }),
     aether,
     workspace,
     vm,
@@ -634,6 +671,111 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         expect(events.some((event) => event.type === "runtime.warning")).toBe(false);
         yield* Effect.sleep("1500 millis");
         expect(completions(events)).toHaveLength(2);
+      }),
+    );
+  });
+
+  describe("the task's branch", () => {
+    it.effect(
+      "puts the worktree on the task's branch and follows each push before the turn completes",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const { adapter, events } = yield* h.launch();
+          yield* h.start(adapter);
+          let pushed = "";
+          h.aether.hooks.onTurn = (turn) => {
+            h.aether.say(turn, `text-${turn.id}`, "Committed the fix and started notes.");
+            h.aether.settle(turn);
+          };
+          h.workspace.serve(
+            diffOf(
+              h.baseCommit,
+              modified("app.txt", hunk(1, 1, " one", "-two", "+TWO")),
+              added("notes.md", "not committed yet\n"),
+            ),
+          );
+          // The agent committed app.txt and pushed; notes.md is only in its working tree.
+          pushed = yield* h.vmPush({ "app.txt": "one\nTWO\n" }, "Capitalize two");
+
+          yield* adapter.sendTurn(h.send("Fix it and push"));
+          yield* waitFor("turn.completed", () => completions(events)[0]);
+
+          expect(yield* git(h.worktree, ["symbolic-ref", "--short", "HEAD"])).toBe(
+            FAKE_HEAD_BRANCH,
+          );
+          expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(pushed);
+          expect(yield* git(h.worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toBe(
+            `origin/${FAKE_HEAD_BRANCH}`,
+          );
+          // Pushed work is a commit; only what the agent has not committed is a change.
+          expect(yield* h.status).toEqual(["?? notes.md"]);
+          expect(events.filter((event) => event.type === "runtime.warning")).toEqual([]);
+        }),
+    );
+
+    it.effect("warns and keeps the branch when origin was rewritten, and keeps mirroring", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        const first = yield* h.vmPush({ "a.md": "a\n" }, "A");
+        h.workspace.serve(diffOf(h.baseCommit, added("a.md", "a\n")));
+        yield* adapter.sendTurn(h.send("One"));
+        yield* waitFor("the first turn", () => completions(events)[0]);
+        expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(first);
+
+        const rewritten = yield* h.vmPush({ "b.md": "b\n" }, "B instead", true);
+        h.workspace.serve(diffOf(h.baseCommit, added("b.md", "b\n")));
+        const second = yield* adapter.sendTurn(h.send("Two"));
+        const completed = yield* waitFor("the second turn", () => completions(events)[1]);
+
+        expect(completed).toMatchObject({ payload: { state: "completed" } });
+        const warning = events.find((event) => event.type === "runtime.warning");
+        expect(warning).toMatchObject({ turnId: second.turnId });
+        expect(warning?.type === "runtime.warning" && warning.payload.message).toContain(
+          `does not contain the local branch's tip ${first.slice(0, 12)}`,
+        );
+        expect(warning?.type === "runtime.warning" && warning.payload.message).toContain(
+          rewritten.slice(0, 12),
+        );
+        expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(first);
+        expect(yield* h.read("b.md")).toBe("b\n");
+      }),
+    );
+
+    it.effect("follows what the agent pushed while Synara was away, once it reattaches", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const first = yield* h.launch();
+        yield* h.start(first.adapter);
+        h.finishTurns();
+        h.workspace.serve(diffOf(h.baseCommit, added("later.md", "later\n")));
+        yield* first.adapter.sendTurn(h.send("First"));
+        yield* waitFor("the first turn", () => completions(first.events)[0]);
+        expect(yield* h.status).toEqual(["?? later.md"]);
+        const [persisted] = yield* first.adapter.listSessions();
+        yield* first.stop;
+
+        // Meanwhile the agent committed what it had written, and pushed it.
+        const pushed = yield* h.vmPush({ "later.md": "later\n" }, "Later");
+        const second = yield* h.launch();
+        yield* second.adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "aether",
+          cwd: h.worktree,
+          resumeCursor: persisted!.resumeCursor,
+          runtimeMode: "full-access",
+        });
+        // The loop follows the branch in the background once the session is back.
+        for (let attempt = 0; ; attempt += 1) {
+          if ((yield* git(h.worktree, ["rev-parse", "HEAD"])) === pushed) break;
+          if (attempt === 250) return yield* Effect.die(new Error("The branch never followed."));
+          yield* Effect.sleep("20 millis");
+        }
+        expect(yield* h.status).toEqual([]);
+        expect(second.events.filter((event) => event.type === "runtime.warning")).toEqual([]);
       }),
     );
   });
