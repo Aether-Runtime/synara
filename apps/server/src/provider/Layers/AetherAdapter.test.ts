@@ -805,9 +805,10 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         ]);
         const revised = yield* waitFor("the revised plan", () => completions(events)[1]);
         expect(revised).toMatchObject({ turnId: revising.turnId, payload: { state: "completed" } });
-        expect(
-          events.filter((event) => event.type === "turn.proposed.completed").at(-1),
-        ).toMatchObject({ turnId: revising.turnId, payload: { planMarkdown: "1. Use Postgres" } });
+        expect(events.findLast((event) => event.type === "turn.proposed.completed")).toMatchObject({
+          turnId: revising.turnId,
+          payload: { planMarkdown: "1. Use Postgres" },
+        });
       }),
     );
 

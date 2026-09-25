@@ -1229,7 +1229,8 @@ describe("ProviderCommandReactor", () => {
         (activity) => activity.kind === "provider.turn.start.failed",
       );
     await waitFor(async () => (await failure()) !== undefined);
-    check(((await failure())?.payload as { readonly detail: string }).detail);
+    const { payload } = (await failure())!;
+    check((payload as { readonly detail: string }).detail);
   });
 
   async function seedRollbackTarget(
