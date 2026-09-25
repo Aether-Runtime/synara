@@ -30,9 +30,45 @@ export const projectBody = (): Json => ({
 
 export type TaskStatusFixture = "queued" | "processing" | "awaiting_input" | "errored";
 
+export const PULL_REQUEST_ID = "e7432a1c-b5da-4e18-a2ec-40ace1326105";
+
+/** `primary_pull_request` as production sent it for task 640050b7 (2026-09-25). */
+export const pullRequestBody = (extra: Json = {}): Json => ({
+  pull_request_id: PULL_REQUEST_ID,
+  pr_number: 18,
+  html_url: "https://github.com/Aether-Runtime/acme-checkout/pull/18",
+  state: "open",
+  ci_status: "passed",
+  branch_name: "aether/acme-checkout-640050b7d9ed",
+  title: "Add docs/demo.md with checkout edge cases",
+  checks_passed: 9,
+  checks_failed: 0,
+  checks_total: 9,
+  commits: 1,
+  lines_changed: 3,
+  additions: 3,
+  deletions: 0,
+  ...extra,
+});
+
+/** `pr_review_summary` as production sent it for the same task. */
+export const reviewSummaryBody = (extra: Json = {}): Json => ({
+  review_task_id: "7cd9619c-e2bb-47ba-b964-642c8c000673",
+  pull_request_id: PULL_REQUEST_ID,
+  run_status: "completed",
+  verdict: "APPROVE",
+  comment_count: 3,
+  severity_counts: { p1: 0, p2: 0, nit: 2, question: 0, confirmed: 1 },
+  run_count: 1,
+  ...extra,
+});
+
 export const taskBody = (status: TaskStatusFixture, extra: Json = {}): Json => ({
   status,
   run_context: { workspace_id: WORKSPACE_ID },
+  base_branch: "main",
+  primary_pull_request: null,
+  pr_review_summary: null,
   ...(status === "awaiting_input"
     ? {
         awaiting_input: {

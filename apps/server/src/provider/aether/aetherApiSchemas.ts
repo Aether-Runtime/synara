@@ -11,8 +11,9 @@
 // - An Aether enum that drives the protocol (task `status`, turn `state`, `awaiting_input.kind`,
 //   what the client sends next) is strict: an unknown value is a decode error naming the field.
 //   A vocabulary Aether grows and Synara only displays (tool `status` and `itemType`, seam
-//   `reason`) is open: an unknown value decodes to `{ _tag: "Unknown", raw }`, so one new tool type
-//   cannot fail a whole activity page. Enums nobody reads are not decoded at all.
+//   `reason`, a pull request's `state` and `ci_status`, a review's `run_status` and `verdict`,
+//   the status line's source) is open: an unknown value decodes to `{ _tag: "Unknown", raw }`, so
+//   one new tool type cannot fail a whole activity page. Enums nobody reads are not decoded at all.
 // - IDs are branded here, once; every client method takes the branded type.
 // - Nothing is defaulted.
 //
@@ -103,20 +104,76 @@ export type AetherAwaitingInput = typeof AetherAwaitingInput.Type;
 /** `run_context.workspace_id` is the workspace to connect to. */
 const RunContext = Schema.Struct({ workspace_id: AetherWorkspaceId });
 
+/** The pull request the task's branch opened on GitHub (`primary_pull_request`). */
+export const AetherTaskPullRequest = Schema.Struct({
+  pull_request_id: Uuid,
+  pr_number: PositiveInt,
+  html_url: NonEmptyString,
+  // GitHub refuses a pull request without a title.
+  title: NonEmptyString,
+  state: Schema.optionalKey(openVocabulary(["open", "closed", "merged"])),
+  ci_status: Schema.optionalKey(openVocabulary(["pending", "passed", "failed"])),
+  checks_passed: NonNegativeInt,
+  checks_failed: NonNegativeInt,
+  checks_total: NonNegativeInt,
+  branch_name: Schema.optionalKey(NonEmptyString),
+  additions: NonNegativeInt,
+  deletions: NonNegativeInt,
+});
+export type AetherTaskPullRequest = typeof AetherTaskPullRequest.Type;
+
+/** Aether Review's latest run on a pull request (`pr_review_summary`). */
+export const AetherPullRequestReview = Schema.Struct({
+  pull_request_id: Uuid,
+  run_status: openVocabulary([
+    "reviewing",
+    "awaiting_input",
+    "completed",
+    "failed",
+    "cancelled",
+    "superseded",
+    "archived",
+  ]),
+  verdict: Schema.optionalKey(
+    openVocabulary(["APPROVE", "REQUEST_CHANGES", "COMMENT", "DISMISSED", "SUPERSEDED"]),
+  ),
+});
+export type AetherPullRequestReview = typeof AetherPullRequestReview.Type;
+
+/**
+ * What every status carries: the branch the task works on (`head_branch`, named when the task
+ * is created), its pull request and review, and the latest status line. While the workspace
+ * boots, the line comes from `infra` ("Booting workspace"); once the agent runs, from `agent`.
+ */
+const taskFields = {
+  base_branch: NonEmptyString,
+  head_branch: Schema.optionalKey(NonEmptyString),
+  primary_pull_request: Schema.NullOr(AetherTaskPullRequest),
+  pr_review_summary: Schema.NullOr(AetherPullRequestReview),
+  latest_status_message: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  latest_status_source: Schema.optionalKey(Schema.NullOr(openVocabulary(["infra", "agent"]))),
+} as const;
+
 /** The task on every conversation page, by status. */
 export const AetherTask = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("queued"), run_context: Schema.NullOr(RunContext) }),
-  Schema.Struct({ status: Schema.Literal("processing"), run_context: RunContext }),
+  Schema.Struct({
+    status: Schema.Literal("queued"),
+    run_context: Schema.NullOr(RunContext),
+    ...taskFields,
+  }),
+  Schema.Struct({ status: Schema.Literal("processing"), run_context: RunContext, ...taskFields }),
   Schema.Struct({
     status: Schema.Literal("awaiting_input"),
     // Null when every queued message was cancelled before a workspace was assigned.
     run_context: Schema.NullOr(RunContext),
     awaiting_input: AetherAwaitingInput,
+    ...taskFields,
   }),
   Schema.Struct({
     status: Schema.Literal("errored"),
     run_context: Schema.NullOr(RunContext),
     error: NonEmptyString,
+    ...taskFields,
   }),
 ]);
 export type AetherTask = typeof AetherTask.Type;

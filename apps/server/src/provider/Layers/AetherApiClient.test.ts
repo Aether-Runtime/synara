@@ -26,6 +26,9 @@ import {
   PROJECT_ID,
   profileBody,
   projectBody,
+  PULL_REQUEST_ID,
+  pullRequestBody,
+  reviewSummaryBody,
   TASK_ID,
   taskBody,
   TOOL_ID,
@@ -253,6 +256,9 @@ describe("AetherApiClient", () => {
     expect(page.task).toEqual({
       status: "awaiting_input",
       run_context: { workspace_id: WORKSPACE_ID },
+      base_branch: "main",
+      primary_pull_request: null,
+      pr_review_summary: null,
       // The input is kept whole, unknown keys included: the respond fence digests all of it.
       awaiting_input: {
         kind: "questions",
@@ -261,6 +267,80 @@ describe("AetherApiClient", () => {
       },
     });
     expect(page.turns[0]).toMatchObject({ id: TURN_ID, state: "settled", revision_sequence: 9 });
+  });
+
+  it("decodes the task's branch, pull request, review and status message from the turns page", async () => {
+    const page = await succeed(
+      clientWith(
+        json(
+          200,
+          turnsPageBody({
+            task: taskBody("processing", {
+              head_branch: "aether/acme-checkout-640050b7d9ed",
+              primary_pull_request: pullRequestBody(),
+              pr_review_summary: reviewSummaryBody(),
+              latest_status_message: "Booting workspace",
+              latest_status_source: "infra",
+            }),
+          }),
+        ),
+      ).client.getConversationTurns(TASK_ID),
+    );
+
+    expect(page.task).toMatchObject({
+      base_branch: "main",
+      head_branch: "aether/acme-checkout-640050b7d9ed",
+      primary_pull_request: {
+        pull_request_id: PULL_REQUEST_ID,
+        pr_number: 18,
+        html_url: "https://github.com/Aether-Runtime/acme-checkout/pull/18",
+        title: "Add docs/demo.md with checkout edge cases",
+        state: "open",
+        ci_status: "passed",
+        checks_passed: 9,
+        checks_failed: 0,
+        checks_total: 9,
+        branch_name: "aether/acme-checkout-640050b7d9ed",
+        additions: 3,
+        deletions: 0,
+      },
+      pr_review_summary: {
+        pull_request_id: PULL_REQUEST_ID,
+        run_status: "completed",
+        verdict: "APPROVE",
+      },
+      latest_status_message: "Booting workspace",
+      latest_status_source: "infra",
+    });
+  });
+
+  it("decodes a pull request state, CI status, review verdict or status source it does not know as Unknown", async () => {
+    const page = await succeed(
+      clientWith(
+        json(
+          200,
+          turnsPageBody({
+            task: taskBody("processing", {
+              primary_pull_request: pullRequestBody({ state: "draft", ci_status: "skipped" }),
+              pr_review_summary: reviewSummaryBody({ run_status: "queued", verdict: "BLOCK" }),
+              latest_status_source: "scheduler",
+            }),
+          }),
+        ),
+      ).client.getConversationTurns(TASK_ID),
+    );
+
+    expect(page.task).toMatchObject({
+      primary_pull_request: {
+        state: { _tag: "Unknown", raw: "draft" },
+        ci_status: { _tag: "Unknown", raw: "skipped" },
+      },
+      pr_review_summary: {
+        run_status: { _tag: "Unknown", raw: "queued" },
+        verdict: { _tag: "Unknown", raw: "BLOCK" },
+      },
+      latest_status_source: { _tag: "Unknown", raw: "scheduler" },
+    });
   });
 
   it("decodes activity rows, with exitCode and durationMs on tool rows", async () => {
@@ -297,6 +377,11 @@ describe("AetherApiClient", () => {
         (client) => client.getConversationTurns(TASK_ID),
         withoutKey(turnsPageBody(), ["turns", 0, "revision_sequence"]),
         '["turns"][0]["revision_sequence"]',
+      ],
+      [
+        (client) => client.getConversationTurns(TASK_ID),
+        withoutKey(turnsPageBody(), ["task", "primary_pull_request"]),
+        '["task"]["primary_pull_request"]',
       ],
       [(client) => client.createTask(createRequest), { id: "not-a-uuid" }, '["id"]'],
     ];

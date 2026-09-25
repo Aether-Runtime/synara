@@ -23,7 +23,13 @@
           "status": "queued",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Provisioning machine",
+          "latest_status_source": "infra"
         },
         "head_revision": 2671322,
         "turns": [
@@ -78,7 +84,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2671406,
         "turns": [
@@ -133,7 +145,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Ask user",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673098,
         "turns": [
@@ -204,7 +222,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673106,
         "turns": [
@@ -312,7 +336,13 @@
                 }
               ]
             }
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Awaiting input",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673117,
         "turns": [
@@ -397,7 +427,13 @@
           "status": "queued",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Starting workspace",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673126,
         "turns": [
@@ -499,7 +535,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673141,
         "turns": [
@@ -602,7 +644,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Run command",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673160,
         "turns": [
@@ -720,7 +768,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Run command",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673185,
         "turns": [
@@ -859,7 +913,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Read file",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673201,
         "turns": [
@@ -1024,7 +1084,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Edit file",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673217,
         "turns": [
@@ -1206,7 +1272,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673239,
         "turns": [
@@ -1459,7 +1531,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673241,
         "turns": [
@@ -1903,7 +1981,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673259,
         "turns": [
@@ -2125,7 +2209,13 @@
           },
           "awaiting_input": {
             "kind": "message"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "The checkout submit button now says \"Place order\" instead of \"Pay now\", as you chose. The change is one line in `web/src/components/CheckoutForm.tsx:76`, and `git diff --stat` shows one file changed with one insertion and one deletion.\n\nThe label lives in the `CheckoutForm` component, inside the button that submits the form. I left the in-progress text, \"Paying…\", as it was, since you asked for only the one label. That means the button still switches to \"Paying…\" while the payment is processing. The `data-testid=\"pay\"` attribute is also unchanged, and I found no end-to-end or unit tests that look for the text \"Pay now\", so none should need updating. I haven't run the tests.\n\nI changed nothing else: no styles, no backend code, and no API behaviour. Because you asked me to follow the steps exactly, I haven't committed, pushed or opened a pull request, so the change is only in the working tree.",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673392,
         "turns": [

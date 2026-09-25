@@ -33,6 +33,8 @@ type Json = Record<string, unknown>;
 type TurnState = "queued" | "running" | "awaiting_input" | "settled" | "errored";
 
 export const FAKE_REPO_URL = "https://github.com/acme/widgets.git";
+/** The branch Aether names the task's work `head_branch`. */
+export const FAKE_HEAD_BRANCH = "aether/widgets-6a3e1f0c2b4d";
 
 /** Shorter than any page the adapter asks for, so a read that omits its limit misses turns. */
 const FAKE_DEFAULT_TURNS_PAGE_LIMIT = 1;
@@ -119,11 +121,32 @@ export function makeFakeAetherTask() {
   const transportError = (endpoint: string) =>
     new AetherApiTransportError({ endpoint, cause: new Error("socket hang up") });
 
+  /** The task's branch, pull request, review and status line, as the test sets them. */
+  const remote: {
+    head_branch: string | undefined;
+    primary_pull_request: Json | null;
+    pr_review_summary: Json | null;
+    latest_status_message: string | null;
+    latest_status_source: string | null;
+  } = {
+    head_branch: FAKE_HEAD_BRANCH,
+    primary_pull_request: null,
+    pr_review_summary: null,
+    latest_status_message: null,
+    latest_status_source: null,
+  };
+
   const taskBody = () => {
     const status = task?.status ?? "queued";
     return {
       status,
       run_context: { workspace_id: WORKSPACE_ID },
+      base_branch: "main",
+      primary_pull_request: remote.primary_pull_request,
+      pr_review_summary: remote.pr_review_summary,
+      latest_status_message: remote.latest_status_message,
+      latest_status_source: remote.latest_status_source,
+      ...(remote.head_branch === undefined ? {} : { head_branch: remote.head_branch }),
       ...(status === "awaiting_input" ? { awaiting_input: task!.awaiting } : {}),
       ...(status === "errored" ? { error: task!.error } : {}),
     };
@@ -318,6 +341,7 @@ export function makeFakeAetherTask() {
     faults,
     hooks,
     turns,
+    remote,
     get task() {
       return task;
     },
