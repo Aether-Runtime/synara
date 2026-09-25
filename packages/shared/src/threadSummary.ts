@@ -169,6 +169,8 @@ export function buildStalePendingRequestFailureDetail(
   return `Stale pending ${requestKind} request: ${requestId}. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.`;
 }
 
+// A question the UI renders (`pendingInteractionDerivation`): its header is optional, options
+// it cannot show are dropped, and a question left with no options takes free text.
 function hasStructuredUserInputQuestions(payload: Record<string, unknown> | null): boolean {
   const questions = payload?.questions;
   if (!Array.isArray(questions)) {
@@ -179,21 +181,11 @@ function hasStructuredUserInputQuestions(payload: Record<string, unknown> | null
       return false;
     }
     const question = entry as Record<string, unknown>;
-    const options = Array.isArray(question.options) ? question.options : null;
     return (
       typeof question.id === "string" &&
-      typeof question.header === "string" &&
+      (question.header === undefined || typeof question.header === "string") &&
       typeof question.question === "string" &&
-      options !== null &&
-      options.some((option) => {
-        if (!option || typeof option !== "object") {
-          return false;
-        }
-        const optionRecord = option as Record<string, unknown>;
-        return (
-          typeof optionRecord.label === "string" && typeof optionRecord.description === "string"
-        );
-      })
+      Array.isArray(question.options)
     );
   });
 }

@@ -387,24 +387,18 @@ describe("deriveThreadSummaryMetadata", () => {
     });
   });
 
-  it("ignores malformed user-input questions that the UI could not render", () => {
+  it.each([
+    ["a question that is not text", { id: "q", question: 1, options: [] }],
+    ["a header that is not text", { id: "q", header: 1, question: "Continue?", options: [] }],
+    ["no options list", { id: "q", question: "Continue?" }],
+  ])("ignores a user-input question the UI could not render: %s", (_name, question) => {
     const activities: OrchestrationThreadActivity[] = [
       {
         id: EventId.makeUnsafe("activity-1"),
         tone: "info",
         kind: "user-input.requested",
         summary: "Questions requested",
-        payload: {
-          requestId: "input-1",
-          questions: [
-            {
-              id: "question-1",
-              header: "Confirm",
-              question: "Continue?",
-              options: [{ label: "Yes" }],
-            },
-          ],
-        },
+        payload: { requestId: "input-1", questions: [question] },
         sequence: 1,
         turnId: TurnId.makeUnsafe("turn-1"),
         createdAt: "2026-02-27T00:01:00.000Z",
@@ -425,6 +419,36 @@ describe("deriveThreadSummaryMetadata", () => {
       hasPendingUserInput: false,
       hasActionableProposedPlan: false,
     });
+  });
+
+  it.each([
+    [
+      "no header, options without descriptions",
+      { id: "0", question: "Which color?", options: [{ label: "Red" }, { label: "Blue" }] },
+    ],
+    ["free text only", { id: "0", question: "What should it be called?", options: [] }],
+  ])("counts a question the UI renders as pending: %s", (_name, question) => {
+    const activities: OrchestrationThreadActivity[] = [
+      {
+        id: EventId.makeUnsafe("activity-1"),
+        tone: "info",
+        kind: "user-input.requested",
+        summary: "Questions requested",
+        payload: { requestId: "input-1", questions: [question] },
+        sequence: 1,
+        turnId: TurnId.makeUnsafe("turn-1"),
+        createdAt: "2026-02-27T00:01:00.000Z",
+      },
+    ];
+
+    expect(
+      deriveThreadSummaryMetadata({
+        messages: [],
+        activities,
+        proposedPlans: [],
+        latestTurn: null,
+      }).hasPendingUserInput,
+    ).toBe(true);
   });
 
   it("uses a present interaction projection as authority across every request kind", () => {
