@@ -105,6 +105,37 @@ auto_fix_*: false}` → `{id}`. Persist the resume cursor `{schemaVersion, taskI
 - Interrupt: `POST /tasks/{id}/stop {discard_queued_messages: true}`; discarded text is surfaced
   as a warning.
 
+As built in P4 (`provider/Layers/AetherAdapter.ts`, `provider/aether/aetherResumeCursor.ts`,
+`aetherTaskBase.ts`):
+
+- The resume cursor is `creating` (worktree path, idempotency key) until `POST /tasks` succeeds,
+  then `created`: worktree path, task, project, base branch and commit, model, the Synara turns
+  sent (`turns`), the accepted respond count (`sends`), the last settled run (`after`), the turn
+  in flight (`activeTurnId`) and `mirrorPending`. The idempotency key is made at `startSession`,
+  so it is persisted before the first send. A respond's `client_message_id` is derived from the
+  task, `sends` and the request: a retry of the same request, even after a restart, reuses it; any
+  other request gets a new one. A Synara turn's id is its send's id (the idempotency key for the
+  first turn), so a retry after a lost response is the same turn.
+- The base branch is the one branch on origin whose tip is the worktree's HEAD; Synara's worktree
+  creation keeps only the commit. None (unpushed or behind) or several is a loud error.
+- Answers are fenced by `expected_tool_id` only: `expected_input_digest` would need Go
+  `encoding/json` bytes reproduced exactly. A plan is answered by the next message: implementing it
+  (default mode) approves; a message in plan mode is feedback.
+- `sendTurn` sends with `queue_for_later: true`, so a message never steers a busy run by accident;
+  `steerTurn` sends without it.
+- While a surfaced question or plan waits, the poll loop idles; sending an answer or reattaching
+  wakes it, so an answer given in Aether's own UI shows at the next wake.
+- A turn completes exactly once: when its run settles, after the mirror; when the poll loop stops
+  (failed); or on a stop that discards it before it ran (interrupted). The settle records `after`
+  and clears `activeTurnId` in the cursor first. If the workspace is not running the turn completes
+  and `mirrorPending` mirrors at the next turn start, from inside `sendTurn`, after the reactor's
+  start checkpoint.
+- Startup reconciliation skips threads whose adapter declares `turnsSurviveRestart`. At
+  construction the adapter claims every Aether thread's worktree again and reattaches a thread with
+  `activeTurnId`; a reattached loop reads everything again, so the adapter builds `emittedText`
+  from the `content.delta` events the runtime event journal holds and drops re-derived events whose
+  ids it holds.
+
 ### Ingestion and settlement
 
 - While a turn is active, one single-flight poll loop per task: read `/conversation/live` for open
@@ -236,7 +267,7 @@ there — acceptable, documented.
 | Conversation, tools, reasoning, questions, plans | Works                                                                                                                                              |
 | Diffs, checkpoints, file viewer                  | Works via mirror sync                                                                                                                              |
 | Revert / rollback                                | Refused before touching files — add `"unsupported"` to the rollback capability                                                                     |
-| Model switch                                     | `restart-session` or `unsupported` (decide in P4)                                                                                                  |
+| Model switch                                     | `unsupported`: a task's agent and model are fixed when it is created                                                                               |
 | Steering                                         | Native steer via `/respond`                                                                                                                        |
 | Thread fork                                      | Transcript replay (no native `forkThread`); fork starts from the branch, not the mirrored tree                                                     |
 | Provider handoff to/from Aether                  | Needs design: to Aether requires a clean pushed tree; from Aether must release ownership first                                                     |

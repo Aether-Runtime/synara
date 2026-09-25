@@ -21,7 +21,6 @@ import {
   EventId,
   resolveAetherAgentFamily,
   TurnId,
-  type ProviderInteractionMode,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
   type ProviderSession,
@@ -318,15 +317,6 @@ function turnText(input: ProviderSendTurnInput, operation: string) {
   return input.input === undefined
     ? Exit.fail(invalid(operation, "An Aether turn needs a message."))
     : Exit.succeed(input.input);
-}
-
-function interactionModeOf(
-  mode: ProviderInteractionMode | undefined,
-  operation: string,
-): Exit.Exit<"default" | "plan", ProviderAdapterValidationError> {
-  return mode === "debug"
-    ? Exit.fail(invalid(operation, "Aether has no debug mode."))
-    : Exit.succeed(mode ?? "default");
 }
 
 export const makeAetherAdapter = (
@@ -912,7 +902,8 @@ export const makeAetherAdapter = (
     const startTurn = (session: Session, input: ProviderSendTurnInput) =>
       Effect.gen(function* () {
         const message = yield* turnText(input, "sendTurn");
-        const mode = yield* interactionModeOf(input.interactionMode, "sendTurn");
+        // Debug mode is a prompt prefix the command reactor adds; Aether runs it as a default turn.
+        const mode = input.interactionMode === "plan" ? "plan" : "default";
         const effort =
           input.modelSelection?.provider === PROVIDER
             ? input.modelSelection.options?.reasoningEffort
