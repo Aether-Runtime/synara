@@ -4,7 +4,8 @@ import { OutboundHttpError } from "@synara/shared/outboundHttp";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { makeCheckAetherProviderStatus, type AetherHttpRequest } from "./aetherHealth.ts";
+import { makeAetherApiClient, type AetherHttpRequest } from "../Layers/AetherApiClient.ts";
+import { checkAetherProviderStatus } from "./aetherHealth.ts";
 
 const API_BASE_URL = AetherApiBaseUrl.makeUnsafe("https://api.runaether.dev");
 
@@ -34,11 +35,13 @@ const check = (input: {
   readonly apiBaseUrl?: AetherApiBaseUrl;
 }) =>
   Effect.runPromise(
-    makeCheckAetherProviderStatus({
-      apiBaseUrl: input.apiBaseUrl ?? API_BASE_URL,
-      readApiKey: Effect.succeed(input.apiKey),
-      request: input.http.request,
-    }),
+    checkAetherProviderStatus(
+      makeAetherApiClient({
+        apiBaseUrl: Effect.succeed(input.apiBaseUrl ?? API_BASE_URL),
+        readApiKey: Effect.succeed(input.apiKey),
+        request: input.http.request,
+      }),
+    ),
   );
 
 describe("Aether health check", () => {
@@ -69,6 +72,7 @@ describe("Aether health check", () => {
     expect(request?.method).toBe("GET");
     expect(new Headers(request?.headers).get("authorization")).toBe("Bearer aether-secret");
     expect(request?.policy).toMatchObject({
+      timeoutMs: 10_000,
       allowedOrigins: ["https://api.runaether.dev"],
       maxRedirects: 0,
       requirePublicAddress: true,
@@ -177,11 +181,13 @@ describe("Aether health check", () => {
   it("reports a failing secret store without calling the API", async () => {
     const http = fakeHttp(() => jsonResponse(200, { email: "dev@example.com" }));
     const unreadable = await Effect.runPromise(
-      makeCheckAetherProviderStatus({
-        apiBaseUrl: API_BASE_URL,
-        readApiKey: Effect.fail(new Error("EACCES")),
-        request: http.request,
-      }),
+      checkAetherProviderStatus(
+        makeAetherApiClient({
+          apiBaseUrl: Effect.succeed(API_BASE_URL),
+          readApiKey: Effect.fail(new Error("EACCES")),
+          request: http.request,
+        }),
+      ),
     );
     expect(unreadable).toMatchObject({
       status: "error",

@@ -262,7 +262,7 @@ function requestHeaders(headers: Headers): Record<string, string> {
   return result;
 }
 
-async function resolvePinnedAddress(
+export async function resolvePinnedAddress(
   url: URL,
   requirePublicAddress: boolean,
   allowLoopbackHttp: boolean,
