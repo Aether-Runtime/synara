@@ -8572,6 +8572,51 @@ describe("ChatView transcript geometry (full app)", () => {
     },
   );
 
+  it.each([
+    ["codex", "gpt-5", true],
+    ["aether", "claude-opus-5-5", false],
+  ] as const)(
+    "offers branch picks in a started worktree thread for %s: %s",
+    async (provider, model, offersBranchPicks) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: `msg-user-worktree-branch-picks-${provider}` as MessageId,
+        targetText: "worktree branch picks test",
+      });
+      const thread = snapshot.threads[0]!;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            {
+              ...thread,
+              modelSelection: { provider, model },
+              session: { ...thread.session!, providerName: provider },
+              envMode: "worktree",
+              branch: "synara/branch-picks",
+              worktreePath: "/repo/.codex/worktrees/branch-picks",
+            },
+          ],
+        },
+      });
+
+      try {
+        await waitForComposerEditor();
+        // A pick can move the thread to another checkout; a provider that owns its worktree
+        // (and its branch) never moves.
+        await vi.waitFor(
+          () =>
+            expect(document.querySelector('button[data-slot="combobox-trigger"]') !== null).toBe(
+              offersBranchPicks,
+            ),
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("explains a cloud provider once on a new chat and hides it after dismissal", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

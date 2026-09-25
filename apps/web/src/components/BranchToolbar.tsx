@@ -550,7 +550,9 @@ export default function BranchToolbar({
           </span>
         )}
 
-        {showBranchSelector ? (
+        {/* A provider that owns its worktree also owns its branch, and a pick could move the
+            thread off that worktree: once it has one, no branch is offered. */}
+        {showBranchSelector && !(providerOwnsWorktree && activeWorktreePath) ? (
           /* ChatView stays mounted while the route switches threads. Reset the selector's
              optimistic checkout state at that boundary so a previous thread cannot paint its
              branch while the new thread's workspace query is resolving. */
