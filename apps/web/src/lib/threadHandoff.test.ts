@@ -24,6 +24,14 @@ import {
   type BrowserAnnotationDraft,
 } from "./browserAnnotations";
 
+const readyProviderStatus = (provider: ProviderKind): ServerProviderStatus => ({
+  provider,
+  status: "ready",
+  available: true,
+  authStatus: "authenticated",
+  checkedAt: "2026-09-25T12:00:00.000Z",
+});
+
 describe("threadHandoff", () => {
   it("strips source-thread browser annotations and selections from imported messages", () => {
     const sourceMessageId = MessageId.makeUnsafe("source-user-message");
@@ -170,21 +178,14 @@ describe("threadHandoff", () => {
   });
 
   it("never offers a handoff to or from a provider that owns its worktree", () => {
-    const readyStatus = (provider: ProviderKind): ServerProviderStatus => ({
-      provider,
-      status: "ready",
-      available: true,
-      authStatus: "authenticated",
-      checkedAt: "2026-09-25T12:00:00.000Z",
-    });
     const providerSettings = {
       ...DEFAULT_SERVER_SETTINGS_VIEW.providers,
       aether: { ...DEFAULT_SERVER_SETTINGS_VIEW.providers.aether, enabled: true },
     };
     const providerStatuses = [
-      readyStatus("codex"),
-      readyStatus("claudeAgent"),
-      readyStatus("aether"),
+      readyProviderStatus("codex"),
+      readyProviderStatus("claudeAgent"),
+      readyProviderStatus("aether"),
     ];
 
     expect(

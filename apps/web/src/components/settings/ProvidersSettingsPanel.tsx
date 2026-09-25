@@ -982,7 +982,6 @@ export function ProvidersSettingsPanel({
   const availableProviders = orderedProviderVisibilityOptions.flatMap((option) =>
     providerStatusByProvider.get(option.provider)?.available === true ? [option.provider] : [],
   );
-  const availableProviderCount = availableProviders.length;
   const visibleAvailableProviderCount = orderedProviderVisibilityOptions.filter(
     (option) =>
       providerStatusByProvider.get(option.provider)?.available === true &&
