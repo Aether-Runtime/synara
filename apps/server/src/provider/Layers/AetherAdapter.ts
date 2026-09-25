@@ -33,8 +33,6 @@ export function makeAetherAdapter(): AetherAdapterShape {
     capabilities: {
       sessionModelSwitch: "unsupported",
       conversationRollback: "restart-session",
-      // Every Aether thread runs in a worktree the mirror owns (plans/aether-cloud-provider.md).
-      managesWorktreeBranch: true,
       supportsSkillMentions: false,
       supportsSkillDiscovery: false,
       supportsNativeSlashCommandDiscovery: false,

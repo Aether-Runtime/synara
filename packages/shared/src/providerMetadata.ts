@@ -25,8 +25,8 @@ export interface ProviderDescriptor {
    * True when the provider owns its thread's worktree and branch (Aether mirrors its cloud VM
    * into it). Its threads always start in a new worktree, and nothing that shares, copies into,
    * or branches from the local checkout applies: Local mode, local↔worktree handoff,
-   * copied changes, side chats, automations, and provider handoff. Mirrors the adapter's
-   * `managesWorktreeBranch` capability.
+   * copied changes, side chats, automations, and provider handoff. Synara also never renames
+   * or pushes that branch on the first turn. The only source of this capability.
    */
   readonly managesWorktreeBranch: boolean;
   /**

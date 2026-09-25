@@ -67,7 +67,10 @@ import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@synara/share
 import { claudeSelectionRequiresRestart, resolveApiModelId } from "@synara/shared/model";
 import { assessClaudeCache } from "@synara/shared/claudeCache";
 import { claudeCacheForModel } from "../../provider/claudeCacheObservation.ts";
-import { providerSupportsNativeTurnSteering } from "@synara/shared/providerMetadata";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  providerSupportsNativeTurnSteering,
+} from "@synara/shared/providerMetadata";
 import {
   formatProviderDeliveryBlockDetail,
   PROVIDER_DELIVERY_BLOCK_SUMMARY,
@@ -3221,19 +3224,8 @@ const make = Effect.gen(function* () {
       return;
     }
     // The provider may own this branch (e.g. it mirrors a remote branch into
-    // the worktree), so renaming or pushing it would fight the provider. Without
-    // its capabilities that cannot be ruled out: fail instead of renaming.
-    const capabilities = yield* providerService
-      .getCapabilities(input.provider)
-      .pipe(
-        Effect.tapError((error) =>
-          Effect.logError(
-            "provider command reactor could not read provider capabilities; not renaming the worktree branch",
-            { threadId: input.threadId, provider: input.provider, error: error.message },
-          ),
-        ),
-      );
-    if (capabilities.managesWorktreeBranch === true) {
+    // the worktree), so renaming or pushing it would fight the provider.
+    if (PROVIDER_DESCRIPTOR_BY_KIND[input.provider].managesWorktreeBranch) {
       return;
     }
 

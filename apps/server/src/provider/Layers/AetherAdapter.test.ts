@@ -17,13 +17,12 @@ const requestId = ApprovalRequestId.makeUnsafe("aether-request");
 describe("AetherAdapter skeleton", () => {
   const adapter = makeAetherAdapter();
 
-  it("passes provider adapter conformance and owns its worktree branch", () => {
+  it("passes provider adapter conformance with every optional capability off", () => {
     expect(providerAdapterConformanceIssues(adapter)).toEqual([]);
     expect(() => assertProviderAdapterConformance(adapter)).not.toThrow();
     expect(adapter.capabilities).toEqual({
       sessionModelSwitch: "unsupported",
       conversationRollback: "restart-session",
-      managesWorktreeBranch: true,
       supportsSkillMentions: false,
       supportsSkillDiscovery: false,
       supportsNativeSlashCommandDiscovery: false,

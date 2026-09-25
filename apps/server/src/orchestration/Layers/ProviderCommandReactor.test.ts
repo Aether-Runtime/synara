@@ -282,7 +282,6 @@ describe("ProviderCommandReactor", () => {
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session" | "restart-session";
     readonly conversationRollback?: "native" | "restart-session";
-    readonly managesWorktreeBranch?: boolean;
     readonly checkpointStore?: Partial<CheckpointStoreShape>;
     readonly studioOutputReactor?: Partial<StudioOutputReactorShape>;
     readonly forkThreadResult?: ProviderForkThreadResult | null;
@@ -650,9 +649,6 @@ describe("ProviderCommandReactor", () => {
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
           ...(input?.conversationRollback
             ? { conversationRollback: input.conversationRollback }
-            : {}),
-          ...(input?.managesWorktreeBranch !== undefined
-            ? { managesWorktreeBranch: input.managesWorktreeBranch }
             : {}),
         }),
       rollbackConversation,
@@ -8304,7 +8300,6 @@ describe("ProviderCommandReactor", () => {
   it("refuses an edit resend up front for a provider that cannot roll back", async () => {
     const harness = await createHarness({
       threadModelSelection: { provider: "aether", model: "claude-opus-5-5" },
-      managesWorktreeBranch: true,
     });
     const now = new Date().toISOString();
     harness.isGitRepository.mockImplementation(() => Effect.succeed(true));
@@ -10635,7 +10630,11 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("keeps a provider-managed worktree branch unrenamed and unpushed on the first turn", async () => {
-    const harness = await createHarness({ managesWorktreeBranch: true });
+    // Aether's provider descriptor says it owns its worktree branch.
+    const harness = await createHarness({
+      threadModelSelection: { provider: "aether", model: "claude-opus-5-5" },
+      serverSettings: { providers: { aether: { enabled: true } } },
+    });
     const now = new Date().toISOString();
     harness.generateBranchName.mockImplementation(() =>
       Effect.succeed({ branch: "provider-managed-branch" }),
