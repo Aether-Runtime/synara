@@ -83,6 +83,7 @@ import {
 } from "../aether/aetherConversationPoller.ts";
 import type { AetherMirrorError } from "../aether/aetherMirrorErrors.ts";
 import {
+  fetchAetherBranch,
   syncAetherBranch,
   syncAetherMirror,
   type AetherMirrorWorkspace,
@@ -213,7 +214,10 @@ function forget(task: Task, clientMessageId: string) {
   });
 }
 
-/** `branch` is why the worktree's branch did not follow the task's, when it did not. */
+/**
+ * `branch` is why the worktree's branch did not follow the task's, when it did not. Only a
+ * mirror moves the branch: its working tree is what the new HEAD is compared against.
+ */
 type MirrorOutcome =
   | {
       readonly _tag: "Mirrored";
@@ -221,7 +225,7 @@ type MirrorOutcome =
       readonly branch: string | undefined;
     }
   /** The workspace is not running: mirror when the next turn starts or settles. */
-  | { readonly _tag: "Deferred"; readonly note: string; readonly branch: string | undefined }
+  | { readonly _tag: "Deferred"; readonly note: string }
   | { readonly _tag: "Failed"; readonly note: string };
 
 type TurnSettled = Extract<AetherIngestOutput, { readonly _tag: "TurnSettled" }>;
@@ -652,56 +656,69 @@ export const makeAetherAdapter = (
     // Mirror
     // -----------------------------------------------------------------------
 
-    /**
-     * Puts the worktree on the task's branch and fast-forwards it to what the VM pushed; why it
-     * did not, when it did not. The working tree must hold what the mirror last wrote.
-     */
-    const followBranch = (session: SessionBase, task: Task, remote: AetherTask) =>
+    /** Reads the task's branch from origin; why it cannot follow it, when it cannot. */
+    const readBranch = (session: SessionBase, task: Task, remote: AetherTask) =>
       remote.head_branch === undefined
         ? Effect.succeed(
-            "Aether has not named this task's branch, so Synara cannot follow what the agent pushes.",
+            Result.fail(
+              "Aether has not named this task's branch, so Synara cannot follow what the agent pushes.",
+            ),
           )
-        : syncAetherBranch({
+        : fetchAetherBranch({
             claim: session.claim,
             taskId: task.cursor.taskId,
             branch: remote.head_branch,
           }).pipe(
-            Effect.map((result) => (result._tag === "held" ? result.detail : undefined)),
+            Effect.map(Result.succeed),
             Effect.provideServices(services),
-            Effect.catch((error) => Effect.succeed(branchFailure(error))),
+            Effect.catch((error) => Effect.succeed(Result.fail(branchFailure(error)))),
           );
 
     /**
-     * Mirrors the VM's working tree into the worktree, then follows the task's branch; never
-     * boots a suspended VM.
+     * Mirrors the VM's working tree into the worktree, then moves the branch to what origin had
+     * before the mirror read the VM; never boots a suspended VM. Without a mirror the branch
+     * stays: moving HEAD past a working tree that lacks the agent's commits would show them as
+     * local reversions.
      */
     const mirror = (session: SessionBase, task: Task): Effect.Effect<MirrorOutcome> =>
       Effect.gen(function* () {
         const { cursor } = task;
         const page = yield* client.getConversationTurns(cursor.taskId, { limit: 1 });
-        const mirrored = yield* Effect.gen(function* () {
+        const outcome = yield* Effect.gen(function* () {
           const workspaceId = page.task.run_context?.workspace_id;
           if (workspaceId === undefined) return deferred("the task has no workspace yet");
           const workspace = yield* openWorkspace(workspaceId);
           if (Option.isNone(workspace)) return deferred("its workspace is not running");
+          // Before the mirror reads the VM, so the working tree it writes holds this tip.
+          const pushed = yield* readBranch(session, task, page.task);
           const result = yield* syncAetherMirror({
             workspace: workspace.value,
             claim: session.claim,
             taskId: cursor.taskId,
             baseCommit: cursor.baseCommit,
           });
+          const branch = Result.isFailure(pushed)
+            ? pushed.failure
+            : yield* syncAetherBranch({
+                claim: session.claim,
+                taskId: cursor.taskId,
+                baseCommit: cursor.baseCommit,
+                pushed: pushed.success,
+              }).pipe(
+                Effect.map((synced) => (synced._tag === "held" ? synced.detail : undefined)),
+                Effect.catch((error) => Effect.succeed(branchFailure(error))),
+              );
           return {
             _tag: "Mirrored",
             note:
               result._tag === "synced" && result.modeOnlyPaths.length > 0
                 ? `Aether changed only the mode of ${result.modeOnlyPaths.join(", ")}; the worktree keeps the old mode.`
                 : undefined,
+            branch,
           } as const;
         });
-        // Pushes reach origin whether or not the workspace runs.
-        const branch = yield* followBranch(session, task, page.task);
         yield* reportPullRequest(session, task, page.task, true);
-        return { ...mirrored, branch } satisfies MirrorOutcome;
+        return outcome satisfies MirrorOutcome;
       }).pipe(
         Effect.scoped,
         Effect.provideServices(services),
@@ -716,25 +733,27 @@ export const makeAetherAdapter = (
         transition(task, (cursor) => ({ ...cursor, mirrorPending: outcome._tag === "Deferred" }));
         return {
           note: outcome._tag === "Deferred" ? undefined : outcome.note,
-          branch: outcome._tag === "Failed" ? undefined : outcome.branch,
+          branch: outcome._tag === "Mirrored" ? outcome.branch : undefined,
         };
       });
 
-    /** After a reattach: follow the task's branch, which the VM may have pushed meanwhile. */
-    const followAfterAttach = (session: SessionBase, task: Task) =>
+    /**
+     * After a reattach: report the task's pull request, which may have changed meanwhile. The
+     * branch follows at the next mirror, which the loop runs for every run that settled.
+     */
+    const reportAfterAttach = (session: SessionBase, task: Task) =>
       client.getConversationTurns(task.cursor.taskId, { limit: 1 }).pipe(
-        Effect.flatMap((page) =>
-          followBranch(session, task, page.task).pipe(
-            Effect.tap(() => reportPullRequest(session, task, page.task, true)),
+        Effect.flatMap((page) => reportPullRequest(session, task, page.task, true)),
+        Effect.catch((error) =>
+          Effect.flatMap(nowIso, (at) =>
+            warn(
+              session,
+              task,
+              undefined,
+              ["pull-request", "attach", at],
+              `Synara could not read the Aether task's pull request: ${error.message}`,
+            ),
           ),
-        ),
-        Effect.catch((error) => Effect.succeed(branchFailure(error))),
-        Effect.flatMap((note) =>
-          note === undefined
-            ? Effect.void
-            : Effect.flatMap(nowIso, (at) =>
-                warn(session, task, undefined, ["branch", "attach", at], note),
-              ),
         ),
         session.lock.withPermit,
       );
@@ -769,7 +788,7 @@ export const makeAetherAdapter = (
             note,
           );
         }
-        if (outcome._tag !== "Failed" && outcome.branch !== undefined) {
+        if (outcome._tag === "Mirrored" && outcome.branch !== undefined) {
           yield* warn(
             session,
             task,
@@ -1436,7 +1455,7 @@ export const makeAetherAdapter = (
           // and follow its branch.
           if (session.state._tag === "Task") {
             yield* session.state.poller.wake;
-            yield* Effect.forkIn(followAfterAttach(session, session.state), session.scope);
+            yield* Effect.forkIn(reportAfterAttach(session, session.state), session.scope);
           }
           return snapshot(session);
         }),
@@ -1476,7 +1495,7 @@ export const makeAetherAdapter = (
           });
           if (session.state._tag === "Task") {
             yield* session.state.poller.wake;
-            yield* Effect.forkIn(followAfterAttach(session, session.state), session.scope);
+            yield* Effect.forkIn(reportAfterAttach(session, session.state), session.scope);
           }
         }),
       sendTurn: (input) =>

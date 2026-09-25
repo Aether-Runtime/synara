@@ -16,7 +16,13 @@ import { GitCommandError } from "../../git/Errors.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
 import { GitCore, type GitCoreShape, type WorktreeOwner } from "../../git/Services/GitCore.ts";
 import { AetherTaskId } from "./aetherApiSchemas.ts";
-import { commandLineBatches, syncAetherBranch, syncAetherMirror } from "./aetherMirrorSync.ts";
+import {
+  commandLineBatches,
+  fetchAetherBranch,
+  syncAetherBranch,
+  syncAetherMirror,
+  type AetherPushedBranch,
+} from "./aetherMirrorSync.ts";
 import type { AetherGitDiffFile } from "./aetherWorkspaceProtocol.ts";
 import {
   added,
@@ -225,11 +231,21 @@ const makeMirror = (
       baseCommit,
       fake,
       vm,
-      syncBranch: (branch: string = HEAD_BRANCH, taskId: AetherTaskId = TASK) =>
-        syncAetherBranch({ claim, taskId, branch }),
-      /** The branch sync's `AetherMirrorError`; anything else fails the test. */
+      /** Reads origin's tip of the branch, as the adapter does before a mirror. */
+      fetchBranch: (branch: string = HEAD_BRANCH) =>
+        fetchAetherBranch({ claim, taskId: TASK, branch }),
+      /** Moves the branch to a tip `fetchBranch` read. */
+      syncBranchTo: (pushed: AetherPushedBranch) =>
+        syncAetherBranch({ claim, taskId: TASK, baseCommit, pushed }),
+      /** Reads origin's tip, then moves the branch to it. */
+      syncBranch: (branch: string = HEAD_BRANCH) =>
+        fetchAetherBranch({ claim, taskId: TASK, branch }).pipe(
+          Effect.flatMap((pushed) => syncAetherBranch({ claim, taskId: TASK, baseCommit, pushed })),
+        ),
+      /** The branch read's or sync's `AetherMirrorError`; anything else fails the test. */
       branchFailure: (branch: string = HEAD_BRANCH) =>
-        syncAetherBranch({ claim, taskId: TASK, branch }).pipe(
+        fetchAetherBranch({ claim, taskId: TASK, branch }).pipe(
+          Effect.flatMap((pushed) => syncAetherBranch({ claim, taskId: TASK, baseCommit, pushed })),
           Effect.flip,
           Effect.flatMap((error) =>
             error._tag === "AetherMirrorError" ? Effect.succeed(error) : Effect.die(error),
@@ -1101,6 +1117,50 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         expect(yield* mirror.head).toBe(local);
         expect(yield* git(mirror.worktree, ["show", "HEAD:local.md"])).toBe("mine");
       }),
+    );
+
+    it.effect("moves only to the tip it read, never to a push that came after", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        const vm = yield* mirror.vm(HEAD_BRANCH);
+        const read = yield* vm.push({ "a.md": "a\n" }, "A");
+        const pushed = yield* mirror.fetchBranch();
+        expect(pushed.tip).toBe(read);
+        // The agent pushes again after the read; the mirror wrote only what the read saw.
+        yield* vm.push({ "b.md": "b\n" }, "B");
+        mirror.serve([added("a.md", "a\n")]);
+        yield* mirror.sync();
+
+        expect(yield* mirror.syncBranchTo(pushed)).toEqual({
+          _tag: "fast-forwarded",
+          from: mirror.baseCommit,
+          to: read,
+        });
+        expect(yield* mirror.status).toEqual([]);
+      }),
+    );
+
+    it.effect(
+      "says why the working tree looks reverted whenever the branch has local commits",
+      () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          mirror.serve([added("notes.md", "notes\n")]);
+          yield* mirror.sync();
+          yield* mirror.write("app.txt", "mine\n");
+          yield* git(mirror.worktree, ["add", "-A"]);
+          yield* git(mirror.worktree, ["commit", "-q", "-m", "Mine"]);
+          const local = yield* mirror.head;
+
+          // Nothing pushed yet: the local commit sits on the task base.
+          const unpushed = yield* mirror.syncBranch();
+          expect(unpushed).toMatchObject({ _tag: "held", reason: "ahead" });
+          const detail = unpushed._tag === "held" ? unpushed.detail : "";
+          expect(detail).toContain(local.slice(0, 12));
+          expect(detail).toContain(mirror.baseCommit.slice(0, 12));
+          expect(detail).toContain("reverted");
+          expect(yield* mirror.head).toBe(local);
+        }),
     );
 
     it.effect("never follows a force-push, and keeps mirroring", () =>

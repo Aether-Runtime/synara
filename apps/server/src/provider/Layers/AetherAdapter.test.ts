@@ -3,7 +3,8 @@
 // real Git worktree whose origin is a local bare repository: task creation, turns, settlement
 // behind the mirror, retries of lost sends, questions, interrupts, restarts and ownership.
 // Layer: Server provider tests (Aether).
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
@@ -355,12 +356,26 @@ const makeHarness = Effect.gen(function* () {
       return yield* git(vmClone, ["rev-parse", "HEAD"]);
     });
 
+  /** `vmPush` at once, outside any effect: the VM moving on while Synara reads it. */
+  const vmPushNow = (files: Readonly<Record<string, string>>, message: string) => {
+    const run = (args: ReadonlyArray<string>) =>
+      execFileSync("git", args, { cwd: vmClone, encoding: "utf8" }).trim();
+    for (const [file, content] of Object.entries(files)) {
+      writeFileSync(path.join(vmClone, file), content);
+    }
+    run(["add", "-A"]);
+    run(["commit", "-q", "-m", message]);
+    run(["push", "-q", "--force", "origin", FAKE_HEAD_BRANCH]);
+    return run(["rev-parse", "HEAD"]);
+  };
+
   return {
     root,
     repo,
     worktree,
     baseCommit,
     vmPush,
+    vmPushNow,
     status: Effect.gen(function* () {
       const gitCore = yield* GitCore;
       const result = yield* gitCore.execute({
@@ -867,37 +882,128 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
         }),
     );
 
-    it.effect("follows what the agent pushed while Synara was away, once it reattaches", () =>
+    it.effect(
+      "never moves the branch past a working tree it has not mirrored, even after a reattach",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness;
+          const first = yield* h.launch();
+          yield* h.start(first.adapter);
+          h.finishTurns();
+          h.workspace.serve(diffOf(h.baseCommit, added("notes.md", "notes\n")));
+          yield* first.adapter.sendTurn(h.send("First"));
+          yield* waitFor("the first turn", () => completions(first.events)[0]);
+          expect(yield* h.status).toEqual(["?? notes.md"]);
+          const [persisted] = yield* first.adapter.listSessions();
+          yield* first.stop;
+
+          // While Synara is closed, the agent edits app.txt, commits both files, pushes, and
+          // the workspace suspends: nothing mirrors app.txt's new content.
+          const pushed = yield* h.vmPush(
+            { "notes.md": "notes\n", "app.txt": "one\nTWO\n" },
+            "Notes and TWO",
+          );
+          h.workspace.serve(
+            diffOf(
+              h.baseCommit,
+              added("notes.md", "notes\n"),
+              modified("app.txt", hunk(1, 1, " one", "-two", "+TWO")),
+            ),
+          );
+          h.vm.running = false;
+          const second = yield* h.launch();
+          yield* second.adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "aether",
+            cwd: h.worktree,
+            resumeCursor: persisted!.resumeCursor,
+            runtimeMode: "full-access",
+          });
+          yield* Effect.sleep("1500 millis");
+          // The agent's committed app.txt never reads as a local reversion.
+          expect(yield* h.status).toEqual(["?? notes.md"]);
+          expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(h.baseCommit);
+
+          // A turn that settles while the workspace is still suspended defers its mirror, and
+          // the branch waits with it.
+          yield* second.adapter.sendTurn(h.send("Second"));
+          yield* waitFor("the second turn", () => completions(second.events)[0]);
+          expect(yield* h.status).toEqual(["?? notes.md"]);
+          expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(h.baseCommit);
+
+          // Once a mirror writes the working tree, the branch follows: the commit is a commit.
+          h.vm.running = true;
+          yield* second.adapter.sendTurn(h.send("Third"));
+          yield* waitFor("the third turn", () => completions(second.events)[1]);
+          expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(pushed);
+          expect(yield* h.status).toEqual([]);
+        }),
+    );
+
+    it.effect("warns at every mirror while the branch has local commits, naming both commits", () =>
       Effect.gen(function* () {
         const h = yield* makeHarness;
-        const first = yield* h.launch();
-        yield* h.start(first.adapter);
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
         h.finishTurns();
-        h.workspace.serve(diffOf(h.baseCommit, added("later.md", "later\n")));
-        yield* first.adapter.sendTurn(h.send("First"));
-        yield* waitFor("the first turn", () => completions(first.events)[0]);
-        expect(yield* h.status).toEqual(["?? later.md"]);
-        const [persisted] = yield* first.adapter.listSessions();
-        yield* first.stop;
+        h.workspace.serve(diffOf(h.baseCommit, added("notes.md", "notes\n")));
+        yield* adapter.sendTurn(h.send("One"));
+        yield* waitFor("the first turn", () => completions(events)[0]);
+        const warnings = () =>
+          events.flatMap((event) =>
+            event.type === "runtime.warning" ? [event.payload.message] : [],
+          );
+        expect(warnings()).toEqual([]);
 
-        // Meanwhile the agent committed what it had written, and pushed it.
-        const pushed = yield* h.vmPush({ "later.md": "later\n" }, "Later");
-        const second = yield* h.launch();
-        yield* second.adapter.startSession({
-          threadId: THREAD_ID,
-          provider: "aether",
-          cwd: h.worktree,
-          resumeCursor: persisted!.resumeCursor,
-          runtimeMode: "full-access",
+        // The user commits an edit of their own; the agent has pushed nothing yet.
+        yield* h.write("app.txt", "mine\n");
+        yield* git(h.worktree, ["add", "-A"]);
+        yield* git(h.worktree, ["commit", "-q", "-m", "Mine"]);
+        const local = yield* git(h.worktree, ["rev-parse", "HEAD"]);
+        yield* adapter.sendTurn(h.send("Two"));
+        yield* waitFor("the second turn", () => completions(events)[1]);
+        const unpushed = warnings().at(-1);
+        expect(unpushed).toContain(local.slice(0, 12));
+        expect(unpushed).toContain(h.baseCommit.slice(0, 12));
+        expect(unpushed).toContain("reverted");
+        // The mirror went on: the working tree is the VM's again.
+        expect(yield* h.read("app.txt")).toBe("one\ntwo\n");
+
+        // The agent pushes: the local commit is still not on origin.
+        const pushed = yield* h.vmPush({ "notes.md": "notes\n" }, "Notes");
+        yield* adapter.sendTurn(h.send("Three"));
+        yield* waitFor("the third turn", () => completions(events)[2]);
+        const both = warnings().at(-1);
+        expect(both).not.toBe(unpushed);
+        expect(both).toContain(local.slice(0, 12));
+        expect(both).toContain(pushed.slice(0, 12));
+        expect(both).toContain("reverted");
+        expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(local);
+      }),
+    );
+
+    it.effect("moves the branch only to what origin had before the mirror read the VM", () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness;
+        const { adapter, events } = yield* h.launch();
+        yield* h.start(adapter);
+        h.finishTurns();
+        const pushed = yield* h.vmPush({ "a.md": "a\n" }, "A");
+        h.workspace.serve(diffOf(h.baseCommit, added("a.md", "a\n")));
+        // The agent pushes again after the mirror read the VM's working tree.
+        let later: string | undefined;
+        h.workspace.afterNextDiff(() => {
+          later = h.vmPushNow({ "b.md": "b\n" }, "B");
         });
-        // The loop follows the branch in the background once the session is back.
-        for (let attempt = 0; ; attempt += 1) {
-          if ((yield* git(h.worktree, ["rev-parse", "HEAD"])) === pushed) break;
-          if (attempt === 250) return yield* Effect.die(new Error("The branch never followed."));
-          yield* Effect.sleep("20 millis");
-        }
+        yield* adapter.sendTurn(h.send("Go"));
+        yield* waitFor("turn.completed", () => completions(events)[0]);
+
+        expect(later).toBeDefined();
+        expect(yield* git(h.root, ["--git-dir", "origin.git", "rev-parse", FAKE_HEAD_BRANCH])).toBe(
+          later,
+        );
+        expect(yield* git(h.worktree, ["rev-parse", "HEAD"])).toBe(pushed);
         expect(yield* h.status).toEqual([]);
-        expect(second.events.filter((event) => event.type === "runtime.warning")).toEqual([]);
       }),
     );
   });

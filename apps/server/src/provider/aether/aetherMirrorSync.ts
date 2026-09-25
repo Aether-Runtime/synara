@@ -5,7 +5,9 @@
 //
 // The worktree's state has three parts, each with one writer:
 // - the working tree holds the VM's working tree (the mirror's target), written by the mirror;
-// - the branch is the task's `head_branch`, and moves only by fast-forward to what the VM pushed;
+// - the branch is the task's `head_branch`, and moves only by fast-forward to what the VM pushed,
+//   and only after a mirror that read the VM after origin's tip was read, so the working tree
+//   holds everything the new HEAD does;
 // - the index holds HEAD's tree, so what the VM has not committed shows as unstaged changes
 //   (new files as untracked) against the commits it pushed.
 //
@@ -78,11 +80,30 @@ export type AetherBranchSyncResult =
       readonly detail: string;
     };
 
+declare const readFromOrigin: unique symbol;
+
+/**
+ * The task's branch as origin had it when `fetchAetherBranch` read it: its name, which Git
+ * accepted, and its tip, fetched into the tracking ref (null before the agent pushes). Only
+ * `fetchAetherBranch` makes one.
+ */
+export interface AetherPushedBranch {
+  readonly branch: string;
+  readonly tip: string | null;
+  readonly [readFromOrigin]: true;
+}
+
 export interface AetherBranchSyncInput {
   readonly claim: WorktreeClaim;
   readonly taskId: AetherTaskId;
-  /** The task's `head_branch`, as Aether names it. */
-  readonly branch: string;
+  /** The commit the task started from: what the branch holds before the agent pushes. */
+  readonly baseCommit: string;
+  /**
+   * Origin's tip, read before the mirror that just wrote the working tree read the VM, so the
+   * working tree holds everything that tip does: the branch moves to it without the agent's
+   * committed changes reading as local reversions. Never one read without a mirror after it.
+   */
+  readonly pushed: AetherPushedBranch;
 }
 
 const RECORD_FILE = "synara-aether-mirror.json";
@@ -543,19 +564,22 @@ export const syncAetherMirror = (
   });
 
 /**
- * Puts the claimed worktree on the task's branch and fast-forwards it to what the VM pushed,
- * leaving the working tree as the mirror wrote it. See the module comment.
+ * Reads the task's branch from origin: checks Aether's name for it, and fetches its tip into
+ * the tracking ref. Read it before mirroring, then hand it to `syncAetherBranch`.
  */
-export const syncAetherBranch = (
-  input: AetherBranchSyncInput,
-): Effect.Effect<
-  AetherBranchSyncResult,
-  AetherMirrorError | WorktreeOwnedError,
+export const fetchAetherBranch = (input: {
+  readonly claim: WorktreeClaim;
+  readonly taskId: AetherTaskId;
+  /** The task's `head_branch`, as Aether names it. */
+  readonly branch: string;
+}): Effect.Effect<
+  AetherPushedBranch,
+  AetherMirrorError,
   GitCore | FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
     const ops = yield* worktreeOps(input.claim, input.taskId);
-    const { git, execute, yes } = ops;
+    const { execute } = ops;
     const { branch } = input;
     const ref = `refs/heads/${branch}`;
     const tracking = `refs/remotes/${REMOTE}/${branch}`;
@@ -569,7 +593,6 @@ export const syncAetherBranch = (
     const valid = yield* execute(["check-ref-format", "--branch", branch]);
     if (valid.code !== 0 || valid.stdout.trim() !== branch) return yield* invalid;
 
-    // 1. What origin has, fetched before taking the lock.
     const remoteFailure = (detail: string) =>
       mirrorError("fetch", `Synara could not read ${REMOTE}/${branch}: ${detail}`);
     const listed = yield* execute(["ls-remote", "--exit-code", REMOTE, ref], {
@@ -598,7 +621,28 @@ export const syncAetherBranch = (
         if (fetched.code !== 0) return yield* remoteFailure(fetched.stderr.trim());
       }
     }
-    const remote = remoteTip === null ? null : yield* ops.revParse(`${tracking}^{commit}`);
+    const tip = remoteTip === null ? null : yield* ops.revParse(`${remoteTip}^{commit}`);
+    return { branch, tip } as AetherPushedBranch;
+  });
+
+/**
+ * Puts the claimed worktree on the task's branch and fast-forwards it to origin's tip as
+ * `fetchAetherBranch` read it before the mirror, leaving the working tree as the mirror wrote
+ * it. See the module comment.
+ */
+export const syncAetherBranch = (
+  input: AetherBranchSyncInput,
+): Effect.Effect<
+  AetherBranchSyncResult,
+  AetherMirrorError | WorktreeOwnedError,
+  GitCore | FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const ops = yield* worktreeOps(input.claim, input.taskId);
+    const { git, execute, yes } = ops;
+    const { branch, tip: remote } = input.pushed;
+    const ref = `refs/heads/${branch}`;
+    const base = yield* ops.revParse(`${input.baseCommit}^{commit}`);
 
     // 2. The branch, as the worktree's owner.
     return yield* ops.locked(
@@ -637,7 +681,26 @@ export const syncAetherBranch = (
           yield* git(["config", `branch.${branch}.remote`, REMOTE]);
           yield* git(["config", `branch.${branch}.merge`, ref]);
         }
-        if (remote === null || remote === head) return { _tag: "current", head } as const;
+        // What the local branch should hold at most: origin's tip, or the task base before any push.
+        const upstream = remote ?? base;
+        if (head === upstream) return { _tag: "current", head } as const;
+        // Commits of the user's own: the mirror goes on over them, so every edit they made that
+        // the agent does not have reads as reverted in the working tree. Always say why.
+        const reverted =
+          "The mirror goes on, so edits in those commits that the agent does not have read as reverted in the working tree.";
+        if (remote === null) {
+          return (yield* yes(["merge-base", "--is-ancestor", base, head]))
+            ? ({
+                _tag: "held",
+                reason: "ahead",
+                detail: `The local branch ${branch} has commits of its own (${short(head)}) on the task base ${short(base)}, and the agent has pushed nothing yet: Synara does not move it. ${reverted}`,
+              } as const)
+            : ({
+                _tag: "held",
+                reason: "diverged",
+                detail: `The local branch ${branch} (${short(head)}) does not contain the task base ${short(base)}: Synara does not move it. ${reverted}`,
+              } as const);
+        }
         if (yield* yes(["merge-base", "--is-ancestor", head, remote])) {
           yield* ops.writeRecord({
             taskId: input.taskId,
@@ -655,13 +718,13 @@ export const syncAetherBranch = (
           return {
             _tag: "held",
             reason: "ahead",
-            detail: `The local branch ${branch} has commits ${REMOTE}/${branch} lacks (${short(head)}, pushed ${short(remote)}): Synara does not move it. The mirror goes on.`,
+            detail: `The local branch ${branch} has commits ${REMOTE}/${branch} lacks (local ${short(head)}, pushed ${short(remote)}): Synara does not move it. ${reverted}`,
           } as const;
         }
         return {
           _tag: "held",
           reason: "diverged",
-          detail: `${REMOTE}/${branch} (${short(remote)}) does not contain the local branch's tip ${short(head)}: it was force-pushed or rebased, or the local branch has commits of its own. Synara does not move the branch. The mirror goes on.`,
+          detail: `${REMOTE}/${branch} (${short(remote)}) does not contain the local branch's tip ${short(head)}: it was force-pushed or rebased, or the local branch has commits of its own. Synara does not move the branch. ${reverted}`,
         } as const;
       }),
     );
