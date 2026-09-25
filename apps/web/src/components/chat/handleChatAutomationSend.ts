@@ -99,6 +99,7 @@ export async function handleChatAutomationSend({
   const automationRequest = await resolveComposerAutomationRequest({
     message: messageForAutomation,
     cwd: threadWorkspaceCwd ?? activeProject.cwd,
+    provider: selectedModelSelectionForSend.provider,
     generateIntent: (request) => api.server.generateAutomationIntent(request),
   });
   // Drop a stale resolve: bail if the user switched threads, or cancelled/changed the
@@ -108,6 +109,14 @@ export async function handleChatAutomationSend({
     pendingAutomationConversationRef.current !== conversation ||
     (!hasLiveTurn && hasLiveTurnRef.current)
   ) {
+    return true;
+  }
+  if (automationRequest.type === "unavailable") {
+    toastManager.add({
+      type: "error",
+      title: "Automation unavailable",
+      description: automationRequest.reason,
+    });
     return true;
   }
   if (automationRequest.type !== "normal-chat") {

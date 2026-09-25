@@ -129,6 +129,12 @@ export interface BranchToolbarProps {
   // Studio-like containers bind the toolbar to one concrete local folder and
   // must not persist project/worktree metadata from branch selector actions.
   fixedLocalWorkspaceCwd?: string | null;
+  // The thread's provider owns its worktree: shown as a new worktree, with no Local option
+  // or local/worktree handoff. Display only; persisted env modes are left untouched.
+  providerOwnsWorktree?: boolean;
+  // Set where that provider cannot run at all (no worktree can exist here): shown in place of
+  // the environment picker and branch selector.
+  environmentUnavailableMessage?: string | null;
 }
 
 export interface RuntimeUsageControlsProps {
@@ -268,7 +274,10 @@ export default function BranchToolbar({
   variant: variantProp,
   showBranchSelector: showBranchSelectorProp,
   fixedLocalWorkspaceCwd,
+  providerOwnsWorktree: providerOwnsWorktreeProp,
+  environmentUnavailableMessage,
 }: BranchToolbarProps) {
+  const providerOwnsWorktree = providerOwnsWorktreeProp ?? false;
   const handoffBusy = handoffBusyProp ?? false;
   const variant = variantProp ?? "toolbar";
   const showBranchSelector = showBranchSelectorProp ?? true;
@@ -303,12 +312,15 @@ export default function BranchToolbar({
     ? fixedLocalWorkspaceCwd
     : (activeWorktreePath ?? activeWorkingDirectory ?? activeProject?.cwd ?? null);
   const branchProjectCwd = usesFixedLocalWorkspace ? branchCwd : (activeProject?.cwd ?? null);
-  const effectiveEnvMode = resolveEffectiveEnvMode({
+  const persistedEnvMode = resolveEffectiveEnvMode({
     activeWorktreePath,
     hasServerThread,
     draftThreadEnvMode: draftThread?.envMode,
     serverThreadEnvMode: serverThread?.envMode,
   });
+  // Render-time overlay, never written: every writer below (setThreadWorkspace, and through it
+  // the branch selector's effects) derives env modes from `persistedEnvMode`.
+  const effectiveEnvMode = providerOwnsWorktree ? "worktree" : persistedEnvMode;
   const environmentPresentation = resolveThreadEnvironmentPresentation({
     envMode: effectiveEnvMode,
     worktreePath: activeWorktreePath,
@@ -358,7 +370,7 @@ export default function BranchToolbar({
       const worktreePath =
         patch.worktreePath !== undefined ? patch.worktreePath : activeWorktreePath;
       const nextEnvMode =
-        patch.envMode !== undefined ? patch.envMode : worktreePath ? "worktree" : effectiveEnvMode;
+        patch.envMode !== undefined ? patch.envMode : worktreePath ? "worktree" : persistedEnvMode;
       const nextAssociatedWorktree = resolveAssociatedWorktreeMetadataAfterWorkspacePatch({
         branch,
         worktreePath,
@@ -413,7 +425,7 @@ export default function BranchToolbar({
       const nextDraftEnvMode = resolveDraftEnvModeAfterBranchChange({
         nextWorktreePath: worktreePath,
         currentWorktreePath: activeWorktreePath,
-        effectiveEnvMode,
+        effectiveEnvMode: persistedEnvMode,
       });
       setDraftThreadContext(threadId, {
         branch,
@@ -434,7 +446,7 @@ export default function BranchToolbar({
       serverThread?.associatedWorktreeRef,
       setDraftThreadContext,
       threadId,
-      effectiveEnvMode,
+      persistedEnvMode,
       usesFixedLocalWorkspace,
     ],
   );
@@ -447,15 +459,20 @@ export default function BranchToolbar({
     effectiveEnvMode === "local",
   );
   const canHandoffToLocal = Boolean(
-    !usesFixedLocalWorkspace && hasServerThread && activeWorktreePath,
+    !usesFixedLocalWorkspace && !providerOwnsWorktree && hasServerThread && activeWorktreePath,
   );
   const canSwitchToWorktree = Boolean(
     !usesFixedLocalWorkspace && !envLocked && !activeWorktreePath && effectiveEnvMode === "local",
   );
   const canSwitchToLocal = Boolean(
-    !usesFixedLocalWorkspace && !envLocked && effectiveEnvMode === "worktree",
+    !usesFixedLocalWorkspace &&
+    !providerOwnsWorktree &&
+    !envLocked &&
+    effectiveEnvMode === "worktree",
   );
-  const showEnvPicker = effectiveEnvMode === "local" || canSwitchToLocal;
+  // A new chat on a worktree-owning provider still shows the picker, holding only "Worktree".
+  const showEnvPicker =
+    effectiveEnvMode === "local" || canSwitchToLocal || (providerOwnsWorktree && !envLocked);
 
   const usageSummary = useProviderUsageSummary({
     provider: activeProvider,
@@ -477,11 +494,16 @@ export default function BranchToolbar({
       )}
     >
       <div className={isPanel ? "flex flex-col gap-0.5" : "flex items-center gap-2"}>
-        {showEnvPicker ? (
+        {environmentUnavailableMessage ? (
+          <span className="px-1.5 text-ui-sm text-[var(--color-text-foreground-secondary)]">
+            {environmentUnavailableMessage}
+          </span>
+        ) : showEnvPicker ? (
           <ComposerEnvironmentPicker
             environmentPresentation={environmentPresentation}
             onEnvModeChange={onEnvModeChange}
             canSwitchToWorktree={canSwitchToWorktree}
+            canSwitchToLocal={!providerOwnsWorktree}
             canHandoffToLocal={canHandoffToLocal}
             canHandoffToWorktree={canHandoffToWorktree}
             onHandoffToLocal={onHandoffToLocal}
@@ -536,7 +558,11 @@ export default function BranchToolbar({
           </span>
         )}
 
-        {showBranchSelector ? (
+        {/* A provider that owns its worktree also owns its branch, and a pick could move the
+            thread off that worktree: once it has one, no branch is offered. */}
+        {showBranchSelector &&
+        !environmentUnavailableMessage &&
+        !(providerOwnsWorktree && activeWorktreePath) ? (
           /* ChatView stays mounted while the route switches threads. Reset the selector's
              optimistic checkout state at that boundary so a previous thread cannot paint its
              branch while the new thread's workspace query is resolving. */

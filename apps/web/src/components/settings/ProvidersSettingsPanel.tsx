@@ -9,7 +9,11 @@ import {
   type ServerProviderStatus,
   type ServerSettings,
 } from "@synara/contracts";
-import { PROVIDER_DESCRIPTORS } from "@synara/shared/providerMetadata";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  PROVIDER_DESCRIPTORS,
+  providerIsCloudService,
+} from "@synara/shared/providerMetadata";
 import { pluralize } from "@synara/shared/text";
 import {
   closestCenter,
@@ -129,6 +133,8 @@ type ProviderInstallField =
   | ProviderInstallBooleanField;
 type ProviderInstallSettings = {
   readonly provider: ProviderKind;
+  /** Short setup context shown above the fields. */
+  readonly intro?: ReactNode;
   readonly docs: ReadonlyArray<{ readonly label: string; readonly href: string }>;
   readonly fields: readonly ProviderInstallField[];
 };
@@ -390,6 +396,21 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
   {
     // Cloud provider: no CLI to install, so no CLI docs; it signs in with an API key.
     provider: "aether",
+    intro: (
+      <>
+        Aether runs the agent in a cloud VM, not on this machine. The repository must be on GitHub
+        and imported as a project in Aether. Create an API key in your Aether account at{" "}
+        <a
+          href={PROVIDER_DESCRIPTOR_BY_KIND.aether.setupDocsHref}
+          target="_blank"
+          rel="noreferrer"
+          className="text-foreground underline underline-offset-2"
+        >
+          runaether.dev
+        </a>
+        .
+      </>
+    ),
     docs: [],
     fields: [
       {
@@ -470,6 +491,33 @@ export function createProviderInstallResetPatch(defaults: AppSettings): Partial<
       config.fields.map((field) => [field.settingsKey, defaults[field.settingsKey]]),
     ),
   ) as Partial<AppSettings>;
+}
+
+/**
+ * Status of the picker's provider list. Installed CLIs and cloud services are counted
+ * apart, since a cloud provider is connected to rather than installed.
+ */
+function providerPickerStatusLabel(input: {
+  readonly checking: boolean;
+  readonly availableProviders: ReadonlyArray<ProviderKind>;
+  readonly visibleAvailableCount: number;
+  readonly customOrder: boolean;
+}): string {
+  if (input.checking) return "Checking providers";
+  const availableCount = input.availableProviders.length;
+  if (availableCount === 0) return "No providers available";
+  if (input.visibleAvailableCount < availableCount) {
+    return `${input.visibleAvailableCount} of ${availableCount} shown`;
+  }
+  const cloudCount = input.availableProviders.filter(providerIsCloudService).length;
+  const installedCount = availableCount - cloudCount;
+  const summary = [
+    installedCount > 0 ? `${installedCount} installed` : null,
+    cloudCount > 0 ? `${cloudCount} cloud` : null,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
+  return input.customOrder ? `${summary} · custom order` : summary;
 }
 
 function setProviderListMembership(
@@ -554,7 +602,9 @@ function SortableProviderVisibilityRow(props: {
         onCheckedChange={(checked) => props.onHiddenChange(!Boolean(checked))}
         aria-label={
           isChecking
-            ? `Checking ${props.option.title} CLI availability`
+            ? providerIsCloudService(props.option.provider)
+              ? `Checking ${props.option.title} connection`
+              : `Checking ${props.option.title} CLI availability`
             : isAvailable
               ? `Show ${props.option.title} in the provider picker`
               : `${props.option.title} is unavailable in the provider picker`
@@ -741,6 +791,7 @@ function ProviderToolRow(props: {
   updateSettings: (patch: Partial<AppSettings>) => void;
 }) {
   const title = PROVIDER_DISPLAY_NAMES[props.config.provider];
+  const isCloudService = providerIsCloudService(props.config.provider);
   const isDirty = isProviderInstallConfigDirty(props.config, props.settings, props.defaults);
   const showProviderUpdateStatus = props.providerStatus
     ? shouldShowProviderUpdateStatus({
@@ -786,10 +837,13 @@ function ProviderToolRow(props: {
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
             <span className="min-w-0 flex-1 text-ui-lg font-medium text-foreground">{title}</span>
-            {isDirty ? (
+            {/* A cloud service has no binary to customize and no version to report. */}
+            {isCloudService ? (
+              <span className="shrink-0 text-ui-sm text-muted-foreground">Cloud</span>
+            ) : isDirty ? (
               <span className="shrink-0 text-ui-sm text-muted-foreground">Custom</span>
             ) : null}
-            {providerUpdateLabel ? (
+            {providerUpdateLabel && !isCloudService ? (
               <span
                 className={cn(
                   "shrink-0 text-ui-sm",
@@ -819,6 +873,9 @@ function ProviderToolRow(props: {
         <CollapsiblePanel>
           <div className="border-t border-border/70 bg-muted/20 px-3 py-3">
             <div className="space-y-3">
+              {props.config.intro ? (
+                <p className="text-ui leading-snug text-muted-foreground">{props.config.intro}</p>
+              ) : null}
               <ProviderDocsLinks docs={props.config.docs} />
               {showProviderUpdateStatus && updateAdvisory?.status === "behind_latest" ? (
                 <div className="text-ui leading-snug text-muted-foreground">
@@ -922,9 +979,9 @@ export function ProvidersSettingsPanel({
     () => new Map(localProviderStatuses.map((status) => [status.provider, status])),
     [localProviderStatuses],
   );
-  const availableProviderCount = orderedProviderVisibilityOptions.filter(
-    (option) => providerStatusByProvider.get(option.provider)?.available === true,
-  ).length;
+  const availableProviders = orderedProviderVisibilityOptions.flatMap((option) =>
+    providerStatusByProvider.get(option.provider)?.available === true ? [option.provider] : [],
+  );
   const visibleAvailableProviderCount = orderedProviderVisibilityOptions.filter(
     (option) =>
       providerStatusByProvider.get(option.provider)?.available === true &&
@@ -1156,19 +1213,14 @@ export function ProvidersSettingsPanel({
 
       <SettingsSection title="Provider picker">
         <SettingsRow
-          title="Available CLIs"
-          description="Show or hide installed providers in the picker and drag them into your preferred order. Hiding a provider here does not disable its server activity."
-          status={
-            serverConfigQuery.isPending || hasPendingProviderStatuses
-              ? "Checking installed CLIs"
-              : availableProviderCount === 0
-                ? "No CLIs detected"
-                : visibleAvailableProviderCount < availableProviderCount
-                  ? `${visibleAvailableProviderCount} of ${availableProviderCount} installed shown`
-                  : isProviderOrderDirty
-                    ? `${availableProviderCount} installed · custom order`
-                    : `${availableProviderCount} installed`
-          }
+          title="Available providers"
+          description="Show or hide available providers in the picker and drag them into your preferred order. Hiding a provider here does not disable its server activity."
+          status={providerPickerStatusLabel({
+            checking: serverConfigQuery.isPending || hasPendingProviderStatuses,
+            availableProviders,
+            visibleAvailableCount: visibleAvailableProviderCount,
+            customOrder: isProviderOrderDirty,
+          })}
           resetAction={
             hiddenProviderCount > 0 || isProviderOrderDirty ? (
               <SettingResetButton
@@ -1300,7 +1352,7 @@ export function ProvidersSettingsPanel({
       <div>
         <SettingsSection title="Provider tools">
           <SettingsRow
-            title="Installed CLIs"
+            title="CLIs and cloud providers"
             description="Review provider versions and update tools. Open a row only when you need binary overrides."
             status={
               !settings.enableProviderUpdateChecks

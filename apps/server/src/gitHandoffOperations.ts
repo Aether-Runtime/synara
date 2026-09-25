@@ -1,11 +1,19 @@
 import {
   GitHandoffThreadInput,
   GitHandoffThreadResult,
+  ProviderKind,
   type OrchestrationCommand,
+  type OrchestrationThread,
 } from "@synara/contracts";
+import {
+  providerFeatureUnavailableMessage,
+  providerLackingFeature,
+} from "@synara/shared/providerMetadata";
 import { resolveWorktreeHandoffWorkspaceMetadata } from "@synara/shared/worktreeHandoff";
 import { Data, Effect, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { workspaceMoveFeature } from "./orchestration/workspaceMove.ts";
 
 type HandoffPhase = "pending" | "git_applied" | "completed" | "uncertain";
 
@@ -127,6 +135,86 @@ export const gitHandoffMetadataCommand = (
   threadId: input.threadId,
   ...resolveWorktreeHandoffWorkspaceMetadata(result),
 });
+
+const isProviderKind = Schema.is(ProviderKind);
+
+/**
+ * The git.handoffThread RPC. A handoff to Local ends with a `thread.meta.update` to Local, which
+ * the decider refuses for a thread whose provider owns its worktree, so that thread is refused
+ * here, before any git operation stashes and removes the worktree.
+ */
+export const runGitHandoff = <HandoffError, HandoffContext, DispatchError, DispatchContext>(
+  input: GitHandoffThreadInput,
+  dependencies: {
+    readonly threads: ReadonlyArray<
+      Pick<OrchestrationThread, "id" | "session" | "latestTurn" | "modelSelection">
+    >;
+    readonly handoffThread: (
+      gitInput: Omit<GitHandoffThreadInput, "commandId" | "threadId">,
+    ) => Effect.Effect<GitHandoffThreadResult, HandoffError, HandoffContext>;
+    readonly dispatch: (
+      command: OrchestrationCommand,
+    ) => Effect.Effect<unknown, DispatchError, DispatchContext>;
+  },
+) =>
+  Effect.gen(function* () {
+    const { commandId, threadId, ...gitInput } = input;
+    const thread = dependencies.threads.find((entry) => entry.id === threadId);
+    if (thread === undefined) {
+      return yield* new GitHandoffOperationError({
+        message: `Thread '${threadId}' was not found.`,
+      });
+    }
+    // Every handoff moves the thread to another checkout: refuse what the decider would refuse
+    // for the metadata update it ends with, before git touches anything.
+    const workspaceFeature = workspaceMoveFeature(thread, {
+      toLocal: input.targetMode === "local",
+      changesWorktree: true,
+    });
+    if (workspaceFeature !== null) {
+      const sessionProvider = thread.session?.providerName ?? null;
+      if (sessionProvider !== null && !isProviderKind(sessionProvider)) {
+        return yield* new GitHandoffOperationError({
+          message: `Thread '${threadId}' is bound to unknown provider '${sessionProvider}'.`,
+        });
+      }
+      const refused = providerLackingFeature(
+        [sessionProvider, thread.modelSelection.provider],
+        workspaceFeature,
+      );
+      if (refused !== null) {
+        return yield* new GitHandoffOperationError({
+          message: providerFeatureUnavailableMessage(refused, workspaceFeature),
+        });
+      }
+    }
+    const operation = yield* beginGitHandoff(input);
+    if (operation.phase === "pending" || operation.phase === "uncertain") {
+      return yield* new GitHandoffOperationError({
+        message:
+          operation.phase === "pending"
+            ? "This Git handoff is already running."
+            : "This Git handoff was interrupted before its filesystem result became durable; inspect the repository before retrying.",
+      });
+    }
+    if (operation.phase === "completed") return operation.result;
+
+    const result =
+      operation.phase === "git_applied"
+        ? operation.result
+        : yield* dependencies.handoffThread(gitInput).pipe(
+            Effect.catch((error) =>
+              discardPendingGitHandoff(commandId).pipe(
+                Effect.catch(() => Effect.void),
+                Effect.andThen(Effect.fail(error)),
+              ),
+            ),
+            Effect.tap((gitResult) => recordGitHandoffResult(commandId, gitResult)),
+          );
+    yield* dependencies.dispatch(gitHandoffMetadataCommand({ commandId, threadId }, result));
+    yield* completeGitHandoff(commandId);
+    return result;
+  });
 
 export const recoverGitHandoffOperations = (
   dispatch: (command: OrchestrationCommand) => Effect.Effect<unknown, unknown>,

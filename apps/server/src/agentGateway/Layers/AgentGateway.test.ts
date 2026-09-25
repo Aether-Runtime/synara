@@ -363,6 +363,7 @@ function makeHarnessLayer(
     readonly dispatchDelayMs?: number;
     readonly interruptedOperations?: ReadonlyArray<AgentGatewayOperationRecord>;
     readonly providerStatuses?: ReadonlyArray<ServerProviderStatus>;
+    readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
     readonly existingBranches?: ReadonlyArray<string>;
     readonly existingWorktrees?: Readonly<Record<string, string>>;
     readonly verifiedOwnershipTokens?: ReadonlyArray<string>;
@@ -1257,7 +1258,7 @@ function makeHarnessLayer(
     Layer.provide(gitManagerLayer),
     Layer.provide(providerDiscoveryLayer),
     Layer.provide(providerHealthLayer),
-    Layer.provide(ServerSettingsService.layerTest()),
+    Layer.provide(ServerSettingsService.layerTest(options.serverSettings)),
     Layer.provide(operationLayer),
     Layer.provide(projectionTurnsLayer),
     Layer.provide(diagnosticsLayer),
@@ -2772,6 +2773,42 @@ describe("AgentGateway", () => {
       assert.equal(harness.worktreeCreates[0]?.copyChangesFrom, "/tmp/caller-worktree");
     }).pipe(Effect.provide(gatewayLayer));
   });
+
+  it.effect.each(["HEAD", "origin/main"])(
+    "creates a worktree its provider owns from the caller's commit %s without copying changes",
+    (baseRef) => {
+      const isolatedParent = makeThreadShell("thread-parent", {
+        envMode: "worktree",
+        branch: null,
+        worktreePath: "/tmp/caller-worktree",
+        associatedWorktreePath: "/tmp/caller-worktree",
+        associatedWorktreeBranch: null,
+        associatedWorktreeRef: "0123456789abcdef0123456789abcdef01234567",
+      });
+      const { gatewayLayer, makeHarness } = makeHarnessLayer([isolatedParent], [], {
+        serverSettings: { providers: { aether: { enabled: true } } },
+      });
+      return Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        // The harness resolves every ref to one commit: a clean checkout on the base.
+        const response = yield* harness.callTool({
+          token: "token-parent",
+          name: "synara_create_thread",
+          args: {
+            requestId: `provider-owned-worktree-from-${baseRef}`,
+            prompt: "continue from this commit in the cloud",
+            provider: "aether",
+            environment: "worktree",
+            baseRef,
+          },
+        });
+
+        assert.isFalse(isToolError(response.result), toolErrorText(response.result));
+        assert.lengthOf(harness.worktreeCreates, 1);
+        assert.isUndefined(harness.worktreeCreates[0]?.copyChangesFrom);
+      }).pipe(Effect.provide(gatewayLayer));
+    },
+  );
 
   it.effect("fetches a GitHub pull-request head without creating a local branch", () => {
     const { gatewayLayer, makeHarness } = makeHarnessLayer(baseThreads);

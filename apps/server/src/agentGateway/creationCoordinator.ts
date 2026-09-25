@@ -18,6 +18,10 @@ import {
 import { buildPromptThreadTitleFallback } from "@synara/shared/chatThreads";
 import { WORKTREE_BRANCH_PREFIX } from "@synara/shared/git";
 import { parseGitHubRepositoryNameWithOwnerFromPullRequestUrl } from "@synara/shared/githubRepository";
+import {
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import { runtimeModeEscalatesPrivilege } from "@synara/shared/runtimeMode";
 import { Cause, Effect, Option, Semaphore } from "effect";
 
@@ -525,6 +529,16 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
               ),
             );
           }
+          if (
+            environment === "local" &&
+            !providerSupportsFeature(target.provider, "local-workspace")
+          ) {
+            return yield* Effect.fail(
+              new ToolInputError(
+                providerFeatureUnavailableMessage(target.provider, "local-workspace"),
+              ),
+            );
+          }
           const runtimeMode =
             externalPolicy?.runtimeMode ??
             spec.runtimeMode ??
@@ -629,7 +643,13 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                 Effect.map((result) => result.stdout.trim()),
                 Effect.mapError((error) => new ToolInputError(errorText(error))),
               );
-            copyChangesFrom = sourceHead === worktreeRef ? sourceCwd : null;
+            // A worktree based on the source checkout's HEAD carries its changes, except for a
+            // provider that owns its worktree: it clones from origin and resets the worktree
+            // every turn, so it starts from the commit alone, as the web's first send does.
+            copyChangesFrom =
+              sourceHead === worktreeRef && providerSupportsFeature(target.provider, "copy-changes")
+                ? sourceCwd
+                : null;
             plannedWorktreePath = join(
               serverConfig.worktreesDir,
               stableGatewayDigest({ operationId, index }, 12),

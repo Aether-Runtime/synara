@@ -1,0 +1,496 @@
+// FILE: decider.providerCapabilities.test.ts
+// Purpose: Covers the decider refusing features a provider's capabilities rule out
+//          (Aether: no agent gateway, a provider-owned worktree, no conversation
+//          rollback) before any event is emitted, and leaving Codex and Claude as-is.
+
+import {
+  CommandId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  MessageId,
+  TurnId,
+  type ModelSelection,
+  type OrchestrationCommand,
+  type OrchestrationReadModel,
+} from "@synara/contracts";
+import { Effect } from "effect";
+import { describe, expect, it } from "vitest";
+
+import { decideOrchestrationCommand } from "./decider.ts";
+import {
+  AETHER,
+  CLAUDE,
+  CODEX,
+  MESSAGE_ID,
+  makeReadModel,
+  NEW_THREAD_ID,
+  NOW,
+  PROJECT_ID,
+  THREAD_ID,
+  withSession,
+  WORKTREE_PATH,
+} from "./testing/providerCapabilityReadModel.ts";
+
+async function decide(command: OrchestrationCommand, readModel: OrchestrationReadModel) {
+  const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+  return Array.isArray(decided) ? decided : [decided];
+}
+
+function refusal(command: OrchestrationCommand, readModel: OrchestrationReadModel) {
+  return Effect.runPromise(
+    decideOrchestrationCommand({ command, readModel }).pipe(Effect.flip),
+  ).then((error) => error.message);
+}
+
+const commandId = (id: string) => CommandId.makeUnsafe(`cmd-${id}`);
+
+const goalSet = (goal = "Ship the feature"): OrchestrationCommand => ({
+  type: "thread.meta.update",
+  commandId: commandId("goal-set"),
+  threadId: THREAD_ID,
+  goal,
+});
+
+const turnStart = (
+  text: string,
+  options: {
+    readonly enableComputerControl?: boolean;
+    readonly modelSelection?: ModelSelection;
+  } = {},
+): OrchestrationCommand => ({
+  type: "thread.turn.start",
+  commandId: commandId("turn-start"),
+  threadId: THREAD_ID,
+  message: {
+    messageId: MessageId.makeUnsafe("message-next"),
+    role: "user",
+    text,
+    attachments: [],
+  },
+  interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+  runtimeMode: "full-access",
+  createdAt: NOW,
+  ...options,
+});
+
+const createFromSource = (
+  type: "thread.fork.create" | "thread.handoff.create",
+  modelSelection: ModelSelection,
+): OrchestrationCommand => ({
+  type,
+  commandId: commandId(type),
+  threadId: NEW_THREAD_ID,
+  sourceThreadId: THREAD_ID,
+  projectId: PROJECT_ID,
+  title: "New thread",
+  modelSelection,
+  runtimeMode: "full-access",
+  interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+  envMode: "worktree",
+  branch: "synara/capabilities",
+  worktreePath: WORKTREE_PATH,
+  createBranchFlowCompleted: false,
+  ...(type === "thread.fork.create" ? { sidechatSourceThreadId: THREAD_ID } : {}),
+  importedMessages: [],
+  createdAt: NOW,
+});
+
+/** A plain fork (not a side chat) into `worktreePath`: the source's worktree, or null for new. */
+const fork = (
+  modelSelection: ModelSelection,
+  worktreePath: string | null,
+): OrchestrationCommand => {
+  const { sidechatSourceThreadId: _sidechat, ...command } = createFromSource(
+    "thread.fork.create",
+    modelSelection,
+  ) as Extract<OrchestrationCommand, { type: "thread.fork.create" }>;
+  return { ...command, worktreePath };
+};
+
+const checkpointRevert = (scope: "thread" | "files"): OrchestrationCommand => ({
+  type: "thread.checkpoint.revert",
+  commandId: commandId(`revert-${scope}`),
+  threadId: THREAD_ID,
+  turnCount: 0,
+  scope,
+  createdAt: NOW,
+});
+
+const editAndResend = (): OrchestrationCommand => ({
+  type: "thread.message.edit-and-resend",
+  commandId: commandId("edit-resend"),
+  threadId: THREAD_ID,
+  messageId: MESSAGE_ID,
+  text: "edited request",
+  interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+  runtimeMode: "full-access",
+  createdAt: NOW,
+});
+
+describe("decider provider capability gating", () => {
+  describe("an Aether thread", () => {
+    it("refuses to set, resume or continue a thread goal", async () => {
+      expect(await refusal(goalSet(), await makeReadModel({ modelSelection: AETHER }))).toContain(
+        "Thread goals are unavailable with Aether",
+      );
+      const paused = await makeReadModel({
+        modelSelection: AETHER,
+        goal: "Ship it",
+        goalPaused: true,
+      });
+      expect(
+        await refusal(
+          {
+            type: "thread.meta.update",
+            commandId: commandId("goal-resume"),
+            threadId: THREAD_ID,
+            goalPaused: false,
+          },
+          paused,
+        ),
+      ).toContain("agent gateway");
+      expect(
+        await refusal(
+          {
+            type: "thread.goal.continue",
+            commandId: commandId("goal-continue"),
+            threadId: THREAD_ID,
+            goalStartedAt: NOW,
+            trigger: "turn-completed",
+            createdAt: NOW,
+          },
+          paused,
+        ),
+      ).toContain("Thread goals are unavailable with Aether");
+    });
+
+    it("still lets a goal be paused or cleared", async () => {
+      const readModel = await makeReadModel({ modelSelection: AETHER, goal: "Ship it" });
+      for (const command of [
+        {
+          type: "thread.meta.update" as const,
+          commandId: commandId("goal-pause"),
+          threadId: THREAD_ID,
+          goalPaused: true,
+        },
+        goalSet(""),
+      ]) {
+        expect((await decide(command, readModel))[0]?.type).toBe("thread.meta-updated");
+      }
+    });
+
+    it("refuses to switch a thread with an active goal to Aether", async () => {
+      const readModel = await makeReadModel({ modelSelection: CODEX, goal: "Ship it" });
+      expect(
+        await refusal(
+          {
+            type: "thread.meta.update",
+            commandId: commandId("switch-to-aether"),
+            threadId: THREAD_ID,
+            modelSelection: AETHER,
+          },
+          readModel,
+        ),
+      ).toContain("Thread goals are unavailable with Aether");
+    });
+
+    it("lets a thread with a paused goal switch to Aether through thread.meta.update", async () => {
+      // The web persists the new selection with thread.meta.update before the turn starts.
+      const paused = await makeReadModel({
+        modelSelection: CODEX,
+        goal: "Ship it",
+        goalPaused: true,
+      });
+      const switchToAether = {
+        type: "thread.meta.update" as const,
+        commandId: commandId("switch-to-aether"),
+        threadId: THREAD_ID,
+        modelSelection: AETHER,
+      };
+      expect((await decide(switchToAether, paused))[0]?.type).toBe("thread.meta-updated");
+      // Resuming that goal in the same update would leave it active on Aether.
+      expect(await refusal({ ...switchToAether, goalPaused: false }, paused)).toContain(
+        "Thread goals are unavailable with Aether",
+      );
+    });
+
+    it("refuses a first turn that would carry an active goal onto Aether", async () => {
+      const readModel = await makeReadModel({ modelSelection: CODEX, goal: "Ship it" });
+      expect(await refusal(turnStart("hello", { modelSelection: AETHER }), readModel)).toBe(
+        "Orchestration command invariant failed (thread.turn.start): Thread goals are unavailable with Aether: its agent cannot reach Synara's agent gateway, so it could never mark a goal as achieved.",
+      );
+      const events = await decide(turnStart("hello"), readModel);
+      expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    });
+
+    it("accepts a first turn onto Aether when the thread's goal is paused", async () => {
+      // A paused goal is never sent to the provider, so nothing waits on the gateway.
+      const paused = await makeReadModel({
+        modelSelection: CODEX,
+        goal: "Ship it",
+        goalPaused: true,
+      });
+      const events = await decide(turnStart("hello", { modelSelection: AETHER }), paused);
+      expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    });
+
+    it("refuses moving an idle thread to the local checkout", async () => {
+      // No session and no live worktree claim: the descriptor alone refuses it.
+      expect(
+        await refusal(
+          {
+            type: "thread.meta.update",
+            commandId: commandId("move-to-local"),
+            threadId: THREAD_ID,
+            envMode: "local",
+            worktreePath: null,
+          },
+          await makeReadModel({ modelSelection: AETHER }),
+        ),
+      ).toBe(
+        "Orchestration command invariant failed (thread.meta.update): Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+      );
+    });
+
+    it("refuses moving a thread off its worktree after a turn, with no session left", async () => {
+      // A stopped or released session is gone, but the thread has still started.
+      const readModel = await makeReadModel({ modelSelection: AETHER });
+      const [thread] = readModel.threads;
+      const turnWithoutSession = {
+        ...readModel,
+        threads: [
+          {
+            ...thread!,
+            session: null,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("turn-without-session"),
+              state: "completed" as const,
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: null,
+            },
+          },
+        ],
+      };
+      expect(
+        await refusal(
+          {
+            type: "thread.meta.update",
+            commandId: commandId("move-worktree"),
+            threadId: THREAD_ID,
+            worktreePath: null,
+          },
+          turnWithoutSession,
+        ),
+      ).toContain("cannot move to another checkout once a turn has started");
+    });
+
+    it("refuses moving a started thread off its worktree", async () => {
+      const started = withSession(await makeReadModel({ modelSelection: AETHER }), "aether");
+      for (const move of [
+        { worktreePath: null },
+        { envMode: "worktree" as const, worktreePath: null },
+        { envMode: "worktree" as const, worktreePath: "/tmp/project/.worktrees/other" },
+      ]) {
+        expect(
+          await refusal(
+            {
+              type: "thread.meta.update",
+              commandId: commandId("move-worktree"),
+              threadId: THREAD_ID,
+              ...move,
+            },
+            started,
+          ),
+        ).toBe(
+          "Orchestration command invariant failed (thread.meta.update): Aether owns this thread's worktree, so the thread cannot move to another checkout once a turn has started.",
+        );
+      }
+    });
+
+    it("lets a thread reset its worktree before a turn has started, but not to Local", async () => {
+      // A failed first send removes the worktree it made and resets the thread.
+      const readModel = await makeReadModel({ modelSelection: AETHER });
+      const reset = {
+        type: "thread.meta.update" as const,
+        commandId: commandId("reset-worktree"),
+        threadId: THREAD_ID,
+        envMode: "worktree" as const,
+        branch: null,
+        worktreePath: null,
+      };
+      expect((await decide(reset, readModel))[0]?.type).toBe("thread.meta-updated");
+      expect(await refusal({ ...reset, envMode: "local" }, readModel)).toContain(
+        "Aether threads run only in a worktree that Aether owns",
+      );
+    });
+
+    it("refuses Computer Use on every dispatch path", async () => {
+      const readModel = await makeReadModel({ modelSelection: AETHER });
+      expect(await refusal(turnStart("hello", { enableComputerControl: true }), readModel)).toBe(
+        "Orchestration command invariant failed (thread.turn.start): Computer Use, browser automation and device tools are unavailable with Aether: its agent cannot reach Synara's agent gateway.",
+      );
+      expect(await refusal(turnStart("/computer-use open Calculator"), readModel)).toContain(
+        "Computer Use",
+      );
+      expect(
+        await refusal(
+          {
+            type: "thread.turn.dispatch-queued",
+            commandId: commandId("dispatch-queued"),
+            threadId: THREAD_ID,
+            messageId: MESSAGE_ID,
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "full-access",
+            computerControlMode: "chat",
+            createdAt: NOW,
+          },
+          readModel,
+        ),
+      ).toContain("Computer Use");
+    });
+
+    it("refuses a turn outside the worktree Aether owns", async () => {
+      expect(
+        await refusal(
+          turnStart("hello"),
+          await makeReadModel({ modelSelection: AETHER, worktreePath: null }),
+        ),
+      ).toContain(
+        "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+      );
+      const events = await decide(
+        turnStart("hello"),
+        await makeReadModel({ modelSelection: AETHER }),
+      );
+      expect(events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    });
+
+    it("refuses a fork that would share a worktree with Aether", async () => {
+      const shared =
+        "Orchestration command invariant failed (thread.fork.create): Aether threads cannot share a worktree: Aether owns the worktree and resets it on every turn. Fork into a new worktree instead.";
+      const aetherThread = await makeReadModel({ modelSelection: AETHER });
+      expect(await refusal(fork(AETHER, WORKTREE_PATH), aetherThread)).toBe(shared);
+      expect(await refusal(fork(CODEX, WORKTREE_PATH), aetherThread)).toBe(shared);
+      expect(
+        await refusal(fork(AETHER, WORKTREE_PATH), await makeReadModel({ modelSelection: CODEX })),
+      ).toBe(shared);
+      const events = await decide(fork(AETHER, null), aetherThread);
+      expect(events.map((event) => event.type)).toContain("thread.created");
+    });
+
+    it("refuses a side chat, whichever provider it targets", async () => {
+      const readModel = await makeReadModel({ modelSelection: AETHER });
+      for (const target of [AETHER, CLAUDE]) {
+        expect(await refusal(createFromSource("thread.fork.create", target), readModel)).toContain(
+          "Side chats are unavailable in Aether threads",
+        );
+      }
+      expect(
+        await refusal(
+          createFromSource("thread.fork.create", AETHER),
+          await makeReadModel({ modelSelection: CODEX }),
+        ),
+      ).toContain("Side chats are unavailable in Aether threads");
+    });
+
+    it("refuses a provider handoff to or from Aether", async () => {
+      expect(
+        await refusal(
+          createFromSource("thread.handoff.create", CLAUDE),
+          await makeReadModel({ modelSelection: AETHER }),
+        ),
+      ).toContain("Handing a thread off to or from Aether is not available yet");
+      expect(
+        await refusal(
+          createFromSource("thread.handoff.create", AETHER),
+          await makeReadModel({ modelSelection: CODEX }),
+        ),
+      ).toContain("Handing a thread off to or from Aether is not available yet");
+    });
+
+    it("refuses a checkpoint revert of either scope before any event", async () => {
+      const readModel = await makeReadModel({ modelSelection: AETHER });
+      for (const scope of ["thread", "files"] as const) {
+        expect(await refusal(checkpointRevert(scope), readModel)).toContain(
+          "Aether cannot roll back its conversation",
+        );
+      }
+      expect(
+        await refusal(
+          {
+            type: "thread.conversation.rollback",
+            commandId: commandId("conversation-rollback"),
+            threadId: THREAD_ID,
+            messageId: MESSAGE_ID,
+            numTurns: 1,
+            createdAt: NOW,
+          },
+          readModel,
+        ),
+      ).toContain("Aether cannot roll back its conversation");
+    });
+
+    it("refuses edit-and-resend up front, before the session is marked starting", async () => {
+      expect(await refusal(editAndResend(), await makeReadModel({ modelSelection: AETHER }))).toBe(
+        "Orchestration command invariant failed (thread.message.edit-and-resend): Aether cannot roll back its conversation, so reverting changes or editing earlier messages is unavailable in this thread.",
+      );
+    });
+  });
+
+  it("refuses a gated command on a thread bound to an unknown provider", async () => {
+    const unknownSession = withSession(
+      await makeReadModel({ modelSelection: CODEX }),
+      "retired-provider",
+    );
+    expect(await refusal(checkpointRevert("thread"), unknownSession)).toContain(
+      "bound to unknown provider 'retired-provider'",
+    );
+  });
+
+  describe.each([
+    ["Codex", CODEX],
+    ["Claude", CLAUDE],
+  ] as const)("a %s thread", (_name, modelSelection) => {
+    it("moves between checkouts after a turn has started", async () => {
+      const started = withSession(await makeReadModel({ modelSelection }), modelSelection.provider);
+      const events = await decide(
+        {
+          type: "thread.meta.update",
+          commandId: commandId("move-worktree"),
+          threadId: THREAD_ID,
+          worktreePath: null,
+        },
+        started,
+      );
+      expect(events[0]?.type).toBe("thread.meta-updated");
+    });
+
+    it("accepts every gated command", async () => {
+      const readModel = await makeReadModel({ modelSelection, worktreePath: null });
+      const accepted: ReadonlyArray<[OrchestrationCommand, string]> = [
+        [goalSet(), "thread.meta-updated"],
+        [
+          {
+            type: "thread.meta.update",
+            commandId: commandId("move-to-local"),
+            threadId: THREAD_ID,
+            envMode: "local",
+            worktreePath: null,
+          },
+          "thread.meta-updated",
+        ],
+        [turnStart("hello", { enableComputerControl: true }), "thread.turn-start-requested"],
+        [createFromSource("thread.fork.create", modelSelection), "thread.created"],
+        [fork(modelSelection, WORKTREE_PATH), "thread.created"],
+        [createFromSource("thread.handoff.create", CLAUDE), "thread.created"],
+        [checkpointRevert("thread"), "thread.checkpoint-revert-requested"],
+        [editAndResend(), "thread.message-edit-resend-requested"],
+      ];
+      for (const [command, eventType] of accepted) {
+        const events = await decide(command, readModel);
+        expect(events.map((event) => event.type)).toContain(eventType);
+      }
+    });
+  });
+});

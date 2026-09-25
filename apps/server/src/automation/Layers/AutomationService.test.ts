@@ -796,6 +796,96 @@ layer("AutomationService", (it) => {
     }),
   );
 
+  it.effect("refuses a provider that owns its worktree on create, update and run", () =>
+    Effect.gen(function* () {
+      resetHarness();
+      const service = yield* AutomationService;
+      const repository = yield* AutomationRepository;
+      const aetherModelSelection = { provider: "aether" as const, model: "claude-opus-5-5" };
+      const refusal =
+        /Automations cannot run on Aether: an automation branches from your local HEAD/;
+
+      const createError = yield* service
+        .create({ ...createInput(), modelSelection: aetherModelSelection })
+        .pipe(Effect.flip);
+      assert.match(createError.message, refusal);
+
+      const definition = yield* service.create(createInput());
+      const updateError = yield* service
+        .update({ id: definition.id, modelSelection: aetherModelSelection })
+        .pipe(Effect.flip);
+      assert.match(updateError.message, refusal);
+
+      // Inserted directly, bypassing create-time validation: the run path refuses too,
+      // even with Aether enabled.
+      const serverSettings = yield* ServerSettingsService;
+      yield* serverSettings.updateSettings({ providers: { aether: { enabled: true } } });
+      const automationId = AutomationId.makeUnsafe("automation-aether-runnow");
+      yield* repository.createDefinition({
+        id: automationId,
+        input: { ...createInput(), modelSelection: aetherModelSelection },
+        now,
+      });
+      const runError = yield* service
+        .runNow({ automationId })
+        .pipe(
+          Effect.flip,
+          Effect.ensuring(
+            serverSettings
+              .updateSettings({ providers: { aether: { enabled: false } } })
+              .pipe(Effect.ignore),
+          ),
+        );
+      assert.match(runError.message, refusal);
+      assert.strictEqual(
+        dispatchedCommands.filter((command) => command.type === "thread.create").length,
+        0,
+      );
+    }),
+  );
+
+  it.effect(
+    "refuses a heartbeat that would continue an Aether thread, with heartbeat wording",
+    () =>
+      Effect.gen(function* () {
+        resetHarness();
+        const service = yield* AutomationService;
+        const refusal =
+          /Heartbeat automations are unavailable with Aether: a heartbeat adds turns to a thread in its existing worktree/;
+        const aether = { provider: "aether" as const, model: "claude-opus-5-5" };
+        const targetThreadId = ThreadId.makeUnsafe("aether-heartbeat-thread");
+        const heartbeat = { ...createInput("local"), mode: "heartbeat" as const, targetThreadId };
+        const aetherThread = () =>
+          Option.some(makeThreadShell({ id: targetThreadId, modelSelection: aether }));
+
+        // A Codex heartbeat cannot continue an Aether thread...
+        threadShell = aetherThread();
+        assert.match((yield* service.create(heartbeat).pipe(Effect.flip)).message, refusal);
+
+        // ...nor keep one it was pointed at before the thread became Aether's, on update or run.
+        threadShell = Option.some(makeThreadShell({ id: targetThreadId }));
+        const created = yield* service.create(heartbeat);
+        threadShell = aetherThread();
+        const updateError = yield* service
+          .update({ id: created.id, name: "Renamed heartbeat" })
+          .pipe(Effect.flip);
+        assert.match(updateError.message, refusal);
+        const runError = yield* service.runNow({ automationId: created.id }).pipe(Effect.flip);
+        assert.match(runError.message, refusal);
+        assert.strictEqual(
+          dispatchedCommands.filter((command) => command.type === "thread.turn.start").length,
+          0,
+        );
+
+        // An Aether heartbeat model gets the heartbeat wording too, not "branches from local HEAD".
+        threadShell = Option.some(makeThreadShell({ id: targetThreadId }));
+        const modelError = yield* service
+          .create({ ...heartbeat, modelSelection: aether })
+          .pipe(Effect.flip);
+        assert.match(modelError.message, refusal);
+      }),
+  );
+
   it.effect("accepts and dismisses persisted automation proposals", () =>
     Effect.gen(function* () {
       resetHarness();

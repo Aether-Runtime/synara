@@ -461,8 +461,9 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {
     id: "providers:installed-clis",
     section: "providers",
-    title: "Installed CLIs",
-    keywords: "Review provider versions and update tools. binary overrides path install",
+    title: "CLIs and cloud providers",
+    keywords:
+      "Review provider versions and update tools. binary overrides path install cloud api key",
   },
 
   // ── Skills ────────────────────────────────────────────────────────────────────

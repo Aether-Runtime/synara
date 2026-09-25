@@ -282,7 +282,6 @@ describe("ProviderCommandReactor", () => {
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session" | "restart-session";
     readonly conversationRollback?: "native" | "restart-session";
-    readonly managesWorktreeBranch?: boolean;
     readonly checkpointStore?: Partial<CheckpointStoreShape>;
     readonly studioOutputReactor?: Partial<StudioOutputReactorShape>;
     readonly forkThreadResult?: ProviderForkThreadResult | null;
@@ -650,9 +649,6 @@ describe("ProviderCommandReactor", () => {
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
           ...(input?.conversationRollback
             ? { conversationRollback: input.conversationRollback }
-            : {}),
-          ...(input?.managesWorktreeBranch !== undefined
-            ? { managesWorktreeBranch: input.managesWorktreeBranch }
             : {}),
         }),
       rollbackConversation,
@@ -8301,6 +8297,52 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
+  it("refuses an edit resend up front for a provider that cannot roll back", async () => {
+    const harness = await createHarness({
+      threadModelSelection: { provider: "aether", model: "claude-opus-5-5" },
+    });
+    const now = new Date().toISOString();
+    harness.isGitRepository.mockImplementation(() => Effect.succeed(true));
+    // Owned like a live Aether mirror: the rollback refusal must come before the
+    // ownership pre-check, which runs outside the repository lock.
+    harness.ownedWorktrees.set("/tmp/provider-project", {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      provider: "aether",
+    });
+    await seedRollbackTarget(harness, {
+      messageId: asMessageId("user-message-unsupported-edit"),
+      turnId: asTurnId("turn-unsupported-edit"),
+      createdAt: now,
+    });
+    const before = await readHarnessThread(harness);
+
+    await expect(
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.edit-and-resend",
+          commandId: CommandId.makeUnsafe("cmd-unsupported-edit-resend"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          messageId: asMessageId("user-message-unsupported-edit"),
+          text: "edited prompt for a cloud provider",
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        }),
+      ),
+    ).rejects.toThrow("Aether cannot roll back its conversation");
+
+    const thread = await readHarnessThread(harness);
+    expect(thread?.session).toEqual(before?.session);
+    expect(thread?.messages).toEqual(before?.messages);
+    expect(harness.isGitRepository).not.toHaveBeenCalled();
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.stopRuntimeSession).not.toHaveBeenCalled();
+    expect(harness.clearSessionResumeCursor).not.toHaveBeenCalled();
+    expect(harness.rollbackConversation).not.toHaveBeenCalled();
+    expect(harness.restoreCheckpoint).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
   it("clears the edit loading state when provider rollback fails before resend", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -10588,7 +10630,11 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("keeps a provider-managed worktree branch unrenamed and unpushed on the first turn", async () => {
-    const harness = await createHarness({ managesWorktreeBranch: true });
+    // Aether's provider descriptor says it owns its worktree branch.
+    const harness = await createHarness({
+      threadModelSelection: { provider: "aether", model: "claude-opus-5-5" },
+      serverSettings: { providers: { aether: { enabled: true } } },
+    });
     const now = new Date().toISOString();
     harness.generateBranchName.mockImplementation(() =>
       Effect.succeed({ branch: "provider-managed-branch" }),

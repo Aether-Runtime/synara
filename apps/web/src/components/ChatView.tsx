@@ -4,6 +4,12 @@ import {
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
 import {
+  providerFeatureUnavailableMessage,
+  providerIsCloudService,
+  providerLackingFeature,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
+import {
   MessageId,
   OrchestrationThreadActivity,
   PROVIDER_DISPLAY_NAMES,
@@ -288,6 +294,7 @@ import {
   shouldShowComputerControlEffortHint,
 } from "./chat/composerComputerControlHint";
 import { ComposerComputerControlEffortHint } from "./chat/ComposerComputerControlEffortHint";
+import { ComposerCloudProviderHint } from "./chat/ComposerCloudProviderHint";
 import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachments";
 import { ComposerSlashStatusDialog } from "./chat/ComposerSlashStatusDialog";
 import { ComposerSubagentStrip } from "./chat/ComposerSubagentStrip";
@@ -1293,6 +1300,18 @@ export default function ChatView({
     isModelPickerOpen: isComposerModelEffortPickerOpen,
     resolvedThreadWorktreePath,
   });
+  // Features the thread's providers must support: the bound session's and the composer's
+  // selection, the same capability rule the server's decider refuses with.
+  const threadGateProviders = [activeThread?.session?.provider, selectedProvider];
+  const threadGoalsAvailable = providerLackingFeature(threadGateProviders, "thread-goal") === null;
+  const sidechatsAvailable = providerLackingFeature(threadGateProviders, "sidechat") === null;
+  const conversationRollbackAvailable =
+    providerLackingFeature(threadGateProviders, "conversation-rollback") === null;
+  const localWorkspaceAvailable =
+    providerLackingFeature(threadGateProviders, "local-workspace") === null;
+  // "Fork Into Local" and forking from a turn reuse this thread's worktree.
+  const sharedWorktreeAvailable =
+    providerLackingFeature(threadGateProviders, "shared-worktree") === null;
   const {
     selectedComposerSkills,
     selectedComposerMentions,
@@ -1309,10 +1328,12 @@ export default function ChatView({
   });
   // A command enables only this draft's turn. Settings remains a separate
   // explicit default; clearing the draft removes request activation.
-  const computerControlMode = resolveComputerInvocationMode({
-    messageText: prompt,
-    enableComputerControl: settings.computerControlEnabled,
-  });
+  const computerControlMode = providerSupportsFeature(selectedProvider, "computer-control")
+    ? resolveComputerInvocationMode({
+        messageText: prompt,
+        enableComputerControl: settings.computerControlEnabled,
+      })
+    : "off";
   const enableComputerControl = computerControlMode !== "off";
   const featureFlags = useFeatureFlags();
   const showDebugTaskBanner = import.meta.env.DEV && featureFlags["show-debug-task-banner"];
@@ -1526,7 +1547,7 @@ export default function ChatView({
   // whose optimistic/filtered entries can surface the button on a message the
   // validators then reject.
   const editableUserMessageId = useMemo(() => {
-    if (!activeThread || !isServerThread) {
+    if (!activeThread || !isServerThread || !conversationRollbackAvailable) {
       return null;
     }
     const editTarget = resolveLatestTailUserMessageEditTarget({
@@ -1537,7 +1558,7 @@ export default function ChatView({
           : null,
     });
     return editTarget.editable ? (editTarget.messageId as MessageId) : null;
-  }, [activeThread, isServerThread]);
+  }, [activeThread, conversationRollbackAvailable, isServerThread]);
   // Defence in depth against a session stuck at "running" with no turn to
   // complete: nothing would ever drain the composer queue, so messages routed
   // into it would be swallowed. Server-side reconciliation settles these
@@ -1842,6 +1863,10 @@ export default function ChatView({
   }, [inferredCheckpointTurnCountByTurnId, turnDiffSummaries, timelineMessages]);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
+    // No revert target at all when the provider cannot roll back its conversation.
+    if (!conversationRollbackAvailable) {
+      return byUserMessageId;
+    }
     for (let index = 0; index < timelineEntries.length; index += 1) {
       const entry = timelineEntries[index];
       if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
@@ -1871,7 +1896,12 @@ export default function ChatView({
     }
 
     return byUserMessageId;
-  }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
+  }, [
+    conversationRollbackAvailable,
+    inferredCheckpointTurnCountByTurnId,
+    timelineEntries,
+    turnDiffSummaryByAssistantMessageId,
+  ]);
 
   const threadWorkspaceCwd = activeProject
     ? resolveSharedThreadWorkspaceCwd({
@@ -2060,10 +2090,12 @@ export default function ChatView({
   const canExecuteSideCommand =
     isServerThread &&
     activeThread !== undefined &&
+    sidechatsAvailable &&
     canExecuteSideSlashCommand(sideSlashCommandContext);
   const canOfferSideCommand =
     isServerThread &&
     activeThread !== undefined &&
+    sidechatsAvailable &&
     canOfferSideSlashCommand({
       prompt: composerPromptWithoutActiveSlashTrigger,
       ...sideSlashCommandContext,
@@ -2111,16 +2143,20 @@ export default function ChatView({
           label: "Fork Into New Worktree",
           description: "Continue in a new worktree",
         },
-        {
-          id: "fork-target:local",
-          type: "fork-target" as const,
-          target: "local" as const,
-          label: "Fork Into Local",
-          description:
-            activeThread?.worktreePath || activeThread?.envMode === "worktree"
-              ? "Continue in this local worktree"
-              : "Continue in the current local thread",
-        },
+        ...(sharedWorktreeAvailable
+          ? [
+              {
+                id: "fork-target:local",
+                type: "fork-target" as const,
+                target: "local" as const,
+                label: "Fork Into Local",
+                description:
+                  activeThread?.worktreePath || activeThread?.envMode === "worktree"
+                    ? "Continue in this local worktree"
+                    : "Continue in the current local thread",
+              },
+            ]
+          : []),
       ];
     }
     if (composerCommandPicker === "review-target") {
@@ -2148,6 +2184,7 @@ export default function ChatView({
     activeThread?.worktreePath,
     composerCommandPicker,
     normalComposerMenuItems,
+    sharedWorktreeAvailable,
   ]);
   const composerMenuOpen = Boolean(composerTrigger || composerCommandPicker);
   // The `+` panel yields the floating slot to the slash/mention menu as soon as a
@@ -2255,6 +2292,20 @@ export default function ChatView({
     isStudioContainer,
     queriedIsRepo: branchesQuery.data?.isRepo,
   });
+  // Where no worktree can exist (Studio, the chats container, a folder without git), a provider
+  // that owns its worktree cannot run: the environment slot says why instead. Studio runs every
+  // chat in a local folder, git or not.
+  const providerNeedingGit =
+    isContainerLandingProject || !isGitRepo
+      ? providerLackingFeature(threadGateProviders, "non-git-workspace")
+      : null;
+  const environmentUnavailableMessage =
+    providerNeedingGit === null
+      ? null
+      : providerFeatureUnavailableMessage(
+          providerNeedingGit,
+          isStudioContainer ? "local-workspace" : "non-git-workspace",
+        );
   // Studio never offers "Initialize Git": its reference folder is ordinary cwd context,
   // so Git actions appear only when that selected folder is already a repository.
   const showGitActions = isStudioContainer
@@ -3996,7 +4047,6 @@ export default function ChatView({
     syncServerShellSnapshot,
     activeRootBranch,
     gitBranchSourceCwd,
-    setStoreThreadError,
     queryClient,
     isCenteredEmptyLanding,
     setEnvironmentPanelPreferenceOpen,
@@ -4749,6 +4799,10 @@ export default function ChatView({
     updateSettings({ dismissedComputerControlEffortHint: true });
     scheduleComposerFocus();
   }, [scheduleComposerFocus, updateSettings]);
+  const dismissCloudProviderHint = useCallback(() => {
+    updateSettings({ dismissedCloudProviderHint: true });
+    scheduleComposerFocus();
+  }, [scheduleComposerFocus, updateSettings]);
 
   // Empty state: no active thread
   if (!activeThread) {
@@ -4880,6 +4934,8 @@ export default function ChatView({
     onHandoffToLocal,
     handoffBusy,
     onComposerFocusRequest: scheduleComposerFocus,
+    providerOwnsWorktree: !localWorkspaceAvailable,
+    environmentUnavailableMessage,
     ...(isStudioContainer ? { fixedLocalWorkspaceCwd: threadWorkspaceCwd } : {}),
     ...(canCheckoutPullRequestIntoThread
       ? { onCheckoutPullRequestRequest: openPullRequestDialog }
@@ -5046,13 +5102,14 @@ export default function ChatView({
     showGitActions,
     diffOpen: resolvedDiffOpen,
     threadAutomations: threadAutomationItems,
-    sidechats: activeThread.sidechatSourceThreadId
-      ? null
-      : sourceThreadSidechats.map((sidechat) => ({
-          id: sidechat.id,
-          title: sidechat.title,
-          expiredAt: sidechat.sidechatExpiredAt ?? null,
-        })),
+    sidechats:
+      activeThread.sidechatSourceThreadId || !sidechatsAvailable
+        ? null
+        : sourceThreadSidechats.map((sidechat) => ({
+            id: sidechat.id,
+            title: sidechat.title,
+            expiredAt: sidechat.sidechatExpiredAt ?? null,
+          })),
     diffDisabledReason,
     diffTotals: repoDiffTotals,
     branchToolbar: branchToolbarProps,
@@ -5129,6 +5186,11 @@ export default function ChatView({
     provider: selectedProvider,
     traits: composerTraitSelection,
   });
+  // New chats only, until dismissed once; driven by the descriptor, not the provider name.
+  const showComposerCloudProviderHint =
+    !settings.dismissedCloudProviderHint &&
+    !hasNativeUserMessages &&
+    providerIsCloudService(selectedProvider);
   const startReplacementSidechat = () => {
     const sourceThreadId = activeThread?.sidechatSourceThreadId;
     if (!sourceThreadId) return;
@@ -5285,6 +5347,20 @@ export default function ChatView({
                   }
                 />
               ) : null}
+              {showComposerCloudProviderHint ? (
+                <ComposerCloudProviderHint
+                  onDismiss={dismissCloudProviderHint}
+                  attachedToPrevious={
+                    showComposerLiveChangesHeader ||
+                    showComposerActiveTaskListCard ||
+                    showComposerWorkflowRunCard ||
+                    showComposerSubagentStrip ||
+                    queuedComposerTurns.length > 0 ||
+                    showComposerGoalHeader ||
+                    showComposerComputerControlEffortHint
+                  }
+                />
+              ) : null}
               {settledThreadBranchMismatch ? (
                 <div className="pb-2">
                   <ComposerBranchMismatchBanner {...settledThreadBranchMismatch} />
@@ -5411,7 +5487,9 @@ export default function ChatView({
                           onAddAttachments={addComposerAttachments}
                           onToggleFastMode={toggleFastMode}
                           onInteractionModeChange={handleInteractionModeChange}
-                          onInsertGoal={insertGoalSlashCommandInComposer}
+                          onInsertGoal={
+                            threadGoalsAvailable ? insertGoalSlashCommandInComposer : undefined
+                          }
                           onClose={() => {
                             setIsComposerExtrasPanelOpen(false);
                             scheduleComposerFocus();
@@ -5941,6 +6019,7 @@ export default function ChatView({
                     worktreeSetup={activeWorktreeSetup}
                     worktreeSetupPendingAction={worktreeSetupPendingAction}
                     onResolveWorktreeSetup={onResolveWorktreeSetup}
+                    worktreeSetupAllowsWorkLocally={localWorkspaceAvailable}
                     activeTurnInProgress={activeTurnInProgress}
                     activeTurnStartedAt={activeWorkStartedAt}
                     listRef={legendListRef}
@@ -5949,7 +6028,9 @@ export default function ChatView({
                     pinnedMessageIds={pinnedMessageIds}
                     canPinMessage={canPinMessage}
                     onTogglePinMessage={handleTogglePinMessageGuarded}
-                    onForkFromMessage={handleForkFromMessage}
+                    {...(sharedWorktreeAvailable
+                      ? { onForkFromMessage: handleForkFromMessage }
+                      : {})}
                     goalAchievements={goalAchievements}
                     enteringUserMessageIds={enteringUserMessageIds}
                     tailAnchorMessageId={
@@ -5971,7 +6052,7 @@ export default function ChatView({
                     onEnableComputerControl={handleEnableComputerControlFromDenial}
                     revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                     onRevertUserMessage={onRevertUserMessage}
-                    onUndoTurnFiles={onUndoTurnFiles}
+                    {...(conversationRollbackAvailable ? { onUndoTurnFiles } : {})}
                     onEditUserMessage={onEditUserMessage}
                     onRespondToAsyncUserInput={onRespondToAsyncUserInput}
                     editableUserMessageId={editableUserMessageId}
@@ -6184,7 +6265,11 @@ export default function ChatView({
           action={pendingTranscriptSelectionAction}
           defaultEnvMode={selectionChatEnvMode ?? settings.defaultThreadEnvMode}
           canUseWorktree={isGitRepo && !isContainerLandingProject}
-          canAddToSide={isServerThread && !activeThread.sidechatSourceThreadId}
+          providerOwnsWorktree={!localWorkspaceAvailable}
+          environmentUnavailableMessage={environmentUnavailableMessage}
+          canAddToSide={
+            isServerThread && sidechatsAvailable && !activeThread.sidechatSourceThreadId
+          }
           onDismiss={dismissTranscriptSelectionAction}
           onAddToChat={commitTranscriptAssistantSelection}
           onAddToSide={(selection) =>

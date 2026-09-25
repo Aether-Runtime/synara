@@ -69,8 +69,11 @@ export function ComposerExtrasPanel(props: {
   onAddAttachments: (files: File[]) => void;
   onToggleFastMode: () => void;
   onInteractionModeChange: (mode: ProviderInteractionMode) => void;
-  /** Turns the draft into a `/goal` command so the goal chip flow is the same as typing it. */
-  onInsertGoal: () => void;
+  /**
+   * Turns the draft into a `/goal` command so the goal chip flow is the same as typing it.
+   * Omitted when the provider cannot pursue goals, which hides the row.
+   */
+  onInsertGoal?: (() => void) | undefined;
   onClose: () => void;
   panelId: string;
 }) {
@@ -161,12 +164,16 @@ export function ComposerExtrasPanel(props: {
                         },
                   ]
                 : []),
-              {
-                id: ROW_GOAL,
-                icon: <GoalIcon className={GLYPH} />,
-                title: "Goal",
-                secondary: "Set a goal to keep pursuing",
-              },
+              ...(props.onInsertGoal
+                ? [
+                    {
+                      id: ROW_GOAL,
+                      icon: <GoalIcon className={GLYPH} />,
+                      title: "Goal",
+                      secondary: "Set a goal to keep pursuing",
+                    },
+                  ]
+                : []),
               {
                 id: ROW_PLAN,
                 icon: <ListTodoIcon className={GLYPH} />,
@@ -224,7 +231,7 @@ export function ComposerExtrasPanel(props: {
       return;
     }
     if (rowId === ROW_GOAL) {
-      props.onInsertGoal();
+      props.onInsertGoal?.();
       props.onClose();
       return;
     }

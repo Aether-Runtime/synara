@@ -14,6 +14,7 @@ import {
   EventId,
   MAX_PINNED_PROJECTS,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  ProviderKind,
   PINNED_MESSAGES_MAX_COUNT,
   RESERVED_VOID_SPACE_ID,
   SPACES_MAX_COUNT,
@@ -27,17 +28,24 @@ import {
 } from "@synara/shared/threadWorkspace";
 import { collectSubagentDescendants } from "@synara/shared/threadHierarchy";
 import { autoRuntimeModeSelectionIssue } from "@synara/shared/runtimeMode";
-import { providerSupportsNativeTurnSteering } from "@synara/shared/providerMetadata";
+import {
+  providerFeatureUnavailableMessage,
+  providerLackingFeature,
+  providerSupportsNativeTurnSteering,
+  type ProviderGatedFeature,
+} from "@synara/shared/providerMetadata";
 import {
   collectTailTurnIds,
   resolveTailUserMessageEditTarget,
 } from "@synara/shared/conversationEdit";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { computerActivationMetadata } from "../computer/computerActivation.ts";
+import { activeThreadGoal } from "../provider/goalMode.ts";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { withProjectRelocationEvents } from "./projectRelocation.ts";
+import { workspaceMoveFeature } from "./workspaceMove.ts";
 import { buildForkThreadTitle } from "./forkThreadTitle.ts";
 import { hasNativeHandoffMessages } from "./handoff.ts";
 import { resolveStableMessageTurnId } from "./messageTurnId.ts";
@@ -115,6 +123,50 @@ function validateAutoRuntimeMode(
         new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: issue,
+        }),
+      );
+}
+
+/** Refuse a feature when any provider the command could run the thread on lacks it. */
+function validateProviderFeature(
+  command: Pick<OrchestrationCommand, "type">,
+  feature: ProviderGatedFeature,
+  providers: ReadonlyArray<ProviderKind | undefined>,
+) {
+  const refused = providerLackingFeature(providers, feature);
+  return refused === null
+    ? Effect.void
+    : Effect.fail(
+        new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: providerFeatureUnavailableMessage(refused, feature),
+        }),
+      );
+}
+
+const isProviderKind = Schema.is(ProviderKind);
+
+/**
+ * Every provider the command could run the thread on: the bound session, the thread's
+ * selection, and a selection the command brings. The session stores its provider as a plain
+ * string, so it is parsed here and an unknown provider is refused.
+ */
+function threadProviders(
+  command: Pick<OrchestrationCommand, "type">,
+  thread: Pick<OrchestrationThread, "session" | "modelSelection">,
+  commandModelSelection?: OrchestrationThread["modelSelection"],
+): Effect.Effect<ReadonlyArray<ProviderKind | undefined>, OrchestrationCommandInvariantError> {
+  const sessionProvider = thread.session?.providerName ?? undefined;
+  return sessionProvider === undefined || isProviderKind(sessionProvider)
+    ? Effect.succeed([
+        sessionProvider,
+        thread.modelSelection.provider,
+        commandModelSelection?.provider,
+      ])
+    : Effect.fail(
+        new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `The thread's session is bound to unknown provider '${sessionProvider}'.`,
         }),
       );
 }
@@ -1121,6 +1173,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Source thread '${command.sourceThreadId}' belongs to a different project.`,
         });
       }
+      yield* validateProviderFeature(
+        command,
+        "provider-handoff",
+        yield* threadProviders(command, sourceThread, command.modelSelection),
+      );
       if (sourceThread.handoff !== null && !hasNativeHandoffMessages(sourceThread)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -1222,6 +1279,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandType: command.type,
           detail: `Source thread '${command.sourceThreadId}' belongs to a different project.`,
         });
+      }
+      if (command.sidechatSourceThreadId) {
+        yield* validateProviderFeature(
+          command,
+          "sidechat",
+          yield* threadProviders(command, sourceThread, command.modelSelection),
+        );
+      }
+      // A fork into the source's worktree shares it, which a provider that owns its worktree
+      // cannot allow: two threads would drive (and reset) one checkout.
+      if (command.worktreePath !== null && command.worktreePath === sourceThread.worktreePath) {
+        yield* validateProviderFeature(
+          command,
+          "shared-worktree",
+          yield* threadProviders(command, sourceThread, command.modelSelection),
+        );
       }
 
       const createdEvent: Omit<OrchestrationEvent, "sequence"> = {
@@ -1511,7 +1584,41 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (command.modelSelection !== undefined && thread.creationSource !== "provider_native") {
         yield* validateAutoRuntimeMode(command, command.modelSelection, thread.runtimeMode);
       }
+      // A goal ends only when the agent calls synara_set_thread_goal on the local gateway, so
+      // setting, resuming or carrying an active one onto a provider that cannot reach it would
+      // loop. The goal this update leaves behind is judged like a turn's: a paused one is never
+      // sent to the provider.
       const occurredAt = nowIso();
+      const activeGoalAfterUpdate = activeThreadGoal({
+        ...thread,
+        ...resolveThreadGoalPatch(command, thread, occurredAt),
+      });
+      if (
+        (activeGoalAfterUpdate ?? "").trim().length > 0 &&
+        (command.goal !== undefined ||
+          command.goalPaused === false ||
+          command.modelSelection !== undefined)
+      ) {
+        yield* validateProviderFeature(
+          command,
+          "thread-goal",
+          yield* threadProviders(command, thread, command.modelSelection),
+        );
+      }
+      // Whether or not a live session claims the worktree right now (a failed first send can
+      // still reset the worktree it made).
+      const workspaceFeature = workspaceMoveFeature(thread, {
+        toLocal: command.envMode === "local",
+        changesWorktree:
+          command.worktreePath !== undefined && command.worktreePath !== thread.worktreePath,
+      });
+      if (workspaceFeature !== null) {
+        yield* validateProviderFeature(
+          command,
+          workspaceFeature,
+          yield* threadProviders(command, thread, command.modelSelection),
+        );
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1804,6 +1911,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.modelSelection ?? targetThread.modelSelection,
         runtimeMode,
       );
+      const targetProviders = yield* threadProviders(command, targetThread, command.modelSelection);
+      if (
+        computerActivationMetadata({ ...command, userMessageText: command.message.text })
+          .enableComputerControl
+      ) {
+        yield* validateProviderFeature(command, "computer-control", targetProviders);
+      }
+      // A provider that owns its worktree only ever runs in one: refuse the local checkout.
+      if (targetThread.worktreePath === null) {
+        yield* validateProviderFeature(command, "local-workspace", targetProviders);
+      }
+      // Only the agent gateway ends a goal: a turn that would carry the thread's active goal onto
+      // a provider without it is refused rather than left to loop. A paused goal is never sent.
+      if ((activeThreadGoal(targetThread) ?? "").trim().length > 0) {
+        yield* validateProviderFeature(command, "thread-goal", targetProviders);
+      }
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
             readModel,
@@ -2100,6 +2223,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.modelSelection ?? thread.modelSelection,
         command.runtimeMode,
       );
+      if (computerActivationMetadata(command).enableComputerControl) {
+        yield* validateProviderFeature(
+          command,
+          "computer-control",
+          yield* threadProviders(command, thread, command.modelSelection),
+        );
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -2300,6 +2430,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // Refused before any event, so no rescue capture, restore or provider call runs.
+      yield* validateProviderFeature(
+        command,
+        "conversation-rollback",
+        yield* threadProviders(command, thread),
+      );
       if (threadHasInFlightTurn(thread)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2360,6 +2496,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* validateProviderFeature(
+        command,
+        "conversation-rollback",
+        yield* threadProviders(command, thread),
+      );
       if (threadHasCheckpointRevertInProgress(thread)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2414,6 +2555,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.modelSelection ?? thread.modelSelection,
         command.runtimeMode,
       );
+      // Up front: before the session is marked starting, the runtime is stopped, the
+      // workspace restore is planned, or the provider conversation is trimmed.
+      const editProviders = yield* threadProviders(command, thread, command.modelSelection);
+      yield* validateProviderFeature(command, "conversation-rollback", editProviders);
+      if (
+        computerActivationMetadata({ ...command, userMessageText: command.text })
+          .enableComputerControl
+      ) {
+        yield* validateProviderFeature(command, "computer-control", editProviders);
+      }
       const editTarget = resolveTailUserMessageEditTarget({
         messages: thread.messages,
         messageId: command.messageId,
@@ -2529,6 +2680,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       yield* validateSidechatExecutionAvailable(command, thread);
+      yield* validateProviderFeature(
+        command,
+        "thread-goal",
+        yield* threadProviders(command, thread),
+      );
       return {
         ...withEventBase({
           aggregateKind: "thread",

@@ -35,6 +35,10 @@ import {
 import { buildTemporaryWorktreeBranchName } from "@synara/shared/git";
 import { providerStartOptionsFromServerSettings } from "@synara/shared/serverSettings";
 import { autoRuntimeModeSelectionIssue } from "@synara/shared/runtimeMode";
+import {
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import { Cause, Effect, Layer, Option, PubSub, Queue, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -785,13 +789,23 @@ export const AutomationServiceLive = Layer.effect(
                 }),
               ),
             onSome: (thread) =>
-              thread.projectId === input.projectId
-                ? Effect.void
-                : Effect.fail(
+              thread.projectId !== input.projectId
+                ? Effect.fail(
                     new AutomationServiceError({
                       message: "Heartbeat target thread must belong to the automation project.",
                     }),
-                  ),
+                  )
+                : // A heartbeat continues the thread in its worktree, which such a provider owns.
+                  providerSupportsFeature(thread.modelSelection.provider, "heartbeat-automation")
+                  ? Effect.void
+                  : Effect.fail(
+                      new AutomationServiceError({
+                        message: providerFeatureUnavailableMessage(
+                          thread.modelSelection.provider,
+                          "heartbeat-automation",
+                        ),
+                      }),
+                    ),
           }),
         ),
       );
@@ -864,6 +878,25 @@ export const AutomationServiceLive = Layer.effect(
       return issue === null
         ? Effect.void
         : Effect.fail(new AutomationServiceError({ message: issue }));
+    };
+
+    // A provider that owns its worktree (it clones from origin) never sees the local HEAD an
+    // automation branches from, nor runs in the worktree a heartbeat continues. Checked on
+    // create, update and every run.
+    const validateAutomationProvider = (input: {
+      readonly mode: AutomationDefinition["mode"];
+      readonly modelSelection: AutomationDefinition["modelSelection"];
+    }) => {
+      const feature = automationRequiresTargetThread(input.mode)
+        ? "heartbeat-automation"
+        : "automation";
+      return providerSupportsFeature(input.modelSelection.provider, feature)
+        ? Effect.void
+        : Effect.fail(
+            new AutomationServiceError({
+              message: providerFeatureUnavailableMessage(input.modelSelection.provider, feature),
+            }),
+          );
     };
 
     // Run-path backstop for the fast-interval policy. validateSchedulePolicy enforces this at
@@ -1042,6 +1075,8 @@ export const AutomationServiceLive = Layer.effect(
           acknowledgedRisks: definition.acknowledgedRisks,
         });
         yield* validateAutoRuntimeMode(definition);
+        yield* validateAutomationProvider(definition);
+        yield* validateHeartbeatTarget(definition);
         yield* validateFastIntervalPolicy({
           schedule: definition.schedule,
           enabled: definition.enabled,
@@ -2622,6 +2657,10 @@ export const AutomationServiceLive = Layer.effect(
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode ?? "approval-required",
         });
+        yield* validateAutomationProvider({
+          mode: input.mode ?? "standalone",
+          modelSelection: input.modelSelection,
+        });
         yield* validateHeartbeatTarget({
           mode: input.mode ?? "standalone",
           projectId: input.projectId,
@@ -2661,6 +2700,7 @@ export const AutomationServiceLive = Layer.effect(
           acknowledgedRisks: definition.acknowledgedRisks,
         });
         yield* validateAutoRuntimeMode(definition);
+        yield* validateAutomationProvider(definition);
         yield* validateHeartbeatTarget(definition);
       });
 

@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { AUTOMATION_AUTHORING_GUIDANCE } from "./automationAuthoringGuidance.ts";
 
 import {
+  providerHasSynaraGatewayControl,
   renderSynaraHarnessPolicy,
   SYNARA_HARNESS_POLICY_MARKER,
   takeSynaraHarnessPolicyForProviderSession,
@@ -10,6 +11,26 @@ import {
 } from "./harnessPolicy.ts";
 
 describe("Synara harness policy", () => {
+  it("grants gateway control only to providers whose agent reaches the gateway", () => {
+    assert.isTrue(
+      providerHasSynaraGatewayControl({
+        provider: "codex",
+        scopedGatewayConnectionAvailable: true,
+      }),
+    );
+    assert.isFalse(
+      providerHasSynaraGatewayControl({
+        provider: "aether",
+        scopedGatewayConnectionAvailable: true,
+      }),
+    );
+    assert.isFalse(
+      providerHasSynaraGatewayControl({
+        provider: "codex",
+        scopedGatewayConnectionAvailable: false,
+      }),
+    );
+  });
   it("defers duplicate automation authoring text while preserving tool routing and run rules", () => {
     const inline = renderSynaraHarnessPolicy({ gatewayControlAvailable: true });
     const deferred = renderSynaraHarnessPolicy({

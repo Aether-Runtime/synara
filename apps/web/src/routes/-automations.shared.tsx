@@ -45,6 +45,7 @@ import {
 } from "~/components/ui/menu";
 import { TimePicker } from "~/components/ui/time-picker";
 import { toastManager } from "~/components/ui/toast";
+import { PROVIDER_DESCRIPTORS, providerSupportsFeature } from "@synara/shared/providerMetadata";
 import type { AutomationDraftWarning, AutomationDraftWarningId } from "~/lib/automationDraft";
 import {
   acknowledgedRiskIdsForFormWarnings,
@@ -849,6 +850,18 @@ export function AutomationApprovalBanner({
   );
 }
 
+/** The user's hidden providers plus every provider automations cannot run on. */
+export function resolveAutomationHiddenProviders(
+  hiddenProviders: ReadonlyArray<ProviderKind>,
+): ProviderKind[] {
+  return [
+    ...hiddenProviders,
+    ...PROVIDER_DESCRIPTORS.flatMap((descriptor) =>
+      providerSupportsFeature(descriptor.kind, "automation") ? [] : [descriptor.kind],
+    ),
+  ];
+}
+
 export function AutomationModelPicker({
   value,
   projectCwd,
@@ -914,7 +927,7 @@ export function AutomationModelPicker({
       modelOptionsByProvider={modelOptionsByProvider}
       loadingModelProviders={loadingModelProviders}
       discoveryErrorsByProvider={discoveryErrorsByProvider}
-      hiddenProviders={settings.hiddenProviders}
+      hiddenProviders={resolveAutomationHiddenProviders(settings.hiddenProviders)}
       providerOrder={settings.providerOrder}
       disabled={disabled ?? false}
       open={open}

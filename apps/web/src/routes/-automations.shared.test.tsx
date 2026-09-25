@@ -42,6 +42,7 @@ import {
   modelSelectionForProjectChange,
   providerOptionsForAutomationModelSelection,
   reconcileAutomationFormAutoModeSupport,
+  resolveAutomationHiddenProviders,
   rollbackAutomationDefinitionPatch,
   runResultSummary,
   runResultTitle,
@@ -51,6 +52,15 @@ import {
   updateWeeklyScheduleTime,
   unresolvedTriageRuns,
 } from "./-automations.shared";
+
+describe("automation providers", () => {
+  it("never offers a provider automations cannot run on", () => {
+    expect(resolveAutomationHiddenProviders([])).toEqual(["aether"]);
+    expect(resolveAutomationHiddenProviders(["grok"])).toEqual(["grok", "aether"]);
+    expect(resolveAutomationHiddenProviders([])).not.toContain("codex");
+    expect(resolveAutomationHiddenProviders([])).not.toContain("claudeAgent");
+  });
+});
 
 describe("automation definition update ordering", () => {
   it("serializes successful edits in submission order", async () => {

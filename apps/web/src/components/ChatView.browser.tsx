@@ -18,6 +18,7 @@ import {
   DEVICE_WS_METHODS,
   COMPUTER_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
+  type NativeApi,
   type OrchestrationReadModel,
   type ProjectId,
   type ServerConfig,
@@ -63,6 +64,7 @@ import { getRouter } from "../router";
 import { useSplitViewStore } from "../splitViewStore";
 import { useSpacesUiStore } from "../spacesUiStore";
 import { useStore } from "../store";
+import { getThreadFromState } from "../threadDerivation";
 import {
   createShellSnapshotFromReadModel,
   flattenEffectRpcRequestPayload,
@@ -129,6 +131,8 @@ interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   providerStatusesSnapshot: ServerConfig["providers"] | null;
+  serverSettings?: ReturnType<typeof createBrowserTestServerSettings>;
+  nonGitCwds?: ReadonlyArray<string>;
   welcome: WsWelcomePayload;
   gitBranchByCwd: Record<string, string>;
 }
@@ -1211,7 +1215,7 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return createAutomationDefinitionFromCreateRequest(body);
   }
   if (tag === WS_METHODS.serverGetSettings) {
-    return createBrowserTestServerSettings(NOW_ISO);
+    return fixture.serverSettings ?? createBrowserTestServerSettings(NOW_ISO);
   }
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
@@ -1231,6 +1235,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.gitListBranches) {
     const cwd = typeof body.cwd === "string" ? body.cwd : null;
     const branchName = cwd ? (fixture.gitBranchByCwd[cwd] ?? "main") : "main";
+    if (cwd !== null && fixture.nonGitCwds?.includes(cwd)) {
+      return { isRepo: false, hasOriginRemote: false, branches: [] };
+    }
     return {
       isRepo: true,
       hasOriginRemote: true,
@@ -1304,13 +1311,23 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       updatedAt: NOW_ISO,
     };
   }
-  if (tag === WS_METHODS.shellOpenInEditor || tag === WS_METHODS.terminalWrite) {
+  if (
+    tag === WS_METHODS.shellOpenInEditor ||
+    tag === WS_METHODS.terminalWrite ||
+    tag === WS_METHODS.gitRemoveWorktree
+  ) {
     return null;
   }
   return {};
 }
 
-function installDeterministicSendNativeApi(options?: { rejectTurnStart?: boolean }): () => void {
+function installDeterministicSendNativeApi(options?: {
+  rejectTurnStart?: boolean;
+  rejectRemoveWorktree?: boolean;
+  rejectCommand?: (
+    command: Parameters<NativeApi["orchestration"]["dispatchCommand"]>[0],
+  ) => boolean;
+}): () => void {
   const previousNativeApi = window.nativeApi;
   const wsNativeApi = readNativeApi();
   if (!wsNativeApi) {
@@ -1335,6 +1352,16 @@ function installDeterministicSendNativeApi(options?: { rejectTurnStart?: boolean
             ReturnType<typeof wsNativeApi.git.createDetachedWorktree>
           >;
         },
+        ...(options?.rejectRemoveWorktree
+          ? {
+              removeWorktree: async (
+                input: Parameters<typeof wsNativeApi.git.removeWorktree>[0],
+              ) => {
+                wsRequests.push({ _tag: WS_METHODS.gitRemoveWorktree, ...input });
+                throw new Error("Worktree removal failed for test.");
+              },
+            }
+          : {}),
       },
       terminal: {
         ...wsNativeApi.terminal,
@@ -1364,6 +1391,9 @@ function installDeterministicSendNativeApi(options?: { rejectTurnStart?: boolean
           });
           if (options?.rejectTurnStart && command.type === "thread.turn.start") {
             throw new Error("Turn start failed for test.");
+          }
+          if (options?.rejectCommand?.(command)) {
+            throw new Error("Command refused for test.");
           }
           return { sequence: fixture.snapshot.snapshotSequence + 1 };
         },
@@ -8331,6 +8361,661 @@ describe("ChatView transcript geometry (full app)", () => {
     } finally {
       await mounted.cleanup();
       restoreNativeApi();
+    }
+  });
+
+  it("shows an Aether draft in a new worktree without persisting the overlay", async () => {
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-aether-overlay-test" as MessageId,
+        targetText: "aether overlay test",
+      }),
+      configureFixture: (nextFixture) => {
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForEnvironmentModeButton("Local");
+      const draftEnvMode = () =>
+        useComposerDraftStore.getState().getDraftThread(newThreadId)?.envMode;
+      const projectEnvMode = () =>
+        useProjectEnvironmentStore.getState().envModeByProjectId[PROJECT_ID];
+      const projectEnvModeBefore = projectEnvMode();
+      expect(draftEnvMode()).toBe("local");
+
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+      const picker = await waitForEnvironmentModeButton("Worktree");
+      // The branch selector picks a base branch under the overlay; the draft and the
+      // project preference keep their persisted Local mode.
+      await vi.waitFor(
+        () => {
+          expect(useComposerDraftStore.getState().getDraftThread(newThreadId)).toMatchObject({
+            envMode: "local",
+            branch: "main",
+            worktreePath: null,
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(projectEnvMode()).toBe(projectEnvModeBefore);
+
+      picker.click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Worktree", exact: true }))
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Local project", exact: true }))
+        .not.toBeInTheDocument();
+      await expect.element(page.getByText("Hand off to local")).not.toBeInTheDocument();
+      await expect.element(page.getByText("Hand off to new worktree")).not.toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+
+      // Switching the fresh draft to another provider returns to the persisted default.
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "codex", model: "gpt-5.4" });
+      await waitForEnvironmentModeButton("Local");
+      expect(draftEnvMode()).toBe("local");
+      expect(projectEnvMode()).toBe(projectEnvModeBefore);
+    } finally {
+      await mounted.cleanup();
+      restoreNativeApi();
+    }
+  });
+
+  it("sends an Aether draft into a new worktree without copying local changes", async () => {
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-aether-send-test" as MessageId,
+        targetText: "aether send test",
+      }),
+      configureFixture: (nextFixture) => {
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+        const settings = createBrowserTestServerSettings(NOW_ISO);
+        nextFixture.serverSettings = {
+          ...settings,
+          providers: {
+            ...settings.providers,
+            aether: { ...settings.providers.aether, enabled: true },
+          },
+        };
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForEnvironmentModeButton("Local");
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+      await waitForEnvironmentModeButton("Worktree");
+      useComposerDraftStore.getState().setPrompt(newThreadId, "Ship it in the cloud");
+      await vi.waitFor(
+        () => {
+          expect(useComposerDraftStore.getState().getDraftThread(newThreadId)).toMatchObject({
+            envMode: "local",
+            branch: "main",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      await sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const createWorktreeRequest = wsRequests.find(
+            (request) =>
+              request._tag === WS_METHODS.gitCreateDetachedWorktree &&
+              request.cwd === "/repo/project" &&
+              request.ref === "main",
+          );
+          expect(createWorktreeRequest).toBeTruthy();
+          expect(createWorktreeRequest).not.toHaveProperty("copyChangesFrom");
+          const createThreadRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              typeof request.command === "object" &&
+              request.command !== null &&
+              "type" in request.command &&
+              request.command.type === "thread.create",
+          );
+          expect(createThreadRequest?.command).toMatchObject({
+            envMode: "worktree",
+            worktreePath: "/repo/.codex/worktrees/generated/synara",
+            modelSelection: { provider: "aether" },
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+      restoreNativeApi();
+    }
+  });
+
+  it.each([
+    ["codex", "gpt-5", true],
+    ["claudeAgent", "claude-opus-4-6", true],
+    ["aether", "claude-opus-5-5", false],
+  ] as const)(
+    "shows provider-gated thread controls for %s: %s",
+    async (provider, model, expectsGatedControls) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: `msg-user-gated-controls-${provider}` as MessageId,
+        targetText: "gated controls test",
+      });
+      const thread = snapshot.threads[0]!;
+      // Give the tail exchange a settled turn so its user message is editable.
+      const tailTurnId = TurnId.makeUnsafe(`turn-gated-controls-${provider}`);
+      const messages = thread.messages.map((message, index) =>
+        index >= thread.messages.length - 2 ? { ...message, turnId: tailTurnId } : message,
+      );
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            {
+              ...thread,
+              messages,
+              modelSelection: { provider, model },
+              session: { ...thread.session!, providerName: provider },
+              goal: "Keep the tests green",
+            },
+          ],
+        },
+      });
+
+      try {
+        await waitForComposerEditor();
+        // Edit and resend (conversation rollback). An existing goal stays visible so it can
+        // always be cleared, whatever the provider.
+        const editButton = page.getByRole("button", { name: "Edit message" });
+        // Forking from a turn stays in this thread's worktree, which Aether cannot share.
+        const forkButton = page.getByRole("button", { name: "Fork thread from this turn" });
+        await expect.element(page.getByRole("button", { name: "Edit goal" })).toBeInTheDocument();
+        if (expectsGatedControls) {
+          await expect.element(editButton.first()).toBeInTheDocument();
+          await expect.element(forkButton.first()).toBeInTheDocument();
+        } else {
+          await expect.element(editButton).not.toBeInTheDocument();
+          await expect.element(forkButton).not.toBeInTheDocument();
+        }
+        await page.getByLabelText("Composer extras").click();
+        const goalRow = page.getByText("Set a goal to keep pursuing");
+        if (expectsGatedControls) {
+          await expect.element(goalRow).toBeInTheDocument();
+        } else {
+          await expect.element(goalRow).not.toBeInTheDocument();
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it.each([
+    ["codex", "gpt-5", true],
+    ["aether", "claude-opus-5-5", false],
+  ] as const)(
+    "offers branch picks in a started worktree thread for %s: %s",
+    async (provider, model, offersBranchPicks) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: `msg-user-worktree-branch-picks-${provider}` as MessageId,
+        targetText: "worktree branch picks test",
+      });
+      const thread = snapshot.threads[0]!;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            {
+              ...thread,
+              modelSelection: { provider, model },
+              session: { ...thread.session!, providerName: provider },
+              envMode: "worktree",
+              branch: "synara/branch-picks",
+              worktreePath: "/repo/.codex/worktrees/branch-picks",
+            },
+          ],
+        },
+      });
+
+      try {
+        await waitForComposerEditor();
+        // A pick can move the thread to another checkout; a provider that owns its worktree
+        // (and its branch) never moves.
+        await vi.waitFor(
+          () =>
+            expect(document.querySelector('button[data-slot="combobox-trigger"]') !== null).toBe(
+              offersBranchPicks,
+            ),
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it.each([
+    [
+      "a refused reset",
+      {
+        rejectCommand: (command: Parameters<NativeApi["orchestration"]["dispatchCommand"]>[0]) =>
+          command.type === "thread.meta.update" && command.worktreePath === null,
+      },
+      "Command refused for test.",
+    ],
+    [
+      "a failed worktree removal",
+      { rejectRemoveWorktree: true },
+      "Worktree removal failed for test.",
+    ],
+  ] as const)(
+    "cleans up a failed first Aether send and surfaces %s",
+    async (cleanupFailure, cleanupOptions, surfacedError) => {
+      const restoreNativeApi = installDeterministicSendNativeApi({
+        rejectTurnStart: true,
+        ...cleanupOptions,
+      });
+      const snapshot = addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-aether-failed-first-send" as MessageId,
+          targetText: "aether failed first send",
+        }),
+        OTHER_THREAD_ID,
+      );
+      // The added thread is last: an Aether thread with no turn yet, in worktree mode.
+      const addedThread = snapshot.threads.at(-1)!;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            ...snapshot.threads.slice(0, -1),
+            {
+              ...addedThread,
+              modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+              envMode: "worktree",
+              session: null,
+            },
+          ],
+        },
+        configureFixture: (nextFixture) => {
+          const providers: ServerConfig["providers"] = [
+            ...nextFixture.serverConfig.providers,
+            {
+              provider: "aether",
+              status: "ready",
+              available: true,
+              authStatus: "authenticated",
+              checkedAt: NOW_ISO,
+            },
+          ];
+          nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+          nextFixture.providerStatusesSnapshot = providers;
+          const settings = createBrowserTestServerSettings(NOW_ISO);
+          nextFixture.serverSettings = {
+            ...settings,
+            providers: {
+              ...settings.providers,
+              aether: { ...settings.providers.aether, enabled: true },
+            },
+          };
+        },
+      });
+
+      try {
+        await mounted.router.navigate({ to: "/$threadId", params: { threadId: OTHER_THREAD_ID } });
+        await waitForURL(
+          mounted.router,
+          (pathname) => pathname === `/${OTHER_THREAD_ID}`,
+          "Thread route did not switch.",
+        );
+        useComposerDraftStore.getState().setPrompt(OTHER_THREAD_ID, "Ship it in the cloud");
+        const sendButton = await waitForSendButton();
+        await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        wsRequests.length = 0;
+        sendButton.click();
+
+        await vi.waitFor(
+          () => {
+            // Aether never falls back to Local: the thread goes back to "no worktree yet". A
+            // worktree that could not be removed is kept, so the thread is not reset.
+            const reset = wsRequests
+              .map(readDispatchedCommand)
+              .find(
+                (command) =>
+                  command?.type === "thread.meta.update" && command.worktreePath === null,
+              );
+            if (cleanupFailure === "a refused reset") {
+              expect(reset).toMatchObject({ envMode: "worktree", worktreePath: null });
+            } else {
+              expect(reset).toBeUndefined();
+            }
+            expect(getThreadFromState(useStore.getState(), OTHER_THREAD_ID)?.error).toContain(
+              surfacedError,
+            );
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        restoreNativeApi();
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("says what Aether needs instead of an empty Worktree picker in a non-git project", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-aether-non-git" as MessageId,
+        targetText: "aether non-git test",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.nonGitCwds = ["/repo/project"];
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForEnvironmentModeButton("Local");
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+
+      await expect
+        .element(page.getByText("Aether needs a git repository with a GitHub remote."))
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Worktree", exact: true }))
+        .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    // A new chat folder is not a git repository.
+    ["a new chat folder", null, "Aether needs a git repository with a GitHub remote."],
+    // A picked folder (maybe a git repository) would run in its local checkout.
+    [
+      "a picked folder",
+      "/Users/tester/code/app",
+      "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+    ],
+  ] as const)(
+    "refuses an Aether send from the chats container into %s before creating it",
+    async (_target, pickedFolder, refusal) => {
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: HOME_PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            entryPoint: "chat",
+            branch: null,
+            worktreePath: pickedFolder,
+            envMode: "local",
+          },
+        },
+        projectDraftThreadIdByProjectId: {
+          [HOME_PROJECT_ID]: THREAD_ID,
+        },
+      });
+      const restoreNativeApi = installDeterministicSendNativeApi();
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: withHomeChatProject(createDraftOnlySnapshot()),
+        configureFixture: (nextFixture) => {
+          nextFixture.welcome = {
+            ...nextFixture.welcome,
+            homeDir: "/Users/tester",
+            chatWorkspaceRoot: "/Users/tester/Documents/Synara",
+          };
+          const providers: ServerConfig["providers"] = [
+            ...nextFixture.serverConfig.providers,
+            {
+              provider: "aether",
+              status: "ready",
+              available: true,
+              authStatus: "authenticated",
+              checkedAt: NOW_ISO,
+            },
+          ];
+          nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+          nextFixture.providerStatusesSnapshot = providers;
+          const settings = createBrowserTestServerSettings(NOW_ISO);
+          nextFixture.serverSettings = {
+            ...settings,
+            providers: {
+              ...settings.providers,
+              aether: { ...settings.providers.aether, enabled: true },
+            },
+          };
+        },
+      });
+
+      try {
+        await waitForComposerEditor();
+        useComposerDraftStore
+          .getState()
+          .setModelSelection(THREAD_ID, { provider: "aether", model: "claude-opus-5-5" });
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Ship it in the cloud");
+        const sendButton = await waitForSendButton();
+        await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        wsRequests.length = 0;
+        sendButton.click();
+
+        await vi.waitFor(
+          () => {
+            expect(
+              document.querySelector('[data-slot="toast-viewport"]')?.textContent ?? "",
+            ).toContain(refusal);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        // Nothing was created on disk or on the server.
+        expect(hasDispatchedCommandType("project.create")).toBe(false);
+        expect(hasDispatchedCommandType("thread.create")).toBe(false);
+      } finally {
+        restoreNativeApi();
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("refuses an Aether send from Studio, even with a git reference folder", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [STUDIO_DRAFT_THREAD_ID]: {
+          projectId: STUDIO_PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          entryPoint: "chat",
+          branch: null,
+          worktreePath: null,
+          // The fixture reports this folder as a git repository.
+          workingDirectory: "/repo/project",
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: {
+        [STUDIO_PROJECT_ID]: STUDIO_DRAFT_THREAD_ID,
+      },
+    });
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: withStudioProject(withHomeChatProject(createDraftOnlySnapshot())),
+      initialEntry: `/${STUDIO_DRAFT_THREAD_ID}`,
+      configureFixture: (nextFixture) => {
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          homeDir: "/Users/tester",
+          chatWorkspaceRoot: "/Users/tester/Documents/Synara",
+          studioWorkspaceRoot: "/Users/tester/Documents/Synara/Studio",
+        };
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "ready",
+            available: true,
+            authStatus: "authenticated",
+            checkedAt: NOW_ISO,
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+        const settings = createBrowserTestServerSettings(NOW_ISO);
+        nextFixture.serverSettings = {
+          ...settings,
+          providers: {
+            ...settings.providers,
+            aether: { ...settings.providers.aether, enabled: true },
+          },
+        };
+      },
+    });
+
+    try {
+      await waitForComposerEditor();
+      useComposerDraftStore.getState().setModelSelection(STUDIO_DRAFT_THREAD_ID, {
+        provider: "aether",
+        model: "claude-opus-5-5",
+      });
+      useComposerDraftStore.getState().setPrompt(STUDIO_DRAFT_THREAD_ID, "Ship it in the cloud");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      wsRequests.length = 0;
+      sendButton.click();
+
+      // Studio runs every chat in a local folder, so Aether is refused before any worktree.
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector('[data-slot="toast-viewport"]')?.textContent ?? "",
+          ).toContain(
+            "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(
+        wsRequests.some((request) => request._tag === WS_METHODS.gitCreateDetachedWorktree),
+      ).toBe(false);
+      expect(hasDispatchedCommandType("thread.create")).toBe(false);
+    } finally {
+      restoreNativeApi();
+      await mounted.cleanup();
+    }
+  });
+
+  it("explains a cloud provider once on a new chat and hides it after dismissal", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-hint-test" as MessageId,
+        targetText: "cloud hint test",
+      }),
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForComposerEditor();
+      const hint = page.getByTestId("composer-cloud-provider-hint");
+      await expect.element(hint).not.toBeInTheDocument();
+
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+      await expect.element(hint).toBeInTheDocument();
+      expect(hint.element().textContent).toContain(
+        "Aether runs this chat in the cloud. The repo must be on GitHub and imported as a project in Aether.",
+      );
+      expect(
+        page.getByRole("link", { name: "Get an API key" }).element().getAttribute("href"),
+      ).toBe("https://runaether.dev");
+
+      await page.getByRole("button", { name: "Dismiss tip" }).click();
+      await expect.element(hint).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
     }
   });
 

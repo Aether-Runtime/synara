@@ -116,11 +116,46 @@ it("allows rechecking setup after installing externally and blocks duplicate ref
     .toBeEnabled();
 });
 
+it("presents Aether as a cloud provider rather than an installed CLI", async () => {
+  await render(
+    <ProvidersSettingsPanel
+      {...props}
+      settings={{ ...props.settings, aetherApiKeyConfigured: true, codexBinaryPath: "/opt/codex" }}
+    />,
+  );
+  // A saved key or a version never turns the cloud row into a "Custom" CLI.
+  const aetherRow = page.getByRole("button", { name: "Aether Cloud", exact: true });
+  await expect.element(aetherRow).toBeVisible();
+  expect(aetherRow.element().textContent).not.toContain("Custom");
+  await expect.element(page.getByRole("button", { name: /^Codex Custom/ })).toBeVisible();
+  // One cloud provider next to the installed CLIs (OpenCode is unavailable, Grok disabled).
+  const available = PROVIDER_DESCRIPTORS.length - 1;
+  expect(document.body.textContent).toContain(`${available - 1} installed · 1 cloud`);
+  expect(document.body.textContent).not.toContain("Available CLIs");
+
+  await aetherRow.click();
+  await expect
+    .element(page.getByText("Aether runs the agent in a cloud VM, not on this machine."))
+    .toBeVisible();
+  await expect.element(page.getByRole("link", { name: "runaether.dev" })).toBeVisible();
+});
+
+it("phrases a pending Aether check as a connection check", async () => {
+  harness.statuses = harness.statuses.filter((status) => status.provider !== "aether");
+  await render(<ProvidersSettingsPanel {...props} />);
+  await expect
+    .element(page.getByRole("switch", { name: "Checking Aether connection", exact: true }))
+    .toBeDisabled();
+  await expect
+    .element(page.getByRole("switch", { name: "Checking Codex CLI availability", exact: true }))
+    .not.toBeInTheDocument();
+});
+
 type UpdateSettings = ProvidersSettingsPanelProps["updateSettings"];
 
 async function editAetherBaseUrl(value: string, updateSettings: UpdateSettings) {
   await render(<ProvidersSettingsPanel {...props} updateSettings={updateSettings} />);
-  await page.getByRole("button", { name: "Aether", exact: true }).click();
+  await page.getByRole("button", { name: "Aether Cloud", exact: true }).click();
   await page.getByRole("textbox", { name: /Aether API base URL/ }).fill(value);
   await userEvent.tab();
 }

@@ -9,6 +9,10 @@ import {
   buildPromptThreadTitleFallback,
 } from "@synara/shared/chatThreads";
 import { getDefaultModel } from "@synara/shared/model";
+import {
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import type { QueryClient } from "@tanstack/react-query";
 import { gitStatusQueryOptions } from "~/lib/gitReactQuery";
 import { newCommandId, newProjectId } from "~/lib/utils";
@@ -32,6 +36,7 @@ import {
   waitForRecoverableProjectForDuplicateCreate,
 } from "../../lib/projectCreateRecovery";
 import { formatTerminalContextLabel, type TerminalContextDraft } from "../../lib/terminalContext";
+import { resolveProviderEnvMode } from "../../lib/threadEnvironment";
 import { buildModelSelection } from "../../providerModelOptions";
 import { readActiveSpaceId } from "../../spacesUiStore";
 import { useStore } from "../../store";
@@ -70,7 +75,7 @@ interface Input {
   setDraftThreadContext: ReturnType<typeof useComposerDraftStore.getState>["setDraftThreadContext"];
   activeRootBranch: string | null;
   gitBranchSourceCwd: string | null;
-  setStoreThreadError: (threadId: ThreadId, error: string | null) => void;
+  setThreadError: (threadId: ThreadId, error: string | null) => void;
   queryClient: QueryClient;
 }
 
@@ -104,7 +109,7 @@ export async function prepareChatSendWorkspace({
   setDraftThreadContext,
   activeRootBranch,
   gitBranchSourceCwd,
-  setStoreThreadError,
+  setThreadError,
   queryClient,
 }: Input) {
   const threadIdForSend = activeThread.id;
@@ -180,7 +185,11 @@ export async function prepareChatSendWorkspace({
       }
     : firstSendTarget.target;
   let nextRuntimeModeForSend = runtimeModeForSend;
-  let nextThreadEnvMode = envModeForSend;
+  // Send-time overlay only: the draft keeps its persisted mode (see resolveProviderEnvMode).
+  let nextThreadEnvMode = resolveProviderEnvMode(
+    envModeForSend,
+    selectedModelSelectionForSend.provider,
+  );
   let nextThreadBranch = isStudioContainer ? null : activeThread.branch;
   let nextThreadWorktreePath = isStudioContainer ? null : activeThread.worktreePath;
   let nextThreadWorkingDirectory = isStudioContainer
@@ -202,7 +211,36 @@ export async function prepareChatSendWorkspace({
     nextThreadWorktreePath === null;
   let currentActiveGitBranchForSend = currentActiveGitBranch;
 
+  // Studio runs every chat in its own folder or a reference folder, never in a worktree, even
+  // when that folder is a git repository: refuse a provider that owns its worktree up front.
+  if (
+    isStudioContainer &&
+    !providerSupportsFeature(selectedModelSelectionForSend.provider, "local-workspace")
+  ) {
+    setThreadError(
+      threadIdForSend,
+      providerFeatureUnavailableMessage(selectedModelSelectionForSend.provider, "local-workspace"),
+    );
+    return false;
+  }
+
   if (isFirstMessage && isContainerLandingProject && firstSendTarget.kind !== "current") {
+    // A chat started here runs in a new chat folder (not a git repository) or in a picked
+    // folder's local checkout, neither of which a provider that owns its worktree can use:
+    // refuse before creating anything.
+    const provider = selectedModelSelectionForSend.provider;
+    if (!providerSupportsFeature(provider, "local-workspace")) {
+      const newChatFolder =
+        firstSendTarget.kind === "create-project" && firstSendTarget.creation.kind === "chat";
+      setThreadError(
+        threadIdForSend,
+        providerFeatureUnavailableMessage(
+          provider,
+          newChatFolder ? "non-git-workspace" : "local-workspace",
+        ),
+      );
+      return false;
+    }
     if (firstSendTarget.kind === "create-project") {
       const projectId = newProjectId();
       const createdAt = firstSendCreatedAt.toISOString();
@@ -294,7 +332,7 @@ export async function prepareChatSendWorkspace({
   // cached branch query may still be loading or may lag behind an out-of-band checkout.
   if (shouldResumeSettledLocalThread) {
     if (!gitBranchSourceCwd) {
-      setStoreThreadError(threadIdForSend, "Unable to determine the current branch.");
+      setThreadError(threadIdForSend, "Unable to determine the current branch.");
       return false;
     }
 
@@ -305,7 +343,7 @@ export async function prepareChatSendWorkspace({
       });
       currentActiveGitBranchForSend = gitStatus.branch;
     } catch {
-      setStoreThreadError(
+      setThreadError(
         threadIdForSend,
         "Unable to determine the current branch. Try again before sending.",
       );
@@ -326,10 +364,15 @@ export async function prepareChatSendWorkspace({
   // fall back to local execution when branch selection is missing.
   const shouldCreateWorktree =
     isFirstMessage && nextThreadEnvMode === "worktree" && !nextThreadWorktreePath;
+  // A provider that owns its worktree is forced into one, so no base branch here means no git
+  // repository to branch from (Studio, a non-git folder): say what the provider needs.
   if (shouldCreateWorktree && !nextThreadBranch) {
-    setStoreThreadError(
+    const provider = selectedModelSelectionForSend.provider;
+    setThreadError(
       threadIdForSend,
-      "Select a base branch before sending in New worktree mode.",
+      providerSupportsFeature(provider, "local-workspace")
+        ? "Select a base branch before sending in New worktree mode."
+        : providerFeatureUnavailableMessage(provider, "non-git-workspace"),
     );
     return false;
   }
@@ -340,8 +383,12 @@ export async function prepareChatSendWorkspace({
   const worktreeSetupScriptName = setupScriptForWorktree?.name ?? null;
   // Branching off the checkout's current branch also carries its uncommitted
   // changes into the worktree, which the setup card surfaces as its own step.
+  // A provider that owns its worktree clones from origin and resets it every turn, so copied
+  // changes would be erased: they are never copied for it.
   const worktreeCopiesLocalChanges =
-    Boolean(baseBranchForWorktree) && baseBranchForWorktree === activeRootBranch;
+    Boolean(baseBranchForWorktree) &&
+    baseBranchForWorktree === activeRootBranch &&
+    providerSupportsFeature(selectedModelSelectionForSend.provider, "copy-changes");
   return {
     threadIdForSend,
     title,

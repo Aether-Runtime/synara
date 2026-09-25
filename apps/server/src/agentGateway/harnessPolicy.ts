@@ -1,4 +1,5 @@
 import type { ProviderKind } from "@synara/contracts";
+import { PROVIDER_DESCRIPTOR_BY_KIND } from "@synara/shared/providerMetadata";
 
 import { computerToolInstructions } from "./computerGuidance.ts";
 
@@ -77,27 +78,15 @@ export interface SynaraHarnessPolicyDeliveryState {
   enableComputerControl?: boolean | undefined;
 }
 
-// Aether is deliberately absent: its agent runs in a cloud VM that cannot reach the
-// local Synara gateway, so it never receives thread-scoped synara_* tools.
-const PROVIDERS_WITH_THREAD_SCOPED_SYNARA_MCP = new Set<ProviderKind>([
-  "codex",
-  "claudeAgent",
-  "antigravity",
-  "cursor",
-  "grok",
-  "droid",
-  "devin",
-  "opencode",
-  "pi",
-]);
-
+// A provider whose agent cannot reach the local gateway (Aether runs in a cloud VM) never
+// receives thread-scoped synara_* tools, whatever connection is on offer.
 export function providerHasSynaraGatewayControl(input: {
   readonly provider: ProviderKind;
   readonly scopedGatewayConnectionAvailable: boolean;
 }): boolean {
   return (
     input.scopedGatewayConnectionAvailable &&
-    PROVIDERS_WITH_THREAD_SCOPED_SYNARA_MCP.has(input.provider)
+    PROVIDER_DESCRIPTOR_BY_KIND[input.provider].reachesAgentGateway
   );
 }
 

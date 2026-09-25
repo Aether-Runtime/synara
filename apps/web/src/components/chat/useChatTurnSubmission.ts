@@ -1,5 +1,6 @@
 import { flushWorkspaceEditors } from "~/lib/workspaceEditorSession";
 import { resolveComputerInvocationMode } from "@synara/shared/computerInvocation";
+import { providerSupportsFeature } from "@synara/shared/providerMetadata";
 import {
   prepareComputerPermissionGuide,
   readLocalComputerPermissionBridge,
@@ -83,7 +84,6 @@ export function useChatTurnSubmission({
   syncServerShellSnapshot,
   activeRootBranch,
   gitBranchSourceCwd,
-  setStoreThreadError,
   queryClient,
   isCenteredEmptyLanding,
   setEnvironmentPanelPreferenceOpen,
@@ -336,10 +336,14 @@ export function useChatTurnSubmission({
       if (queuedChatTurn === null) {
         // Read the live editor snapshot, not an earlier React render. A queued
         // command already froze its mode and generation and must not be inferred again.
-        const mode = resolveComputerInvocationMode({
-          messageText: promptForSend,
-          enableComputerControl: settings.computerControlEnabled,
-        });
+        // A provider whose agent cannot reach the gateway never gets Computer Use; sending
+        // the default or a typed /computer-use would only have the turn refused.
+        const mode = providerSupportsFeature(selectedProvider, "computer-control")
+          ? resolveComputerInvocationMode({
+              messageText: promptForSend,
+              enableComputerControl: settings.computerControlEnabled,
+            })
+          : "off";
         dispatchSettings = {
           ...dispatchSettings,
           computerControlMode: mode,
@@ -692,7 +696,7 @@ export function useChatTurnSubmission({
         setDraftThreadContext,
         activeRootBranch,
         gitBranchSourceCwd,
-        setStoreThreadError,
+        setThreadError,
         queryClient,
       });
       if (workspace === false) return false;
@@ -969,7 +973,6 @@ export function useChatTurnSubmission({
       syncServerShellSnapshot,
       activeRootBranch,
       gitBranchSourceCwd,
-      setStoreThreadError,
       queryClient,
       isCenteredEmptyLanding,
       setEnvironmentPanelPreferenceOpen,

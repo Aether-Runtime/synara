@@ -3,7 +3,8 @@
 // Layer: Web domain helpers
 // Exports: thread env resolution + `/fork` target planning
 
-import type { ThreadEnvironmentMode } from "@synara/contracts";
+import type { ProviderKind, ThreadEnvironmentMode } from "@synara/contracts";
+import { providerSupportsFeature } from "@synara/shared/providerMetadata";
 import {
   isPendingThreadWorktree,
   resolveThreadEnvironmentMode,
@@ -31,6 +32,19 @@ export {
   resolveThreadEnvironmentMode,
   resolveThreadWorkspaceState,
 } from "@synara/shared/threadEnvironment";
+
+/**
+ * The env mode a thread works in with `provider`. A provider that owns its worktree only runs
+ * in a new one, so this overlays "worktree" at render and send time. Never write the result
+ * back to draft, project or thread state: writers keep the persisted mode, so switching a
+ * draft to another provider returns to it.
+ */
+export function resolveProviderEnvMode(
+  envMode: ThreadEnvironmentMode,
+  provider: ProviderKind,
+): ThreadEnvironmentMode {
+  return providerSupportsFeature(provider, "local-workspace") ? envMode : "worktree";
+}
 
 export interface ThreadEnvironmentPresentation {
   mode: ThreadEnvironmentMode;
