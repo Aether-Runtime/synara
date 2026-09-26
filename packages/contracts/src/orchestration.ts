@@ -1299,6 +1299,8 @@ const ThreadDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.delete"),
   commandId: CommandId,
   threadId: ThreadId,
+  /** The thread's worktree the user chose to delete with it. */
+  removeWorktreePath: Schema.optional(TrimmedNonEmptyString),
 });
 
 const ThreadArchiveCommand = Schema.Struct({
@@ -2022,6 +2024,10 @@ export const ThreadCreatedPayload = Schema.Struct({
 export const ThreadDeletedPayload = Schema.Struct({
   threadId: ThreadId,
   deletedAt: IsoDateTime,
+  // Absent when the worktree is kept, including on legacy events.
+  removeWorktree: Schema.optional(
+    Schema.Struct({ workspaceRoot: TrimmedNonEmptyString, path: TrimmedNonEmptyString }),
+  ),
 });
 
 export const ThreadSidechatActivityRecordedPayload = Schema.Struct({

@@ -18,7 +18,6 @@ import type {
   ResolvedKeybindingsConfig,
   ThreadId,
 } from "@synara/contracts";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
@@ -42,7 +41,6 @@ import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon } from "~/lib/i
 import { cn } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { deleteActiveThreadFromClient } from "~/lib/activeThreadDelete";
-import { gitRemoveWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { waitForSidechatCreator } from "~/lib/sidechatCreatorRegistry";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { showConfirmDialogFallback } from "~/confirmDialogFallback";
@@ -264,8 +262,6 @@ export function EnvironmentPanel({
   const recap = recapProp ?? null;
   const onOpenEditorView = onOpenEditorViewProp ?? null;
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const { settings } = useAppSettings();
   const openRightDockPane = useRightDockStore((store) => store.openPane);
   const { additions, deletions, hasChanges } = diffTotals;
@@ -440,7 +436,6 @@ export function EnvironmentPanel({
                   useSplitViewStore.getState().removeThreadFromSplitViews(thread.id);
                   useTemporaryThreadStore.getState().clearTemporaryThread(thread.id);
                 },
-                removeWorktree: (worktree) => removeWorktreeMutation.mutateAsync(worktree),
               });
             })().catch((error) => {
               toastManager.add({

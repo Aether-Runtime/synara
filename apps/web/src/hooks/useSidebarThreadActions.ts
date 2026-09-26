@@ -5,7 +5,6 @@
 
 import { type ProjectId, ThreadId } from "@synara/contracts";
 import { pluralize } from "@synara/shared/text";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -20,7 +19,6 @@ import {
 import { toastManager } from "../components/ui/toast";
 import { deleteActiveThreadFromClient } from "../lib/activeThreadDelete";
 import { reconcileDeletedThreadsFromClient } from "../lib/deletedThreadClientReconciliation";
-import { gitRemoveWorktreeMutationOptions } from "../lib/gitReactQuery";
 import {
   archiveThreadFromClient,
   isThreadAlreadyUnarchivedError,
@@ -113,8 +111,6 @@ export function useSidebarThreadActions(input: {
     threadsHydrated,
   } = input;
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearDraftThread);
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
@@ -520,7 +516,6 @@ export function useSidebarThreadActions(input: {
             }
           }
         },
-        removeWorktree: (worktree) => removeWorktreeMutation.mutateAsync(worktree),
       });
     },
     [
@@ -533,7 +528,6 @@ export function useSidebarThreadActions(input: {
       handleNewChat,
       navigate,
       removeThreadFromSplitViews,
-      removeWorktreeMutation,
       routeSplitViewId,
       routeThreadId,
       sidebarThreads,

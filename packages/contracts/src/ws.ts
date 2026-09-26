@@ -123,6 +123,7 @@ import {
 import { COMPUTER_WS_CHANNELS, ComputerEvent } from "./computer";
 import { OpenInEditorInput } from "./editor";
 import {
+  DeletedThreadWorktreeRemovalFailure,
   ServerConfigUpdatedPayload,
   ServerReadThreadDiagnosticsInput,
   ServerGenerateAutomationIntentInput,
@@ -277,6 +278,8 @@ export const WS_METHODS = {
   subscribeServerConfig: "server.subscribeConfig",
   subscribeServerProviderStatuses: "server.subscribeProviderStatuses",
   subscribeServerSettings: "server.subscribeSettings",
+  subscribeDeletedThreadWorktreeRemovalFailures:
+    "server.subscribeDeletedThreadWorktreeRemovalFailures",
 
   // Streaming subscriptions
   subscribeTerminalEvents: "terminal.subscribeEvents",
@@ -321,6 +324,7 @@ export const WS_CHANNELS = {
   serverConfigUpdated: "server.configUpdated",
   serverProviderStatusesUpdated: "server.providerStatusesUpdated",
   serverSettingsUpdated: "server.settingsUpdated",
+  deletedThreadWorktreeRemovalFailed: "server.deletedThreadWorktreeRemovalFailed",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
@@ -558,6 +562,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverProviderStatusesUpdated]: typeof ServerProviderStatusesUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverSettingsUpdated]: typeof ServerSettingsUpdatedPayload.Type;
+  readonly [WS_CHANNELS.deletedThreadWorktreeRemovalFailed]: DeletedThreadWorktreeRemovalFailure;
   readonly [WS_CHANNELS.automationEvent]: typeof AutomationStreamEvent.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.gitWorktreeSetupProgress]: typeof GitWorktreeSetupProgressEvent.Type;
@@ -601,6 +606,10 @@ export const WsPushServerProviderStatusesUpdated = makeWsPushSchema(
 export const WsPushServerSettingsUpdated = makeWsPushSchema(
   WS_CHANNELS.serverSettingsUpdated,
   ServerSettingsUpdatedPayload,
+);
+export const WsPushDeletedThreadWorktreeRemovalFailed = makeWsPushSchema(
+  WS_CHANNELS.deletedThreadWorktreeRemovalFailed,
+  DeletedThreadWorktreeRemovalFailure,
 );
 export const WsPushAutomationEvent = makeWsPushSchema(
   WS_CHANNELS.automationEvent,
@@ -647,6 +656,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.serverProviderStatusesUpdated,
   WS_CHANNELS.serverSettingsUpdated,
+  WS_CHANNELS.deletedThreadWorktreeRemovalFailed,
   WS_CHANNELS.automationEvent,
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.projectDevServerEvent,
@@ -664,6 +674,7 @@ export const WsPush = Schema.Union([
   WsPushServerConfigUpdated,
   WsPushServerProviderStatusesUpdated,
   WsPushServerSettingsUpdated,
+  WsPushDeletedThreadWorktreeRemovalFailed,
   WsPushAutomationEvent,
   WsPushGitActionProgress,
   WsPushGitWorktreeSetupProgress,

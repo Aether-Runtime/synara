@@ -39,6 +39,7 @@ import { SessionCredentialServiceLive } from "./auth/Layers/SessionCredentialSer
 import { ProfileStatsQueryLive } from "./profileStats";
 import { ProfileStatsArchiveLive } from "./profileStatsArchive";
 import { ServerLifecycleEventsLive } from "./serverLifecycleEvents";
+import { DeletedThreadWorktreeRemovalFailuresLive } from "./deletedThreadWorktreeRemovalFailures";
 import { ServerRuntimeStartupLive } from "./serverRuntimeStartup";
 import { ServerSettingsLive } from "./serverSettings";
 import { WorkspaceLayerLive } from "./workspace/runtimeLayer";
@@ -142,7 +143,8 @@ export function makeServerRuntimeServicesLayer(
       Layer.provideMerge(profileStatsArchiveLayer),
       Layer.provideMerge(OrchestrationLayerLive),
       Layer.provideMerge(TerminalLayerLive),
-      Layer.provideMerge(GitCoreLive),
+      Layer.provideMerge(GitLayerLive),
+      Layer.provideMerge(DeletedThreadWorktreeRemovalFailuresLive),
     ),
     DeviceServiceLive,
   );
@@ -255,6 +257,7 @@ export function makeServerRuntimeServicesLayer(
     ProfileStatsQueryLive,
     authServicesLayer,
     ServerLifecycleEventsLive,
+    DeletedThreadWorktreeRemovalFailuresLive,
     ServerRuntimeStartupLive,
     WorkspaceLayerLive,
     ProjectFaviconResolverLive,

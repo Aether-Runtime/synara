@@ -1,5 +1,6 @@
 // FILE: activeThreadDelete.ts
-// Purpose: Owns the shared server-delete and worktree-cleanup sequence for active threads.
+// Purpose: Owns the shared server-delete sequence for active threads, including the worktree
+// the user chooses to delete with them.
 // Layer: Web orchestration helper
 // Exports: deleteActiveThreadFromClient
 
@@ -7,7 +8,6 @@ import type { ThreadId } from "@synara/contracts";
 import { terminalScopeIdsForThread } from "@synara/shared/terminalThreads";
 import { collectSubagentDescendants } from "@synara/shared/threadHierarchy";
 
-import { toastManager } from "../components/ui/toast";
 import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import { getThreadFromState, getThreadsFromState } from "../threadDerivation";
@@ -48,19 +48,12 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
     thread: Thread;
     prepared: TPrepared | undefined;
   }) => void | Promise<void>;
-  readonly removeWorktree: (input: {
-    cwd: string;
-    path: string;
-    force: boolean;
-  }) => Promise<unknown>;
-  readonly unknownWorktreeErrorMessage?: string;
 }): Promise<void> {
   const api = readNativeApi();
   if (!api) return;
   const state = useStore.getState();
   const thread = getThreadFromState(state, input.threadId);
   if (!thread) return;
-  const project = state.projects.find((candidate) => candidate.id === thread.projectId) ?? null;
   const allThreads = getThreadsFromState(state);
   const threadsToDelete = input.includeSubagentDescendants
     ? [...collectSubagentDescendants(allThreads, thread.id).toReversed(), thread]
@@ -73,10 +66,9 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
     (candidate) => candidate.id === input.threadId || !deletedThreadIds.has(candidate.id),
   );
   const orphanedWorktreePath = getOrphanedWorktreePathForThread(survivingThreads, input.threadId);
-  const shouldDeleteWorktree =
+  const removeWorktreePath =
     (input.worktreeCleanupMode ?? "prompt") === "prompt" &&
     orphanedWorktreePath !== null &&
-    project !== null &&
     (await api.dialogs.confirm(
       [
         "This thread is the only one linked to this worktree:",
@@ -84,16 +76,23 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
         "",
         "Delete the worktree too?",
       ].join("\n"),
-    ));
+    ))
+      ? orphanedWorktreePath
+      : null;
 
   // Children go first: if a delete fails, their surviving parent remains reachable.
-  // Worktree removal happens only after the entire requested subtree was accepted.
+  // The requested thread's delete comes last and carries the worktree, so it is removed only
+  // after the entire subtree was accepted. The server removes it once the thread's session has
+  // stopped, whether or not this client is still connected.
   for (const deletedThread of threadsToDelete) {
     const prepared = input.prepareForDelete?.(deletedThread);
     await api.orchestration.dispatchCommand({
       type: "thread.delete",
       commandId: newCommandId(),
       threadId: deletedThread.id,
+      ...(removeWorktreePath !== null && deletedThread.id === input.threadId
+        ? { removeWorktreePath }
+        : {}),
     });
     // Provider and terminal cleanup are owned by the server-side lifecycle
     // reactor. Dispose only the local renderer after the durable delete intent
@@ -106,32 +105,5 @@ export async function deleteActiveThreadFromClient<TPrepared = undefined>(input:
       });
     }
     await input.onDeleted({ thread: deletedThread, prepared });
-  }
-
-  // A provider that owns the worktree (Aether) keeps its claim until the server's deletion
-  // cleanup stops the thread's session; the server's git.removeWorktree runs that stop first.
-  if (!shouldDeleteWorktree || !orphanedWorktreePath || !project) return;
-  try {
-    await input.removeWorktree({
-      cwd: project.cwd,
-      path: orphanedWorktreePath,
-      force: true,
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : (input.unknownWorktreeErrorMessage ?? "Unknown error removing worktree.");
-    console.error("Failed to remove orphaned worktree after thread deletion", {
-      threadId: input.threadId,
-      projectCwd: project.cwd,
-      worktreePath: orphanedWorktreePath,
-      error,
-    });
-    toastManager.add({
-      type: "error",
-      title: "Thread deleted, but worktree removal failed",
-      description: `Could not remove ${orphanedWorktreePath}. ${message}`,
-    });
   }
 }

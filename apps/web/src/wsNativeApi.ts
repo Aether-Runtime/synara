@@ -33,6 +33,7 @@ import {
   type ServerProviderStatusesUpdatedPayload,
   type ServerLifecycleStreamEvent,
   type ServerSettingsUpdatedPayload,
+  type DeletedThreadWorktreeRemovalFailure,
   type ServerVoiceTranscriptionResult,
   type TerminalEvent,
   ORCHESTRATION_WS_CHANNELS,
@@ -137,6 +138,8 @@ const serverProviderStatusesUpdatedListeners =
   createListenerRegistry<ServerProviderStatusesUpdatedPayload>();
 const serverMaintenanceUpdatedListeners = createListenerRegistry<ServerLifecycleStreamEvent>();
 const serverSettingsUpdatedListeners = createListenerRegistry<ServerSettingsUpdatedPayload>();
+const deletedThreadWorktreeRemovalFailedListeners =
+  createListenerRegistry<DeletedThreadWorktreeRemovalFailure>();
 const gitActionProgressListeners = createListenerRegistry<GitActionProgressEvent>();
 const gitWorktreeSetupProgressListeners = createListenerRegistry<GitWorktreeSetupProgressEvent>();
 const projectProvisionProgressListeners =
@@ -176,6 +179,7 @@ function clearWsNativeApiListeners(): void {
   serverProviderStatusesUpdatedListeners.clear();
   serverMaintenanceUpdatedListeners.clear();
   serverSettingsUpdatedListeners.clear();
+  deletedThreadWorktreeRemovalFailedListeners.clear();
   gitActionProgressListeners.clear();
   gitWorktreeSetupProgressListeners.clear();
   projectProvisionProgressListeners.clear();
@@ -405,6 +409,18 @@ export function onServerMaintenanceUpdated(
   });
 }
 
+export function onDeletedThreadWorktreeRemovalFailed(
+  listener: (failure: DeletedThreadWorktreeRemovalFailure) => void,
+): () => void {
+  const latestFailure =
+    instance?.transport.getLatestPush(WS_CHANNELS.deletedThreadWorktreeRemovalFailed)?.data ?? null;
+  return subscribeWithReplay({
+    registry: deletedThreadWorktreeRemovalFailedListeners,
+    listener,
+    latest: latestFailure,
+  });
+}
+
 export function onServerSettingsUpdated(
   listener: (payload: ServerSettingsUpdatedPayload) => void,
 ): () => void {
@@ -458,6 +474,9 @@ export function createWsNativeApi(): NativeApi {
   });
   transport.subscribe(WS_CHANNELS.serverSettingsUpdated, (message) => {
     serverSettingsUpdatedListeners.emit(message.data);
+  });
+  transport.subscribe(WS_CHANNELS.deletedThreadWorktreeRemovalFailed, (message) => {
+    deletedThreadWorktreeRemovalFailedListeners.emit(message.data);
   });
   transport.subscribe(WS_CHANNELS.gitActionProgress, (message) => {
     gitActionProgressListeners.emit(message.data);

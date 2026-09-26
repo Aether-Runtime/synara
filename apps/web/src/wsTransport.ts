@@ -18,6 +18,7 @@ import {
   WS_PROTOCOL_MAX_REVISION,
   WS_PROTOCOL_MIN_REVISION,
   WS_PROJECT_FILE_WATCH_CAPABILITY,
+  WS_DELETED_THREAD_WORKTREE_REMOVAL_FAILURES_CAPABILITY,
   DEVICE_WS_CHANNELS,
   DEVICE_WS_METHODS,
   COMPUTER_WS_CHANNELS,
@@ -46,6 +47,7 @@ import {
   type ServerLifecycleStreamEvent,
   type ServerProviderStatusesUpdatedPayload,
   type ServerSettingsUpdatedPayload,
+  type DeletedThreadWorktreeRemovalFailure,
   type DeviceEvent,
   type ComputerEvent,
   type TerminalEvent,
@@ -1533,6 +1535,23 @@ export class WsTransport {
               this.emit(WS_CHANNELS.serverSettingsUpdated, payload),
             restartChannel,
           );
+        } else if (channel === WS_CHANNELS.deletedThreadWorktreeRemovalFailed) {
+          // An older server has no such stream; subscribing would fail it into reconnects.
+          if (
+            !this.compatibility?.capabilities.includes(
+              WS_DELETED_THREAD_WORKTREE_REMOVAL_FAILURES_CAPABILITY,
+            )
+          ) {
+            return;
+          }
+          this.startStream(
+            client,
+            "server.deletedThreadWorktreeRemovalFailures",
+            client[WS_METHODS.subscribeDeletedThreadWorktreeRemovalFailures]({}),
+            (failure: DeletedThreadWorktreeRemovalFailure) =>
+              this.emit(WS_CHANNELS.deletedThreadWorktreeRemovalFailed, failure),
+            restartChannel,
+          );
         } else if (channel === WS_CHANNELS.terminalEvent) {
           this.startStream(
             client,
@@ -1603,6 +1622,8 @@ export class WsTransport {
     else if (channel === WS_CHANNELS.serverProviderStatusesUpdated)
       this.stopStream("server.providers");
     else if (channel === WS_CHANNELS.serverSettingsUpdated) this.stopStream("server.settings");
+    else if (channel === WS_CHANNELS.deletedThreadWorktreeRemovalFailed)
+      this.stopStream("server.deletedThreadWorktreeRemovalFailures");
     else if (channel === WS_CHANNELS.terminalEvent) this.stopStream("terminal.events");
     else if (channel === WS_CHANNELS.projectDevServerEvent) this.stopStream("project.devServers");
     else if (channel === WS_CHANNELS.automationEvent) this.stopStream("automation.events");

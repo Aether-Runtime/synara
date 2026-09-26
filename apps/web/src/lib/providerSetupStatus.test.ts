@@ -1,6 +1,6 @@
 import type { ServerProviderStatus } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
-import { providerSetupStatusLabel } from "./providerSetupStatus";
+import { providerNeedsSignIn, providerSetupStatusLabel } from "./providerSetupStatus";
 
 const connected: ServerProviderStatus = {
   provider: "opencode",
@@ -29,4 +29,16 @@ describe("providerSetupStatusLabel", () => {
       expect(providerSetupStatusLabel({ status, reconciled, disabled })).toBe(expected);
     },
   );
+});
+
+describe("providerNeedsSignIn", () => {
+  it.each([
+    [connected, false],
+    [{ ...connected, authStatus: "unauthenticated" }, true],
+    [{ ...connected, available: false, authStatus: "unauthenticated" }, false],
+    [{ ...connected, available: false, authStatus: "unknown" }, false],
+    [{ ...connected, authStatus: "unknown" }, false],
+  ] as const)("matches the Needs sign-in label: %s", (status, expected) => {
+    expect(providerNeedsSignIn(status)).toBe(expected);
+  });
 });

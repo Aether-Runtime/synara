@@ -8,14 +8,12 @@
 
 import type { ThreadId } from "@synara/contracts";
 import { resolveThreadWorkspaceCwd } from "@synara/shared/threadEnvironment";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type MouseEvent, useState } from "react";
 
 import { useAppSettings } from "~/appSettings";
 import { RenameThreadDialog } from "~/components/RenameThreadDialog";
 import { useCopyPathToClipboard, useCopyThreadIdToClipboard } from "~/hooks/useCopyToClipboard";
 import { deleteActiveThreadFromClient } from "~/lib/activeThreadDelete";
-import { gitRemoveWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { THREAD_CONTEXT_MENU_ICONS } from "~/lib/contextMenuIcons";
 import { pinActionLabel } from "~/lib/pin";
 import { archiveThreadFromClient } from "~/lib/threadArchive";
@@ -76,8 +74,6 @@ async function setThreadPinned(threadId: ThreadId, isPinned: boolean) {
 
 export function useKanbanCardContextMenu(): KanbanCardContextMenuController {
   const { settings } = useAppSettings();
-  const queryClient = useQueryClient();
-  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const clearComposerContent = useComposerDraftStore((store) => store.clearComposerContent);
   const clearDraftThread = useComposerDraftStore((store) => store.clearDraftThread);
   const clearProjectDraftThreadById = useComposerDraftStore(
@@ -110,8 +106,6 @@ export function useKanbanCardContextMenu(): KanbanCardContextMenuController {
         clearProjectDraftThreadById(thread.projectId, thread.id);
         clearTerminalState(card.threadId);
       },
-      removeWorktree: (worktree) => removeWorktreeMutation.mutateAsync(worktree),
-      unknownWorktreeErrorMessage: "Unknown error.",
     });
   };
 

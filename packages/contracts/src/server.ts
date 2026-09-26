@@ -514,6 +514,15 @@ export const ServerLifecycleStreamEvent = Schema.Union([
 ]);
 export type ServerLifecycleStreamEvent = typeof ServerLifecycleStreamEvent.Type;
 
+// A worktree the user chose to delete with its thread that the server could not remove. It has
+// its own subscription so that clients which predate it never receive it.
+export const DeletedThreadWorktreeRemovalFailure = Schema.Struct({
+  worktreePath: TrimmedNonEmptyString,
+  error: Schema.String,
+  at: IsoDateTime,
+});
+export type DeletedThreadWorktreeRemovalFailure = typeof DeletedThreadWorktreeRemovalFailure.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("snapshot"),

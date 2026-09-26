@@ -1450,6 +1450,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: checkpointRevertDeleteInProgressDetail(command.threadId),
         });
       }
+      let removeWorktree: { workspaceRoot: string; path: string } | undefined;
+      if (command.removeWorktreePath !== undefined) {
+        if (command.removeWorktreePath !== thread.worktreePath) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${command.threadId}' does not use the worktree '${command.removeWorktreePath}'.`,
+          });
+        }
+        const sharingThread = readModel.threads.find(
+          (candidate) =>
+            candidate.id !== thread.id &&
+            candidate.deletedAt === null &&
+            candidate.worktreePath === command.removeWorktreePath,
+        );
+        if (sharingThread) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${sharingThread.id}' also uses the worktree '${command.removeWorktreePath}'.`,
+          });
+        }
+        const project = yield* requireProject({ readModel, command, projectId: thread.projectId });
+        removeWorktree = { workspaceRoot: project.workspaceRoot, path: command.removeWorktreePath };
+      }
       const occurredAt = nowIso();
       const deleteEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
@@ -1462,6 +1485,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           deletedAt: occurredAt,
+          ...(removeWorktree ? { removeWorktree } : {}),
         },
       };
       return thread.claudeCacheReview

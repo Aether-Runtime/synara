@@ -73,6 +73,7 @@ import {
 import { LoaderCircleIcon, RefreshCwIcon, TemporaryThreadIcon } from "~/lib/icons";
 import { getLocalFolderBrowseRootPath } from "~/lib/localFolderMentions";
 import { findProviderStatus } from "~/lib/providerAvailability";
+import { providerNeedsSignIn } from "~/lib/providerSetupStatus";
 import { serverSettingsQueryOptions } from "~/lib/serverReactQuery";
 import { cn, isMacNavigatorPlatform, newCommandId, newThreadId, randomUUID } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
@@ -5356,6 +5357,9 @@ export default function ChatView({
               ) : null}
               {showComposerCloudProviderHint ? (
                 <ComposerCloudProviderHint
+                  needsApiKey={
+                    activeProviderStatus !== null && providerNeedsSignIn(activeProviderStatus)
+                  }
                   onDismiss={dismissCloudProviderHint}
                   attachedToPrevious={
                     showComposerLiveChangesHeader ||

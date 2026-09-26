@@ -16,6 +16,7 @@ import type {
 } from "@synara/contracts";
 import {
   AutomationId,
+  CommandId,
   DEFAULT_AUTOMATION_STOP_CONFIDENCE_THRESHOLD,
   DEFAULT_MODEL_BY_PROVIDER,
   COMPUTER_CONTROL_DENIED_ACTIVITY_KIND,
@@ -2929,8 +2930,8 @@ describe("AgentGateway", () => {
         [
           {
             type: "thread.delete",
-            commandId: "agent:restart-child:compensate-delete",
-            threadId: "agent:restart-child",
+            commandId: CommandId.makeUnsafe("agent:restart-child:compensate-delete"),
+            threadId: ThreadId.makeUnsafe("agent:restart-child"),
           },
         ],
       );
