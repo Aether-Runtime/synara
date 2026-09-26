@@ -101,19 +101,42 @@ describe("Aether replay: question, file edit, shell command, long reply (Claude 
     // Every recorded request, in order, and none after the last: the loop went idle.
     expect(transport.mismatches()).toEqual([]);
     expect(transport.remaining()).toEqual([]);
-    expect(transport.requested()).toHaveLength(57);
+    expect(transport.requested()).toHaveLength(61);
     expect(transport.maxInFlight()).toBe(1);
     expect(outputs.filter((output) => output._tag === "PollingStopped")).toEqual([]);
     expect(eventsOf(outputs).filter((event) => event.type === "runtime.warning")).toEqual([]);
   });
 
+  it("hands over the task's status lines, the workspace's boot included", async () => {
+    const { outputs } = await replayThroughPoller();
+    const lines = outputs.flatMap((output) =>
+      output._tag === "TaskUpdated" && output.task.latest_status_source === "infra"
+        ? [output.task.latest_status_message]
+        : [],
+    );
+    // The cold boot, read a tick at a time while queued; then the warm resume after the answer.
+    // "Workspace ready" recurs once the agent's own status lines interleave with it.
+    expect(lines).toEqual([
+      "Provisioning machine",
+      "Booting workspace",
+      "Preparing workspace",
+      "Workspace ready",
+      "Workspace ready",
+      "Starting workspace",
+      "Workspace ready",
+      "Workspace ready",
+    ]);
+  });
+
   it("produces the recorded output sequence", async () => {
     const { outputs } = await replayThroughPoller();
-    const summary = outputs.map((output) =>
-      output._tag === "Event"
-        ? [output.event.type, output.event.itemId].filter(Boolean).join(" ")
-        : output._tag,
-    );
+    const summary = outputs
+      .filter((output) => output._tag !== "TaskUpdated")
+      .map((output) =>
+        output._tag === "Event"
+          ? [output.event.type, output.event.itemId].filter(Boolean).join(" ")
+          : output._tag,
+      );
     expect(summary).toEqual([
       "TurnOrigin",
       "PendingInput",

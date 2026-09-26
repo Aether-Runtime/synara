@@ -4,7 +4,11 @@
 //
 // Each tick reads `GET /conversation/live` for the messages open at the previous tick. Only when
 // `headRevision` moves does it read `GET /conversation/turns` (which carries the task), and then
-// `GET /turns/{id}/activity` for each turn whose `revision_sequence` moved. One fiber makes every
+// `GET /turns/{id}/activity` for each turn whose `revision_sequence` moved. While the task is
+// queued (its workspace boots), the tick reads a one-turn turns page instead of `/live`: nothing
+// runs, the head stays put, and only the turns page carries the task's status line, which the
+// adapter shows as boot progress. It is one small read a tick either way; the whole page is read
+// only when the head moves. One fiber makes every
 // request in turn, so two requests for the task are never in flight together. A tick is applied
 // to a fork of the ingest and emitted only once every read in it succeeded: a failed tick
 // changes nothing, so the next tick (or the next `wake`) derives the same outputs again.
@@ -13,7 +17,10 @@
 // and been signalled; otherwise it goes idle until `wake`. While a surfaced question or plan
 // waits on the user and nothing runs, it reads `/live` every 15 s instead, so an answer given
 // in Aether's own UI shows within one slow tick; `wake` (the adapter sent an answer) ticks at
-// once. A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
+// once. Once idle, while the task's open pull request has CI or an Aether Review running, it
+// reads the task (a one-turn page) once a minute, so the thread's PR shows them settle. After each
+// tick it hands over the task as the ingest then holds it (`TaskUpdated`): settling a run reads
+// the task again, and hands that newer read back (`noteTask`). A transport failure backs off (1 s, doubling to 10 s) with one warning while degraded;
 // an outage longer than two minutes, or an error retrying cannot fix, stops the loop with a
 // typed failure until the next `wake`.
 
@@ -21,6 +28,8 @@ import { Cause, Clock, Effect, Latch, Option, Schema, Scope } from "effect";
 
 import type { AetherApiError } from "./aetherApiErrors.ts";
 import type {
+  AetherConversationTurnsPage,
+  AetherTask,
   AetherTimelineMessage,
   AetherTurnActivityPage,
   AetherTurnId,
@@ -40,6 +49,8 @@ import {
 export const AETHER_POLL_INTERVAL_MS = 1_000;
 /** The same while a surfaced question or plan waits on the user and nothing runs. */
 export const AETHER_POLL_AWAITING_INTERVAL_MS = 15_000;
+/** Between reads of an idle task whose pull request's CI or review runs. */
+export const AETHER_POLL_PULL_REQUEST_INTERVAL_MS = 60_000;
 /** First retry delay after a transport failure; it doubles up to the maximum. */
 export const AETHER_POLL_BACKOFF_INITIAL_MS = 1_000;
 export const AETHER_POLL_BACKOFF_MAX_MS = 10_000;
@@ -104,6 +115,8 @@ export type AetherConversationPollFailure =
 
 export type AetherPollerOutput =
   | AetherIngestOutput
+  /** A turns read showed the task changed: its status line, branch, or pull request. */
+  | { readonly _tag: "TaskUpdated"; readonly task: AetherTask }
   /** The loop stopped; the adapter fails the active turn. `wake` starts it again. */
   | { readonly _tag: "PollingStopped"; readonly error: AetherConversationPollFailure };
 
@@ -125,6 +138,8 @@ export interface AetherConversationPollerOptions {
 export interface AetherConversationPoller {
   /** Polls now if idle, after a turn is sent or on reattach; keeps an active loop going. */
   readonly wake: Effect.Effect<void>;
+  /** A turns page the consumer read itself: see `AetherConversationIngest.noteTask`. */
+  readonly noteTask: (page: AetherConversationTurnsPage) => Effect.Effect<void>;
 }
 
 type TickFailure =
@@ -155,6 +170,8 @@ export const makeAetherConversationPoller = (
     let ingest = new AetherConversationIngest(context, options.resume);
     const wakeLatch = yield* Latch.make(false);
     const wakeState = { graceUntil: 0, sawActive: false };
+    /** The task last handed over (`TaskUpdated`), as JSON. */
+    let emittedTask: string | undefined;
 
     const readActivity = (draft: AetherConversationIngest, turnId: AetherTurnId) =>
       Effect.gen(function* () {
@@ -184,15 +201,20 @@ export const makeAetherConversationPoller = (
     const tick = (observedAt: string) =>
       Effect.gen(function* () {
         const draft = ingest.fork();
-        const outputs: AetherIngestOutput[] = [];
-        const live = yield* client.getLiveConversation(context.taskId, draft.openMessageIds());
-        const step = yield* draft.applyLive(live, observedAt);
-        outputs.push(...step.outputs);
-        if (step.refreshTurns) {
-          const page = yield* client.getConversationTurns(context.taskId, {
-            limit: AETHER_TURNS_PAGE_LIMIT,
-          });
-          outputs.push(...draft.applyTurns(page));
+        const outputs: AetherPollerOutput[] = [];
+        const readTurns = client.getConversationTurns(context.taskId, {
+          limit: AETHER_TURNS_PAGE_LIMIT,
+        });
+        if (draft.readsTurnsInPlaceOfLive()) {
+          const first = yield* client.getConversationTurns(context.taskId, { limit: 1 });
+          if (draft.applyTaskInPlaceOfLive(first)) {
+            outputs.push(...draft.applyTurnsInPlaceOfLive(yield* readTurns));
+          }
+        } else {
+          const live = yield* client.getLiveConversation(context.taskId, draft.openMessageIds());
+          const step = yield* draft.applyLive(live, observedAt);
+          outputs.push(...step.outputs);
+          if (step.refreshTurns) outputs.push(...draft.applyTurns(yield* readTurns));
         }
         for (const turnId of draft.turnsNeedingActivity()) {
           const { items, revision } = yield* readActivity(draft, turnId);
@@ -214,18 +236,34 @@ export const makeAetherConversationPoller = (
         const exit = yield* Effect.exit(tick(new Date(now).toISOString()));
         if (exit._tag === "Success") {
           yield* Effect.forEach(exit.value, emit, { discard: true });
+          // Last, and as the ingest holds it after the outputs: settling a run may have handed
+          // over a newer read (`noteTask`) than the tick's own.
+          const task = ingest.task();
+          const taskJson = JSON.stringify(task);
+          if (task !== undefined && taskJson !== emittedTask) {
+            emittedTask = taskJson;
+            yield* emit({ _tag: "TaskUpdated", task });
+          }
           backoffMs = AETHER_POLL_BACKOFF_INITIAL_MS;
           failingSince = undefined;
           if (ingest.shouldKeepPolling()) {
             wakeState.sawActive = true;
           } else if (wakeState.sawActive || now >= wakeState.graceUntil) {
-            if (!ingest.waitsOnUser()) return;
-            // Someone may answer in Aether's own UI: look again now and then, or at a wake.
+            const waitsOnUser = ingest.waitsOnUser();
+            const watchesPullRequest = ingest.watchesPullRequest();
+            if (!waitsOnUser && !watchesPullRequest) return;
+            // Someone may answer in Aether's own UI, or the PR's CI or review may move: look
+            // again now and then, or at a wake.
             yield* Effect.raceFirst(
-              Effect.sleep(AETHER_POLL_AWAITING_INTERVAL_MS),
+              Effect.sleep(
+                waitsOnUser
+                  ? AETHER_POLL_AWAITING_INTERVAL_MS
+                  : AETHER_POLL_PULL_REQUEST_INTERVAL_MS,
+              ),
               wakeLatch.await,
             );
             yield* wakeLatch.close;
+            if (watchesPullRequest) ingest.refreshTask();
             continue;
           }
           yield* Effect.sleep(AETHER_POLL_INTERVAL_MS);
@@ -282,6 +320,7 @@ export const makeAetherConversationPoller = (
     );
 
     return {
+      noteTask: (page) => Effect.sync(() => ingest.noteTask(page)),
       wake: Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         wakeState.graceUntil = now + AETHER_POLL_WAKE_GRACE_MS;

@@ -13,7 +13,7 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas";
-import { ProviderKind } from "./orchestration";
+import { OrchestrationThreadPullRequest, ProviderKind } from "./orchestration";
 import { ClaudeCacheObservation } from "./claudeCache";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
@@ -205,6 +205,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "files.persisted",
   "vcs.state.changed",
   "runtime.warning",
+  "runtime.status",
   "runtime.error",
   "event.unmapped",
 ]);
@@ -259,6 +260,7 @@ const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
 const VcsStateChangedType = Schema.Literal("vcs.state.changed");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
+const RuntimeStatusType = Schema.Literal("runtime.status");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 const EventUnmappedType = Schema.Literal("event.unmapped");
 
@@ -755,6 +757,11 @@ export type FilesPersistedPayload = typeof FilesPersistedPayload.Type;
 const VcsStateChangedPayload = Schema.Struct({
   kind: Schema.optional(TrimmedNonEmptyStringSchema),
   cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * The thread's pull request, or null for none, as a provider that owns the thread's branch
+   * (`managesWorktreeBranch`) reports it. Absent from every other provider: Synara looks the PR up.
+   */
+  pullRequest: Schema.optional(Schema.NullOr(OrchestrationThreadPullRequest)),
 });
 export type VcsStateChangedPayload = typeof VcsStateChangedPayload.Type;
 
@@ -763,6 +770,16 @@ const RuntimeWarningPayload = Schema.Struct({
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
+
+/**
+ * What the provider is doing for the turn before its agent reports anything, such as a cloud
+ * workspace booting ("Booting workspace"). The latest one shows under the working indicator
+ * until the agent's first output; it is never a transcript row.
+ */
+const RuntimeStatusPayload = Schema.Struct({
+  message: TrimmedNonEmptyStringSchema,
+});
+export type RuntimeStatusPayload = typeof RuntimeStatusPayload.Type;
 
 const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
@@ -1140,6 +1157,13 @@ const ProviderRuntimeWarningEvent = Schema.Struct({
 });
 export type ProviderRuntimeWarningEvent = typeof ProviderRuntimeWarningEvent.Type;
 
+const ProviderRuntimeStatusEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: RuntimeStatusType,
+  payload: RuntimeStatusPayload,
+});
+export type ProviderRuntimeStatusEvent = typeof ProviderRuntimeStatusEvent.Type;
+
 const ProviderRuntimeEventUnmappedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: EventUnmappedType,
@@ -1204,6 +1228,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeFilesPersistedEvent,
   ProviderRuntimeVcsStateChangedEvent,
   ProviderRuntimeWarningEvent,
+  ProviderRuntimeStatusEvent,
   ProviderRuntimeErrorEvent,
   ProviderRuntimeEventUnmappedEvent,
 ]);

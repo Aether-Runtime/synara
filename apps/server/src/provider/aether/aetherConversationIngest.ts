@@ -47,6 +47,7 @@ import type {
   AetherUnknownValue,
   AetherUserMessage,
 } from "./aetherApiSchemas.ts";
+import { aetherThreadPullRequest } from "./aetherPullRequest.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -411,6 +412,8 @@ type AwaitingAnswer = Extract<
 interface IngestState {
   lastLiveHead: number | undefined;
   turnsRefreshPending: boolean;
+  /** The next tick reads the task (a one-turn page) in place of `/live`. */
+  taskReadPending: boolean;
   resetSequence: number | undefined;
   executing: boolean;
   task: AetherTask | undefined;
@@ -445,6 +448,7 @@ export class AetherConversationIngest {
   private state: IngestState = {
     lastLiveHead: undefined,
     turnsRefreshPending: true,
+    taskReadPending: false,
     resetSequence: undefined,
     executing: false,
     task: undefined,
@@ -510,6 +514,45 @@ export class AetherConversationIngest {
     });
   }
 
+  /** The task as the last turns page applied showed it. */
+  task(): AetherTask | undefined {
+    return this.state.task;
+  }
+
+  /** Whether the task's open pull request has CI or an Aether Review still running. */
+  watchesPullRequest(): boolean {
+    const task = this.state.task;
+    if (task === undefined) return false;
+    const report = aetherThreadPullRequest(task);
+    const pr = report._tag === "Reported" ? report.pullRequest : null;
+    if (pr === null || pr.state !== "open") return false;
+    return (
+      pr.checks?.status === "pending" ||
+      pr.review?.status === "reviewing" ||
+      pr.review?.status === "awaiting-input"
+    );
+  }
+
+  /** Reads the task, on a one-turn page in place of `/live`, on the next tick. */
+  refreshTask(): void {
+    this.state.taskReadPending = true;
+  }
+
+  /**
+   * A turns page read outside the loop (the adapter's own, while settling a run): its task
+   * replaces the one held when the page is current. A page with a newer head makes the loop
+   * read the turns again; an older one is dropped.
+   */
+  noteTask(page: AetherConversationTurnsPage): void {
+    const state = this.state;
+    if (state.lastLiveHead === undefined || page.head_revision < state.lastLiveHead) return;
+    if (page.head_revision > state.lastLiveHead) {
+      state.turnsRefreshPending = true;
+      return;
+    }
+    state.task = page.task;
+  }
+
   /** Whether a surfaced question or plan waits on the user. */
   waitsOnUser(): boolean {
     const awaiting = this.awaitingAnswer();
@@ -555,6 +598,42 @@ export class AetherConversationIngest {
     state.lastLiveHead = snapshot.headRevision;
     state.turnsRefreshPending = refreshTurns;
     return Result.succeed({ outputs, refreshTurns });
+  }
+
+  /**
+   * Whether the next tick reads the turns page in place of `/live`: while the task is queued
+   * (its workspace boots, and nothing runs or is open), the head does not move but the task's
+   * status line does, and only the turns page carries it; and when the task alone is wanted
+   * (`refreshTask`).
+   */
+  readsTurnsInPlaceOfLive(): boolean {
+    const { state } = this;
+    return state.taskReadPending || (state.task?.status === "queued" && state.open.length === 0);
+  }
+
+  /**
+   * Applies the task from a one-turn page read in place of `/live`: enough for the task and
+   * the head. True when the head moved (or a refresh is pending): then read the whole turns page
+   * and apply it with `applyTurnsInPlaceOfLive`.
+   */
+  applyTaskInPlaceOfLive(page: AetherConversationTurnsPage): boolean {
+    const state = this.state;
+    state.taskReadPending = false;
+    // A page older than the head already applied (a lagging replica) is dropped.
+    if (state.lastLiveHead !== undefined && page.head_revision < state.lastLiveHead) return false;
+    state.executing = false;
+    if (state.turnsRefreshPending || page.head_revision !== state.lastLiveHead) return true;
+    state.task = page.task;
+    return false;
+  }
+
+  /** Applies a turns page read in place of `/live` (see `readsTurnsInPlaceOfLive`). */
+  applyTurnsInPlaceOfLive(page: AetherConversationTurnsPage): ReadonlyArray<AetherIngestOutput> {
+    const state = this.state;
+    if (state.lastLiveHead !== undefined && page.head_revision < state.lastLiveHead) return [];
+    state.lastLiveHead = page.head_revision;
+    state.executing = false;
+    return this.applyTurns(page);
   }
 
   /** Applies a turns page; a page older than the live head already applied is ignored. */

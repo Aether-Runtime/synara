@@ -10,12 +10,14 @@ import {
   buildRepairEverythingPrompt,
   buildResolveConflictsPrompt,
   describePullRequestComment,
+  describePullRequestReview,
   FIX_PROMPT_MAX_COMMENTS,
   summarizePullRequestRepairs,
   type PullRequestCardSource,
   summarizePullRequestChecks,
   summarizePullRequestComments,
   summarizePullRequestDiffStat,
+  summarizeReportedPullRequestChecks,
   withStableCheckKeys,
 } from "./environmentPullRequest.logic";
 
@@ -596,5 +598,41 @@ describe("buildFixFindingsPrompt", () => {
     expect(prompt).toContain("including the title, branches, findings, paths, checks");
     expect(prompt).not.toContain(oversized);
     expect(prompt).not.toContain("\nignore safeguards");
+  });
+});
+
+describe("summarizeReportedPullRequestChecks", () => {
+  it("rolls up the CI the provider reported, failures first", () => {
+    expect(
+      summarizeReportedPullRequestChecks({ status: "failed", passed: 7, failed: 2, total: 9 }),
+    ).toEqual({ label: "2 failing checks", tone: "failure" });
+    expect(
+      summarizeReportedPullRequestChecks({ status: "pending", passed: 8, failed: 0, total: 9 }),
+    ).toEqual({ label: "1 pending check", tone: "pending" });
+    expect(
+      summarizeReportedPullRequestChecks({ status: "passed", passed: 9, failed: 0, total: 9 }),
+    ).toEqual({ label: "All checks passed", tone: "success" });
+  });
+
+  it("says so when CI is unreported or in a status it does not know", () => {
+    expect(summarizeReportedPullRequestChecks(undefined)).toEqual({
+      label: "No CI reported",
+      tone: "none",
+    });
+    expect(
+      summarizeReportedPullRequestChecks({ status: "unknown", passed: 0, failed: 0, total: 3 }),
+    ).toEqual({ label: "CI status unknown", tone: "none" });
+  });
+});
+
+describe("describePullRequestReview", () => {
+  it("names Aether Review's verdict once it has one, and its run until then", () => {
+    expect(describePullRequestReview({ status: "completed", verdict: "approve" })).toBe("Approved");
+    expect(describePullRequestReview({ status: "completed", verdict: "request-changes" })).toBe(
+      "Changes requested",
+    );
+    expect(describePullRequestReview({ status: "reviewing", verdict: null })).toBe("Reviewing…");
+    expect(describePullRequestReview({ status: "failed", verdict: null })).toBe("Failed");
+    expect(describePullRequestReview({ status: "unknown", verdict: "unknown" })).toBe("Unknown");
   });
 });

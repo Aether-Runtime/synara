@@ -98,6 +98,30 @@ describe("deriveThreadGitMetadataPatch", () => {
     ).toBeNull();
   });
 
+  it("updates the PR when only its CI or review moved", () => {
+    const reported = {
+      ...pullRequest,
+      checks: { status: "pending", passed: 2, failed: 0, total: 9 },
+      review: { status: "reviewing", verdict: null },
+    } as const;
+    const patch = (next: OrchestrationThreadPullRequest) =>
+      deriveThreadGitMetadataPatch({
+        currentBranch: pullRequest.headBranch,
+        currentPullRequest: reported,
+        observedBranch: pullRequest.headBranch,
+        pullRequestLookup: { status: "resolved", pullRequest: next },
+      });
+
+    expect(patch({ ...reported })).toBeNull();
+    const passed = {
+      ...reported,
+      checks: { status: "passed", passed: 9, failed: 0, total: 9 },
+    } as const;
+    expect(patch(passed)).toEqual({ lastKnownPr: passed });
+    const approved = { ...reported, review: { status: "completed", verdict: "approve" } } as const;
+    expect(patch(approved)).toEqual({ lastKnownPr: approved });
+  });
+
   it("repairs stale associated worktree identity without changing matching branch metadata", () => {
     expect(
       deriveThreadGitMetadataPatch({

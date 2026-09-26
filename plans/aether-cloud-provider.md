@@ -277,9 +277,13 @@ wires it into the adapter:
   `git apply --cached`, deletions via `update-index --force-remove`, binaries via
   `hash-object -w` + `update-index --cacheinfo` (Git checks paths with its NTFS and HFS `.git`
   protections on).
-- Inside `GitCore.withMutation`, with the claim: the worktree and index must hold the tree the
-  last sync wrote (or a clean base checkout), with no untracked files; then
-  `git read-tree -m -u <previous> <target>` moves them. HEAD stays on the base.
+- Inside `GitCore.withMutation`, with the claim: nothing may be staged against HEAD, and the
+  working tree, untracked files included (read into a scratch index seeded from the real one),
+  must be the tree the last sync wrote, the one it was writing, or a clean checkout of HEAD; then
+  `git read-tree -m -u <previous> <target>` on that scratch index moves the working tree. The
+  real index keeps HEAD's tree, so what the VM has not committed shows as unstaged changes (new
+  files untracked). A local commit of exactly what the working tree holds does not stop the
+  mirror: its content is in the commit.
 - The record in the worktree's Git directory stores the target tree OID, never a fingerprint of
   the disk, plus the tree being written until the move is recorded, so a crash in between is safe.
 - Result: `synced {tree, filesChanged, modeOnlyPaths}` or `unchanged {tree}`. Failures are one
@@ -287,6 +291,53 @@ wires it into the adapter:
   `local-edits`, `base-mismatch`, `record`, `transport`), or P5a's `WorktreeOwnedError`.
 - Known gap: the wire has no modes or blob ids, so new symlinks and executables, type changes and
   mode changes land as regular files locally. The pull request pushed from the VM is exact.
+
+### The task's branch and pull request
+
+As built in P9 (`syncAetherBranch` in `aetherMirrorSync.ts`, `aetherPullRequest.ts`):
+
+- The worktree's branch is the task's `head_branch` (named when the task is created), tracking
+  `origin/<head_branch>`: the first sync gives Synara's temporary `synara/<8 hex>` branch that
+  name (create the new ref, point HEAD at it, drop the old one, so HEAD always names a branch that
+  exists). A worktree on any other branch, or a name already taken locally, is left alone with a
+  warning.
+- Only a mirror moves the branch. Before it reads the VM, Synara reads `origin/<head_branch>`
+  (`fetchAetherBranch`: `ls-remote`, then a fetch only when it moved; no prompt, 60 s limit),
+  and after it fast-forwards the branch to that tip, which the mirrored working tree holds all
+  of. The working tree stays what the mirror wrote; the index follows HEAD. Without a mirror
+  (the workspace is suspended, or a reattach) the branch stays: moving HEAD past a working tree
+  that lacks the agent's commits would show them as local reversions.
+- Only fast-forward: with commits of the user's own (on origin's tip, or on the task base while
+  nothing is pushed), or when origin was force-pushed or rebased, the branch stays, every mirror
+  warns naming both commits and saying why the working tree looks reverted, and the mirror goes
+  on.
+- The mirror record keeps origin's last tip that the branch holds. When origin deletes the branch
+  (GitHub does when its pull request merges), Synara says so once and leaves HEAD; only commits
+  beyond that tip are the user's own and warned about.
+- Crash safety: the record gets `fastForward {from, to}` before `update-ref <branch> <to> <from>`,
+  then `git reset -q` points the index at HEAD's tree. The next sync of either kind finishes a
+  fast-forward a crash cut short when HEAD is at either end and the index holds either end's
+  tree, and refuses (local edits) otherwise.
+- The thread's pull request is the task's `primary_pull_request`, with its CI (`checks`) and Aether
+  Review's latest run on it (`review`), reported as `vcs.state.changed` with `pullRequest`; the
+  thread git metadata reactor takes it and never asks `gh` for a provider that owns the branch.
+  The poll loop reports each changed task, and once idle reads it once a minute while the PR's CI
+  or review runs. The PR, its review and the base branch are decoded apart from the task, so data
+  Synara cannot read (or a state it does not know) is warned about once and not shown, and never
+  stops the poll loop.
+- Git actions (`branch-git` capability): commit, push, pull and branch creation are unavailable
+  with the reason; Create PR asks the agent to open one, then View PR opens it.
+- Boot progress: while the task is queued the poll loop reads a one-turn turns page in place of
+  `/live` (one small read a tick; the whole page only when the head moves) to see
+  `latest_status_message` from `infra`; the adapter shows it for the turn in flight as
+  `runtime.status` until the agent's first output.
+- The task's branch stays in the local repository (with its `branch.<name>` config) when the
+  thread's worktree is removed; it is on origin. `removeWorktree` reclaims only Synara's
+  temporary `synara/<8 hex>` branches.
+- Known gaps: a PR closed or merged after its CI and review settled shows so at the next turn or
+  reattach; worktrees mirrored before P9 hold the target in the index and read as staged local
+  edits until reset; Synara's `git status` still asks `gh` for the worktree's PR, which the Aether
+  surfaces ignore.
 
 ### Worktree ownership and the mirror guard
 

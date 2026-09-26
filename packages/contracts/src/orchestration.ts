@@ -684,6 +684,44 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+/**
+ * CI on a thread's pull request as the provider that owns the thread's branch reports it (Aether's
+ * task payload); `unknown` is a status that provider has and this contract does not. PRs found
+ * through `gh` leave it out: their checks are read live.
+ */
+export const OrchestrationThreadPullRequestChecks = Schema.Struct({
+  status: Schema.Literals(["pending", "passed", "failed", "unknown"]),
+  passed: NonNegativeInt,
+  failed: NonNegativeInt,
+  total: NonNegativeInt,
+});
+export type OrchestrationThreadPullRequestChecks = typeof OrchestrationThreadPullRequestChecks.Type;
+
+/** Aether Review's latest run on a thread's pull request; `verdict` once it has one. */
+export const OrchestrationThreadPullRequestReview = Schema.Struct({
+  status: Schema.Literals([
+    "reviewing",
+    "awaiting-input",
+    "completed",
+    "failed",
+    "cancelled",
+    "superseded",
+    "archived",
+    "unknown",
+  ]),
+  verdict: Schema.NullOr(
+    Schema.Literals([
+      "approve",
+      "request-changes",
+      "comment",
+      "dismissed",
+      "superseded",
+      "unknown",
+    ]),
+  ),
+});
+export type OrchestrationThreadPullRequestReview = typeof OrchestrationThreadPullRequestReview.Type;
+
 export const OrchestrationThreadPullRequest = Schema.Struct({
   number: PositiveInt,
   title: TrimmedNonEmptyString,
@@ -698,6 +736,8 @@ export const OrchestrationThreadPullRequest = Schema.Struct({
   additions: Schema.optional(Schema.NullOr(NonNegativeInt)),
   deletions: Schema.optional(Schema.NullOr(NonNegativeInt)),
   changedFiles: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  checks: Schema.optional(OrchestrationThreadPullRequestChecks),
+  review: Schema.optional(OrchestrationThreadPullRequestReview),
 });
 export type OrchestrationThreadPullRequest = typeof OrchestrationThreadPullRequest.Type;
 

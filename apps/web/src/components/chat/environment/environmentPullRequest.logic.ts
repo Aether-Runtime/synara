@@ -8,6 +8,8 @@
 import type {
   GitPullRequestCheck,
   GitPullRequestComment,
+  OrchestrationThreadPullRequestChecks,
+  OrchestrationThreadPullRequestReview,
   PullRequestCheck,
   PullRequestComment,
 } from "@synara/contracts";
@@ -59,6 +61,65 @@ export function summarizePullRequestChecks(
     return { label: "No required checks", tone: "none" };
   }
   return { label: "All checks passed", tone: "success" };
+}
+
+/**
+ * The CI rollup for a PR whose provider reports its checks as counts (Aether), in the same
+ * shape and wording as the per-check rollup above.
+ */
+export function summarizeReportedPullRequestChecks(
+  checks: OrchestrationThreadPullRequestChecks | undefined,
+): PullRequestChecksSummary {
+  if (checks === undefined) return { label: "No CI reported", tone: "none" };
+  switch (checks.status) {
+    case "failed":
+      return checks.failed > 0
+        ? {
+            label: `${checks.failed} ${pluralize(checks.failed, "failing check")}`,
+            tone: "failure",
+          }
+        : { label: "CI failed", tone: "failure" };
+    case "pending": {
+      const pending = checks.total - checks.passed - checks.failed;
+      return pending > 0
+        ? { label: `${pending} ${pluralize(pending, "pending check")}`, tone: "pending" }
+        : { label: "CI running", tone: "pending" };
+    }
+    case "passed":
+      return { label: "All checks passed", tone: "success" };
+    case "unknown":
+      return { label: "CI status unknown", tone: "none" };
+  }
+}
+
+const REVIEW_VERDICT_LABELS: Record<
+  NonNullable<OrchestrationThreadPullRequestReview["verdict"]>,
+  string
+> = {
+  approve: "Approved",
+  "request-changes": "Changes requested",
+  comment: "Commented",
+  dismissed: "Dismissed",
+  superseded: "Superseded",
+  unknown: "Unknown",
+};
+
+const REVIEW_STATUS_LABELS: Record<OrchestrationThreadPullRequestReview["status"], string> = {
+  reviewing: "Reviewing…",
+  "awaiting-input": "Waiting for input",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  superseded: "Superseded",
+  archived: "Archived",
+  unknown: "Unknown",
+};
+
+/** Aether Review's latest run on the PR: its verdict once it has one, its run until then. */
+export function describePullRequestReview(review: OrchestrationThreadPullRequestReview): string {
+  return review.verdict === null
+    ? REVIEW_STATUS_LABELS[review.status]
+    : REVIEW_VERDICT_LABELS[review.verdict];
 }
 
 export const PULL_REQUEST_CHECK_STATUS_LABELS: Record<GitPullRequestCheck["status"], string> = {

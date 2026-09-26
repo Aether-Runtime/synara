@@ -12,10 +12,17 @@ import { Deferred, Effect, Fiber, FileSystem, Layer } from "effect";
 import { describe, expect, it as vitestIt } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
+import { GitCommandError } from "../../git/Errors.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
 import { GitCore, type GitCoreShape, type WorktreeOwner } from "../../git/Services/GitCore.ts";
 import { AetherTaskId } from "./aetherApiSchemas.ts";
-import { commandLineBatches, syncAetherMirror } from "./aetherMirrorSync.ts";
+import {
+  commandLineBatches,
+  fetchAetherBranch,
+  syncAetherBranch,
+  syncAetherMirror,
+  type AetherPushedBranch,
+} from "./aetherMirrorSync.ts";
 import type { AetherGitDiffFile } from "./aetherWorkspaceProtocol.ts";
 import {
   added,
@@ -46,6 +53,9 @@ const aetherOwner: WorktreeOwner = {
 };
 const TASK = AetherTaskId.makeUnsafe("6a3e1f0c-2b4d-4e8f-9a1b-3c5d7e9f1a2b");
 const OTHER_TASK = AetherTaskId.makeUnsafe("1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b");
+const HEAD_BRANCH = "aether/widgets-6a3e1f0c2b4d";
+/** A worktree branch as Synara names a new thread's. */
+const TEMPORARY_BRANCH = "synara/0a1b2c3d";
 
 const LOGO = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x10]);
 const OLD_BIN = Buffer.from([0x00, 0x01, 0x02]);
@@ -109,10 +119,40 @@ const pauseBeforeMove = Effect.gen(function* () {
 });
 
 /**
+ * GitCore whose `git <args>` fails, as if Synara stopped right there, when `stopAt` matches: the
+ * steps before it happened, the ones after it never do.
+ */
+const stopAt = (matches: (args: ReadonlyArray<string>) => boolean) =>
+  Effect.gen(function* () {
+    const gitCore = yield* GitCore;
+    const stopping: GitCoreShape = {
+      ...gitCore,
+      execute: (input) =>
+        matches(input.args)
+          ? Effect.fail(
+              new GitCommandError({
+                operation: input.operation,
+                command: `git ${input.args.join(" ")}`,
+                cwd: input.cwd,
+                detail: "Synara stopped here.",
+              }),
+            )
+          : gitCore.execute(input),
+    };
+    return stopping;
+  });
+
+/**
  * A repository on `main` with a linked worktree on its own branch, claimed by the Aether
  * thread for the test's scope, and a fake workspace to serve diffs from.
  */
-const makeMirror = (options: { readonly symlinks?: Readonly<Record<string, string>> } = {}) =>
+const makeMirror = (
+  options: {
+    readonly symlinks?: Readonly<Record<string, string>>;
+    /** The worktree's branch; Synara names a new thread's worktree branch `synara/<8 hex>`. */
+    readonly branch?: string;
+  } = {},
+) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const gitCore = yield* GitCore;
@@ -138,19 +178,91 @@ const makeMirror = (options: { readonly symlinks?: Readonly<Record<string, strin
     yield* git(repo, ["config", "core.autocrlf", "false"]);
     yield* git(repo, ["add", "-A"]);
     yield* git(repo, ["commit", "-m", "base"]);
+    // Origin is a bare repository the VM pushes to.
+    const origin = path.join(root, "origin.git");
+    yield* git(root, ["init", "--bare", "--initial-branch=main", origin]);
+    yield* git(repo, ["remote", "add", "origin", origin]);
+    yield* git(repo, ["push", "-q", "origin", "main"]);
     const worktree = path.join(root, "owned");
-    yield* git(repo, ["worktree", "add", "-b", "feature/owned", worktree]);
+    yield* git(repo, ["worktree", "add", "-b", options.branch ?? "feature/owned", worktree]);
     const baseCommit = yield* git(worktree, ["rev-parse", "HEAD"]);
     const claim = yield* gitCore.claimWorktree(worktree, aetherOwner);
     const fake = makeFakeWorkspace();
 
     const inWorktree = (file: string) => path.join(worktree, file);
+    /** The VM's clone of origin, on the task's branch from the base. */
+    const vmClone = path.join(root, "vm");
+    let vmReady = false;
+    const vm = (branch: string) =>
+      Effect.gen(function* () {
+        if (!vmReady) {
+          yield* git(root, ["clone", "-q", origin, vmClone]);
+          yield* git(vmClone, ["config", "user.email", "agent@test.com"]);
+          yield* git(vmClone, ["config", "user.name", "Agent"]);
+          yield* git(vmClone, ["config", "core.autocrlf", "false"]);
+          yield* git(vmClone, ["checkout", "-q", "-b", branch, baseCommit]);
+          vmReady = true;
+        }
+        return {
+          /** Commits `files` on the task's branch and pushes it; returns the commit. */
+          push: (files: Readonly<Record<string, string>>, message: string) =>
+            Effect.gen(function* () {
+              yield* Effect.promise(async () => {
+                for (const [file, content] of Object.entries(files)) {
+                  await fs.mkdir(path.dirname(path.join(vmClone, file)), { recursive: true });
+                  await fs.writeFile(path.join(vmClone, file), content);
+                }
+              });
+              yield* git(vmClone, ["add", "-A"]);
+              yield* git(vmClone, ["commit", "-q", "-m", message]);
+              yield* git(vmClone, ["push", "-q", "--force", "origin", branch]);
+              return yield* git(vmClone, ["rev-parse", "HEAD"]);
+            }),
+          /** Drops the branch's last commit locally; the next `push` force-pushes the rewrite. */
+          dropLastCommit: git(vmClone, ["reset", "-q", "--hard", "HEAD~1"]),
+        };
+      });
+
     return {
       root,
       repo,
+      origin,
       worktree,
       baseCommit,
       fake,
+      vm,
+      /** Reads origin's tip of the branch, as the adapter does before a mirror. */
+      fetchBranch: (branch: string = HEAD_BRANCH) =>
+        fetchAetherBranch({ claim, taskId: TASK, branch }),
+      /** Moves the branch to a tip `fetchBranch` read. */
+      syncBranchTo: (pushed: AetherPushedBranch) =>
+        syncAetherBranch({ claim, taskId: TASK, baseCommit, pushed }),
+      /** Reads origin's tip, then moves the branch to it. */
+      syncBranch: (branch: string = HEAD_BRANCH) =>
+        fetchAetherBranch({ claim, taskId: TASK, branch }).pipe(
+          Effect.flatMap((pushed) => syncAetherBranch({ claim, taskId: TASK, baseCommit, pushed })),
+        ),
+      /** The branch read's or sync's `AetherMirrorError`; anything else fails the test. */
+      branchFailure: (branch: string = HEAD_BRANCH) =>
+        fetchAetherBranch({ claim, taskId: TASK, branch }).pipe(
+          Effect.flatMap((pushed) => syncAetherBranch({ claim, taskId: TASK, baseCommit, pushed })),
+          Effect.flip,
+          Effect.flatMap((error) =>
+            error._tag === "AetherMirrorError" ? Effect.succeed(error) : Effect.die(error),
+          ),
+        ),
+      head: git(worktree, ["rev-parse", "HEAD"]),
+      branchName: git(worktree, ["symbolic-ref", "--short", "HEAD"]),
+      /** Origin deletes the branch, as GitHub does when its pull request merges. */
+      deleteOnOrigin: (branch: string = HEAD_BRANCH) =>
+        git(root, ["--git-dir", origin, "branch", "-D", branch]),
+      /** The index is HEAD's tree: nothing staged. */
+      indexIsHead: Effect.gen(function* () {
+        return (
+          (yield* git(worktree, ["write-tree"])) ===
+          (yield* git(worktree, ["rev-parse", "HEAD^{tree}"]))
+        );
+      }),
       serve: (
         files: ReadonlyArray<AetherGitDiffFile>,
         bytes: Record<string, Uint8Array | string> = {},
@@ -184,6 +296,18 @@ const makeMirror = (options: { readonly symlinks?: Readonly<Record<string, strin
         });
       }),
       read: (file: string) => Effect.promise(() => fs.readFile(inWorktree(file), "utf8")),
+      /** `git status --porcelain` lines, sorted: what the thread's diff panel shows. */
+      status: Effect.gen(function* () {
+        const result = yield* gitCore.execute({
+          operation: "aetherMirrorSync.test",
+          cwd: worktree,
+          args: ["status", "--porcelain=v1", "--untracked-files=all"],
+        });
+        return result.stdout
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .toSorted();
+      }),
       write: (file: string, content: string) =>
         Effect.promise(async () => {
           await fs.mkdir(path.dirname(inWorktree(file)), { recursive: true });
@@ -244,8 +368,18 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
           "notes/new.md": "hello\n",
           "docs/manual.md": "# Guide\n\nRead the manual.\n",
         });
-        // The index holds the target; HEAD stays on the base; ignored files are untouched.
-        expect(yield* git(mirror.worktree, ["write-tree"])).toBe(result.tree);
+        // The index keeps HEAD's tree, so the changes are unstaged (new files untracked); HEAD
+        // stays on the base; ignored files are untouched.
+        expect(yield* git(mirror.worktree, ["write-tree"])).toBe(
+          yield* git(mirror.worktree, ["rev-parse", "HEAD^{tree}"]),
+        );
+        expect(yield* mirror.status).toEqual([
+          " D docs/guide.md",
+          " D lib.txt",
+          " M app.txt",
+          "?? docs/manual.md",
+          "?? notes/new.md",
+        ]);
         expect(yield* git(mirror.worktree, ["rev-parse", "HEAD"])).toBe(mirror.baseCommit);
         expect(yield* mirror.read("build/cache.txt")).toBe("ignored artifact\n");
       }),
@@ -720,16 +854,70 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
       }),
     );
 
-    it.effect("refuses a local commit", () =>
+    it.effect("keeps mirroring over a local commit of exactly the mirrored files", () =>
       Effect.gen(function* () {
         const mirror = yield* makeMirror();
         mirror.serve([added("notes.md", "hello\n")]);
         expect((yield* mirror.sync())._tag).toBe("synced");
+        yield* git(mirror.worktree, ["add", "-A"]);
         yield* git(mirror.worktree, ["commit", "-m", "local commit"]);
+        const committed = yield* git(mirror.worktree, ["rev-parse", "HEAD"]);
 
-        const error = yield* mirror.failure();
-        expect(error).toMatchObject({ reason: "local-edits", paths: [] });
-        expect(error.detail).toContain("HEAD moved");
+        // The commit holds the files; nothing local would be lost.
+        mirror.serve([added("notes.md", "hello\n"), added("more.md", "turn two\n")]);
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* git(mirror.worktree, ["rev-parse", "HEAD"])).toBe(committed);
+        expect(yield* mirror.status).toEqual(["?? more.md"]);
+      }),
+    );
+
+    it.effect("keeps mirroring over a local commit of other changes, which keeps them", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        mirror.serve([added("notes.md", "hello\n")]);
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        yield* mirror.write("app.txt", "committed locally\n");
+        yield* git(mirror.worktree, ["add", "-A"]);
+        yield* git(mirror.worktree, ["commit", "-m", "local commit"]);
+        const committed = yield* git(mirror.worktree, ["rev-parse", "HEAD"]);
+
+        // A clean checkout of HEAD loses nothing: the edit is in the commit, which stays.
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* git(mirror.worktree, ["rev-parse", "HEAD"])).toBe(committed);
+        expect(yield* git(mirror.worktree, ["show", "HEAD:app.txt"])).toBe("committed locally");
+        expect(yield* mirror.read("app.txt")).toBe(BASE["app.txt"]);
+        expect(yield* mirror.status).toEqual([" M app.txt"]);
+      }),
+    );
+
+    it.effect("refuses a local edit on top of a local commit", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        mirror.serve([added("notes.md", "hello\n")]);
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        yield* git(mirror.worktree, ["add", "-A"]);
+        yield* git(mirror.worktree, ["commit", "-m", "local commit"]);
+        yield* mirror.write("app.txt", "edited after the commit\n");
+
+        expect(yield* mirror.failure()).toMatchObject({
+          reason: "local-edits",
+          paths: ["app.txt"],
+        });
+        expect(yield* mirror.read("app.txt")).toBe("edited after the commit\n");
+      }),
+    );
+
+    it.effect("refuses staged changes even when the working tree holds the mirror", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        mirror.serve([added("notes.md", "hello\n")]);
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        yield* git(mirror.worktree, ["add", "notes.md"]);
+
+        expect(yield* mirror.failure()).toMatchObject({
+          reason: "local-edits",
+          paths: ["notes.md"],
+        });
       }),
     );
 
@@ -771,6 +959,22 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
 
         expect(yield* mirror.failure()).toMatchObject({ reason: "record" });
         expect(yield* mirror.read("notes.md")).toBe("hello\n");
+      }),
+    );
+
+    it.effect("fails loudly on a record with a key it does not know, or a bad origin tip", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror();
+        mirror.serve([added("notes.md", "hello\n")]);
+        const synced = yield* mirror.sync();
+        const recordFile = yield* mirror.recordFile;
+        for (const record of [
+          { taskId: TASK, target: synced.tree, originTip: "abc" },
+          { taskId: TASK, target: synced.tree, origin: { tip: "abc" } },
+        ]) {
+          yield* Effect.promise(() => fs.writeFile(recordFile, JSON.stringify(record)));
+          expect(yield* mirror.failure()).toMatchObject({ reason: "record" });
+        }
       }),
     );
   });
@@ -846,6 +1050,416 @@ it.layer(TestLayer)("syncAetherMirror", (it) => {
         });
       }),
     );
+  });
+
+  describe("branch", () => {
+    it.effect(
+      "puts the worktree on the task's branch, tracking origin, before anything is pushed",
+      () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+
+          expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: mirror.baseCommit });
+          expect(yield* mirror.branchName).toBe(HEAD_BRANCH);
+          expect(yield* mirror.head).toBe(mirror.baseCommit);
+          expect(yield* git(mirror.worktree, ["config", `branch.${HEAD_BRANCH}.merge`])).toBe(
+            `refs/heads/${HEAD_BRANCH}`,
+          );
+          expect(yield* git(mirror.worktree, ["config", `branch.${HEAD_BRANCH}.remote`])).toBe(
+            "origin",
+          );
+          // The temporary name is gone.
+          expect(yield* git(mirror.repo, ["branch", "--list", TEMPORARY_BRANCH])).toBe("");
+          // Again: nothing to do.
+          expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: mirror.baseCommit });
+        }),
+    );
+
+    it.effect("fast-forwards to what the VM pushed, keeping the working tree as mirrored", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        const turn = [
+          modified("app.txt", hunk(1, 1, " one", "-two", "+TWO", " three")),
+          added("notes.md", "not committed yet\n"),
+        ];
+        mirror.serve(turn);
+        const mirrored = yield* mirror.sync();
+        const vm = yield* (yield* mirror.vm(HEAD_BRANCH)).push(
+          { "app.txt": "one\nTWO\nthree\n" },
+          "Capitalize two",
+        );
+
+        expect(yield* mirror.syncBranch()).toEqual({
+          _tag: "fast-forwarded",
+          from: mirror.baseCommit,
+          to: vm,
+        });
+        expect(yield* mirror.head).toBe(vm);
+        expect(yield* git(mirror.worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toBe(
+          `origin/${HEAD_BRANCH}`,
+        );
+        // Committed work is a commit; only what the VM has not committed is a change.
+        expect(yield* mirror.indexIsHead).toBe(true);
+        expect(yield* mirror.status).toEqual(["?? notes.md"]);
+        // The working tree did not move, and the mirror carries on from it.
+        mirror.serve([...turn, added("more.md", "turn two\n")]);
+        expect(yield* mirror.sync()).toMatchObject({ _tag: "synced" });
+        expect(mirrored._tag).toBe("synced");
+        expect(yield* mirror.status).toEqual(["?? more.md", "?? notes.md"]);
+      }),
+    );
+
+    it.effect("never moves a branch with local commits origin lacks, and keeps mirroring", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        mirror.serve([added("notes.md", "hello\n")]);
+        yield* mirror.sync();
+        const vm = yield* mirror.vm(HEAD_BRANCH);
+        yield* vm.push({ "notes.md": "hello\n" }, "Add notes");
+        expect((yield* mirror.syncBranch())._tag).toBe("fast-forwarded");
+        yield* mirror.write("local.md", "mine\n");
+        yield* git(mirror.worktree, ["add", "-A"]);
+        yield* git(mirror.worktree, ["commit", "-q", "-m", "local commit"]);
+        const local = yield* mirror.head;
+
+        expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "held", reason: "ahead" });
+        expect(yield* mirror.head).toBe(local);
+
+        // Both sides committed: still not moved.
+        yield* vm.push({ "later.md": "later\n" }, "Later");
+        expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "held", reason: "diverged" });
+        expect(yield* mirror.head).toBe(local);
+
+        // The mirror goes on; the local commit keeps what it holds.
+        mirror.serve([added("notes.md", "hello\n"), added("later.md", "later\n")]);
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.head).toBe(local);
+        expect(yield* git(mirror.worktree, ["show", "HEAD:local.md"])).toBe("mine");
+      }),
+    );
+
+    it.effect("moves only to the tip it read, never to a push that came after", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        const vm = yield* mirror.vm(HEAD_BRANCH);
+        const read = yield* vm.push({ "a.md": "a\n" }, "A");
+        const pushed = yield* mirror.fetchBranch();
+        expect(pushed.tip).toBe(read);
+        // The agent pushes again after the read; the mirror wrote only what the read saw.
+        yield* vm.push({ "b.md": "b\n" }, "B");
+        mirror.serve([added("a.md", "a\n")]);
+        yield* mirror.sync();
+
+        expect(yield* mirror.syncBranchTo(pushed)).toEqual({
+          _tag: "fast-forwarded",
+          from: mirror.baseCommit,
+          to: read,
+        });
+        expect(yield* mirror.status).toEqual([]);
+      }),
+    );
+
+    it.effect(
+      "says why the working tree looks reverted whenever the branch has local commits",
+      () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          mirror.serve([added("notes.md", "notes\n")]);
+          yield* mirror.sync();
+          yield* mirror.write("app.txt", "mine\n");
+          yield* git(mirror.worktree, ["add", "-A"]);
+          yield* git(mirror.worktree, ["commit", "-q", "-m", "Mine"]);
+          const local = yield* mirror.head;
+
+          // Nothing pushed yet: the local commit sits on the task base.
+          const unpushed = yield* mirror.syncBranch();
+          expect(unpushed).toMatchObject({ _tag: "held", reason: "ahead" });
+          const detail = unpushed._tag === "held" ? unpushed.detail : "";
+          expect(detail).toContain(local.slice(0, 12));
+          expect(detail).toContain(mirror.baseCommit.slice(0, 12));
+          expect(detail).toContain("reverted");
+          expect(yield* mirror.head).toBe(local);
+        }),
+    );
+
+    it.effect(
+      "keeps a branch origin deleted after merging it, noting it once, never as local commits",
+      () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          const vm = yield* mirror.vm(HEAD_BRANCH);
+          const pushed = yield* vm.push({ "a.md": "a\n" }, "A");
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "fast-forwarded", to: pushed });
+          // The mirror rewrites its record on the next move: it keeps what origin had.
+          mirror.serve([added("a.md", "a\n"), added("draft.md", "draft\n")]);
+          expect((yield* mirror.sync())._tag).toBe("synced");
+
+          // The pull request merges and GitHub deletes the branch.
+          yield* mirror.deleteOnOrigin();
+          const noted = yield* mirror.syncBranch();
+          expect(noted).toMatchObject({ _tag: "origin-deleted", head: pushed });
+          const detail = noted._tag === "origin-deleted" ? noted.detail : "";
+          expect(detail).toContain(pushed.slice(0, 12));
+          expect(detail).not.toContain("reverted");
+          // Once: later syncs say nothing, and HEAD stays where it is.
+          expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: pushed });
+          expect(yield* mirror.head).toBe(pushed);
+          expect(yield* mirror.status).toEqual(["?? draft.md"]);
+
+          // A commit of the user's own on top of it still warns, naming both commits.
+          yield* git(mirror.worktree, ["add", "-A"]);
+          yield* git(mirror.worktree, ["commit", "-q", "-m", "Mine"]);
+          const local = yield* mirror.head;
+          const held = yield* mirror.syncBranch();
+          expect(held).toMatchObject({ _tag: "held", reason: "ahead" });
+          const warning = held._tag === "held" ? held.detail : "";
+          expect(warning).toContain(local.slice(0, 12));
+          expect(warning).toContain(pushed.slice(0, 12));
+          expect(warning).toContain("reverted");
+
+          // The agent pushes the branch again: origin has it, and the note may come again.
+          const again = yield* vm.push({ "b.md": "b\n" }, "B");
+          expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "held", reason: "diverged" });
+          expect(again).not.toBe(local);
+        }),
+    );
+
+    it.effect("never follows a force-push, and keeps mirroring", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        const vm = yield* mirror.vm(HEAD_BRANCH);
+        const first = yield* vm.push({ "a.md": "a\n" }, "A");
+        mirror.serve([added("a.md", "a\n")]);
+        yield* mirror.sync();
+        expect((yield* mirror.syncBranch())._tag).toBe("fast-forwarded");
+        yield* vm.dropLastCommit;
+        const rewritten = yield* vm.push({ "b.md": "b\n" }, "B instead");
+
+        const held = yield* mirror.syncBranch();
+        expect(held).toMatchObject({ _tag: "held", reason: "diverged" });
+        expect(held._tag === "held" && held.detail).toContain(rewritten.slice(0, 12));
+        expect(yield* mirror.head).toBe(first);
+        mirror.serve([added("b.md", "b\n")]);
+        expect((yield* mirror.sync())._tag).toBe("synced");
+        expect(yield* mirror.head).toBe(first);
+      }),
+    );
+
+    it.effect("never moves the branch over local edits", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        mirror.serve([added("notes.md", "hello\n")]);
+        yield* mirror.sync();
+        yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "notes.md": "hello\n" }, "Add notes");
+        yield* mirror.write("app.txt", "local edit\n");
+
+        expect(yield* mirror.branchFailure()).toMatchObject({
+          reason: "local-edits",
+          paths: ["app.txt"],
+        });
+        expect(yield* mirror.head).toBe(mirror.baseCommit);
+        expect(yield* mirror.branchName).toBe(TEMPORARY_BRANCH);
+        expect(yield* mirror.read("app.txt")).toBe("local edit\n");
+      }),
+    );
+
+    it.effect("leaves a worktree on a branch Synara did not name, or a branch name taken", () =>
+      Effect.gen(function* () {
+        const own = yield* makeMirror({ branch: "feature/mine" });
+        expect(yield* own.syncBranch()).toMatchObject({ _tag: "held", reason: "other-branch" });
+        expect(yield* own.branchName).toBe("feature/mine");
+
+        const taken = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        yield* git(taken.repo, ["commit", "-q", "--allow-empty", "-m", "elsewhere"]);
+        yield* git(taken.repo, ["branch", HEAD_BRANCH, "HEAD"]);
+        expect(yield* taken.syncBranch()).toMatchObject({ _tag: "held", reason: "branch-exists" });
+        expect(yield* taken.branchName).toBe(TEMPORARY_BRANCH);
+      }),
+    );
+
+    it.effect("reads origin without letting any credential helper or askpass prompt", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+        const gitCore = yield* GitCore;
+        const remote: Array<{ readonly args: ReadonlyArray<string>; readonly env: unknown }> = [];
+        const recording: GitCoreShape = {
+          ...gitCore,
+          execute: (input) => {
+            if (input.args[0] === "ls-remote" || input.args[0] === "fetch") {
+              remote.push({ args: input.args, env: input.env });
+            }
+            return gitCore.execute(input);
+          },
+        };
+
+        yield* mirror.fetchBranch().pipe(Effect.provideService(GitCore, recording));
+        expect(remote.map((call) => call.args[0])).toEqual(["ls-remote", "fetch"]);
+        for (const call of remote) {
+          expect(call.env).toEqual({
+            GCM_INTERACTIVE: "never",
+            GIT_ASKPASS: "",
+            GIT_TERMINAL_PROMPT: "0",
+            SSH_ASKPASS: "",
+            SSH_ASKPASS_REQUIRE: "never",
+          });
+        }
+      }),
+    );
+
+    it.effect("fails loudly on a branch name Git refuses, and when origin cannot be read", () =>
+      Effect.gen(function* () {
+        const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+        expect(yield* mirror.branchFailure("bad..name")).toMatchObject({ reason: "branch" });
+        expect(yield* mirror.branchFailure("-x")).toMatchObject({ reason: "branch" });
+        yield* git(mirror.repo, [
+          "remote",
+          "set-url",
+          "origin",
+          path.join(mirror.root, "gone.git"),
+        ]);
+        expect(yield* mirror.branchFailure()).toMatchObject({ reason: "fetch" });
+        expect(yield* mirror.branchName).toBe(TEMPORARY_BRANCH);
+      }),
+    );
+
+    describe("crashes", () => {
+      it.effect("finishes a fast-forward that stopped after moving the branch", () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          mirror.serve([added("notes.md", "draft\n")]);
+          const mirrored = yield* mirror.sync();
+          const pushed = yield* (yield* mirror.vm(HEAD_BRANCH)).push(
+            { "notes.md": "draft\n" },
+            "N",
+          );
+          const stopping = yield* stopAt((args) => args[0] === "reset");
+
+          yield* mirror.syncBranch().pipe(Effect.provideService(GitCore, stopping), Effect.flip);
+          // Stopped between the branch and the index: HEAD moved, the index did not.
+          expect(yield* mirror.head).toBe(pushed);
+          expect(yield* mirror.indexIsHead).toBe(false);
+
+          // The next sync of either kind finishes it; nothing reads as a local edit.
+          mirror.serve([added("notes.md", "draft\n")]);
+          expect(yield* mirror.sync()).toEqual({ _tag: "unchanged", tree: mirrored.tree });
+          expect(yield* mirror.indexIsHead).toBe(true);
+          expect(yield* mirror.status).toEqual([]);
+          expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: pushed });
+          // The finished fast-forward recorded what origin had: its deletion is no local commit.
+          yield* mirror.deleteOnOrigin();
+          expect(yield* mirror.syncBranch()).toMatchObject({ _tag: "origin-deleted" });
+        }),
+      );
+
+      it.effect("leaves nothing half-done when a commit races the fast-forward", () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          const pushed = yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          // The user commits from a terminal between Synara reading HEAD and moving the branch.
+          const gitCore = yield* GitCore;
+          let local: string | undefined;
+          const inWorktree = (args: ReadonlyArray<string>) =>
+            gitCore
+              .execute({ operation: "aetherMirrorSync.test", cwd: mirror.worktree, args })
+              .pipe(Effect.map((result) => result.stdout.trim()));
+          const racing: GitCoreShape = {
+            ...gitCore,
+            execute: (input) =>
+              input.args[0] === "update-ref" && input.args.includes(pushed) && local === undefined
+                ? inWorktree(["commit", "-q", "--allow-empty", "-m", "Mine"]).pipe(
+                    Effect.andThen(inWorktree(["rev-parse", "HEAD"])),
+                    Effect.tap((head) => Effect.sync(() => void (local = head))),
+                    Effect.andThen(gitCore.execute(input)),
+                  )
+                : gitCore.execute(input),
+          };
+
+          const raced = yield* mirror.syncBranch().pipe(Effect.provideService(GitCore, racing));
+          expect(raced).toMatchObject({ _tag: "held", reason: "moved" });
+          expect(yield* mirror.head).toBe(local);
+
+          // Nothing is left to finish: the next mirror and branch sync go on as for any local
+          // commit, with the warning.
+          mirror.serve([added("a.md", "a\n"), added("b.md", "b\n")]);
+          expect((yield* mirror.sync())._tag).toBe("synced");
+          const held = yield* mirror.syncBranch();
+          expect(held).toMatchObject({ _tag: "held", reason: "diverged" });
+          expect(held._tag === "held" && held.detail).toContain(local!.slice(0, 12));
+          expect(yield* mirror.head).toBe(local);
+        }),
+      );
+
+      it.effect("records what origin had only once a crashed fast-forward moved the branch", () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          const pushed = yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          const stopping = yield* stopAt(
+            (args) => args[0] === "update-ref" && args.includes(pushed),
+          );
+          yield* mirror.syncBranch().pipe(Effect.provideService(GitCore, stopping), Effect.flip);
+          expect(yield* mirror.head).toBe(mirror.baseCommit);
+
+          // Origin deletes the branch before the next sync: HEAD never reached its tip, so
+          // there is nothing to follow and nothing of the user's own.
+          yield* mirror.deleteOnOrigin();
+          expect(yield* mirror.syncBranch()).toEqual({ _tag: "current", head: mirror.baseCommit });
+        }),
+      );
+
+      it.effect("redoes a fast-forward that stopped before moving the branch", () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          const pushed = yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          const stopping = yield* stopAt(
+            (args) => args[0] === "update-ref" && args.includes(pushed),
+          );
+
+          yield* mirror.syncBranch().pipe(Effect.provideService(GitCore, stopping), Effect.flip);
+          expect(yield* mirror.head).toBe(mirror.baseCommit);
+
+          expect(yield* mirror.syncBranch()).toEqual({
+            _tag: "fast-forwarded",
+            from: mirror.baseCommit,
+            to: pushed,
+          });
+          expect(yield* mirror.status).toEqual([]);
+        }),
+      );
+
+      it.effect("refuses to finish a stopped fast-forward once HEAD or the index moved", () =>
+        Effect.gen(function* () {
+          const mirror = yield* makeMirror({ branch: TEMPORARY_BRANCH });
+          mirror.serve([added("a.md", "a\n")]);
+          yield* mirror.sync();
+          yield* (yield* mirror.vm(HEAD_BRANCH)).push({ "a.md": "a\n" }, "A");
+          const stopping = yield* stopAt((args) => args[0] === "reset");
+          yield* mirror.syncBranch().pipe(Effect.provideService(GitCore, stopping), Effect.flip);
+          yield* git(mirror.worktree, ["add", "-A"]);
+          yield* mirror.write("staged.md", "mine\n");
+          yield* git(mirror.worktree, ["add", "staged.md"]);
+
+          expect(yield* mirror.branchFailure()).toMatchObject({
+            reason: "local-edits",
+            paths: ["a.md", "staged.md"],
+          });
+          expect(yield* mirror.read("staged.md")).toBe("mine\n");
+
+          yield* git(mirror.worktree, ["commit", "-q", "-m", "moved HEAD"]);
+          const error = yield* mirror.branchFailure();
+          expect(error).toMatchObject({ reason: "local-edits" });
+          expect(error.detail).toContain("HEAD moved");
+        }),
+      );
+    });
   });
 
   describe("ownership", () => {

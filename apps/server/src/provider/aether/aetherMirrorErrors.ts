@@ -14,6 +14,10 @@ export const AetherMirrorFailure = Schema.Literals([
   "base-mismatch",
   "record",
   "transport",
+  /** Aether's name for the task's branch is not a Git branch name. */
+  "branch",
+  /** Reading the task's branch from origin failed. */
+  "fetch",
 ]);
 export type AetherMirrorFailure = typeof AetherMirrorFailure.Type;
 

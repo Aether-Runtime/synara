@@ -984,3 +984,28 @@ describe("provider runtime activity projection", () => {
     expect(() => decodeActivityAppendCommand(blocked!)).not.toThrow();
   });
 });
+
+describe("runtime.status", () => {
+  it("projects the provider's status for a turn as a status activity", () => {
+    const event = runtimeEvent({
+      eventId: "aether-status-booting",
+      provider: "aether",
+      type: "runtime.status",
+      turnId: TURN_ID,
+      payload: { message: "Booting workspace" },
+    });
+
+    expect(projectProviderRuntimeActivities(event)).toEqual([
+      {
+        id: "aether-status-booting",
+        createdAt: CREATED_AT,
+        tone: "info",
+        kind: "runtime.status",
+        summary: "Booting workspace",
+        payload: {},
+        turnId: TURN_ID,
+      },
+    ]);
+    expectSchemaValidActivities(event);
+  });
+});

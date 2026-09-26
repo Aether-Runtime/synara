@@ -19,12 +19,22 @@ import {
   AETHER_POLL_AWAITING_INTERVAL_MS,
   AETHER_POLL_INTERVAL_MS,
   AETHER_POLL_OUTAGE_LIMIT_MS,
+  AETHER_POLL_PULL_REQUEST_INTERVAL_MS,
   AETHER_POLL_WAKE_GRACE_MS,
+  AETHER_TURNS_PAGE_LIMIT,
   makeAetherConversationPoller,
+  type AetherConversationPoller,
   type AetherConversationReader,
   type AetherPollerOutput,
 } from "./aetherConversationPoller.ts";
-import { TASK_ID, TURN_ID, taskBody, userMessageBody } from "./testing/aetherApiFixtures.ts";
+import { aetherThreadPullRequest } from "./aetherPullRequest.ts";
+import {
+  pullRequestBody,
+  TASK_ID,
+  TURN_ID,
+  taskBody,
+  userMessageBody,
+} from "./testing/aetherApiFixtures.ts";
 
 type Json = Record<string, unknown>;
 
@@ -103,10 +113,10 @@ function scriptedReader(script: Script, calls: Call[]): AetherConversationReader
         calls.push({ at, kind: "live", detail: messageIds });
         return yield* answer(AetherLiveConversationSnapshot, script.live(counts.live++, at));
       }),
-    getConversationTurns: () =>
+    getConversationTurns: (_task, page) =>
       Effect.gen(function* () {
         const at = yield* Clock.currentTimeMillis;
-        calls.push({ at, kind: "turns" });
+        calls.push({ at, kind: "turns", detail: page?.limit });
         const reply = script.turns?.(counts.turns++, at) ?? turnsBody(taskBody("processing"));
         return yield* answer(AetherConversationTurnsPage, reply);
       }),
@@ -124,12 +134,20 @@ const flush = Effect.promise(() => new Promise<void>((resolve) => setImmediate(r
 /** Wakes the poller, advances the clock `seconds` times by one tick, and returns what it did. */
 async function run(
   script: Script,
-  options: { readonly seconds: number; readonly wakeAgainAt?: number },
+  options: {
+    readonly seconds: number;
+    readonly wakeAgainAt?: number;
+    /** What the consumer does with an output, as the adapter would. */
+    readonly onEmit?: (
+      output: AetherPollerOutput,
+      poller: AetherConversationPoller,
+    ) => Effect.Effect<void>;
+  },
 ) {
   const calls: Call[] = [];
   const outputs: AetherPollerOutput[] = [];
   await Effect.gen(function* () {
-    const poller = yield* makeAetherConversationPoller({
+    const poller: AetherConversationPoller = yield* makeAetherConversationPoller({
       client: scriptedReader(script, calls),
       context: {
         taskId: TASK_ID,
@@ -137,7 +155,11 @@ async function run(
         turnIdFor: (turnId) => TurnId.makeUnsafe(`synara-${turnId}`),
       },
       resume: { after: null, emittedText: new Map() },
-      emit: (output) => Effect.sync(() => void outputs.push(output)),
+      emit: (output) =>
+        Effect.suspend(() => {
+          outputs.push(output);
+          return options.onEmit?.(output, poller) ?? Effect.void;
+        }),
     });
     yield* poller.wake;
     for (let second = 0; ; second += 1) {
@@ -166,12 +188,19 @@ const warnings = (outputs: ReadonlyArray<AetherPollerOutput>) =>
   );
 const stops = (outputs: ReadonlyArray<AetherPollerOutput>) =>
   outputs.flatMap((output) => (output._tag === "PollingStopped" ? [output.error] : []));
+/** The conversation's outputs, without the task hand-overs a changed turns read adds. */
+const conversation = (outputs: ReadonlyArray<AetherPollerOutput>) =>
+  outputs.filter((output) => output._tag !== "TaskUpdated");
 const summary = (output: AetherPollerOutput) =>
   output._tag === "Event"
     ? [output.event.type, output.event.itemId].filter(Boolean).join(" ")
     : output._tag === "PollingStopped"
       ? output.error._tag
       : output._tag;
+
+/** The boot phases a task's status line walks through, one every two seconds. */
+const statusAt = (at: number) =>
+  at < 2_000 ? "Booting workspace" : at < 4_000 ? "Preparing workspace" : "Workspace ready";
 
 describe("makeAetherConversationPoller", () => {
   it("backs off on transport failures with one warning, then stops after the outage limit", async () => {
@@ -247,7 +276,7 @@ describe("makeAetherConversationPoller", () => {
       { seconds: 3, wakeAgainAt: 2 },
     );
     // The failed ticks change nothing: the wake reads the same text and fails the same way.
-    expect(outputs.map(summary)).toEqual([
+    expect(conversation(outputs).map(summary)).toEqual([
       "content.delta m1",
       "TurnOrigin",
       "AetherTranscriptDivergedError",
@@ -292,7 +321,7 @@ describe("makeAetherConversationPoller", () => {
       { seconds: 3, wakeAgainAt: 2 },
     );
     expect(liveCallTimes(calls)).toEqual([0, 1000, 2000, 3000]);
-    expect(outputs.map(summary)).toEqual([
+    expect(conversation(outputs).map(summary)).toEqual([
       "content.delta m1",
       "TurnOrigin",
       "item.completed t0",
@@ -369,7 +398,7 @@ describe("makeAetherConversationPoller", () => {
       AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_AWAITING_INTERVAL_MS,
     ]);
     expect(times.at(-1)! - answeredAt).toBeLessThanOrEqual(AETHER_POLL_AWAITING_INTERVAL_MS);
-    expect(outputs.map(summary)).toEqual([
+    expect(conversation(outputs).map(summary)).toEqual([
       "TurnOrigin",
       "PendingInput",
       "user-input.requested",
@@ -377,6 +406,160 @@ describe("makeAetherConversationPoller", () => {
       "PendingInputResolved",
       "TurnSettled",
     ]);
+  });
+
+  it("hands over the task each time a turns read shows it changed", async () => {
+    const { outputs } = await run(
+      {
+        live: (_call, at) => liveBody({ headRevision: Math.floor(at / 1_000) + 1 }),
+        turns: (_call, at) =>
+          turnsBody(
+            taskBody("processing", {
+              latest_status_message: statusAt(at),
+              latest_status_source: "infra",
+            }),
+            "running",
+            Math.floor(at / 1_000) + 1,
+          ),
+      },
+      { seconds: 6 },
+    );
+    const tasks = outputs.flatMap((output) =>
+      output._tag === "TaskUpdated" ? [output.task.latest_status_message] : [],
+    );
+    expect(tasks).toEqual(["Booting workspace", "Preparing workspace", "Workspace ready"]);
+  });
+
+  it("while the task is queued, reads the turns page in place of /live: one read a tick", async () => {
+    // As recorded on a cold start: the head does not move while the workspace boots, only the
+    // task's status line does; the run starting moves it.
+    const bootedAt = 4_000;
+    const { calls, outputs } = await run(
+      {
+        live: (_call, at) =>
+          at < bootedAt
+            ? liveBody({ headRevision: 1 })
+            : liveBody({ headRevision: 2, activeExecution: executing }),
+        turns: (_call, at) =>
+          at < bootedAt
+            ? turnsBody(
+                taskBody("queued", {
+                  latest_status_message: statusAt(at),
+                  latest_status_source: "infra",
+                }),
+                "queued",
+                1,
+              )
+            : turnsBody(
+                taskBody("processing", {
+                  latest_status_message: "Workspace ready",
+                  latest_status_source: "infra",
+                }),
+                "running",
+                2,
+              ),
+        activity: (call) => activityBody([], { turn_revision_sequence: call === 0 ? 1 : 2 }),
+      },
+      { seconds: 6 },
+    );
+    const kinds = calls.map(
+      (call) =>
+        `${call.at / 1_000}:${call.kind}${call.kind === "turns" ? `/${String(call.detail)}` : ""}`,
+    );
+    expect(kinds).toEqual([
+      "0:live",
+      `0:turns/${AETHER_TURNS_PAGE_LIMIT}`,
+      "0:activity",
+      // One turn is enough for the task and the head, until the head moves.
+      "1:turns/1",
+      "2:turns/1",
+      "3:turns/1",
+      "4:turns/1",
+      `4:turns/${AETHER_TURNS_PAGE_LIMIT}`,
+      "4:activity",
+      // Once it runs, /live again, and the turns page only when the head moves.
+      "5:live",
+      "6:live",
+    ]);
+    const statuses = outputs.flatMap((output) =>
+      output._tag === "TaskUpdated" ? [output.task.latest_status_message] : [],
+    );
+    expect(statuses).toEqual(["Booting workspace", "Preparing workspace", "Workspace ready"]);
+  });
+
+  it("after the turn, reads the task every minute while its pull request's CI or review runs", async () => {
+    const settledAt = 150_000;
+    const pullRequestAt = (at: number) => ({
+      ...pullRequestBody({ ci_status: at < settledAt ? "pending" : "passed" }),
+    });
+    const { calls, outputs } = await run(
+      {
+        live: () => liveBody(),
+        turns: (_call, at) =>
+          turnsBody({ ...idleTask(), primary_pull_request: pullRequestAt(at) }, "settled"),
+      },
+      { seconds: 400 },
+    );
+    // Once the wake's grace ends, one read a minute until CI settles, none after: a one-turn
+    // page, which carries the task and the head.
+    expect(
+      calls
+        .filter((call) => call.at > AETHER_POLL_WAKE_GRACE_MS)
+        .map((call) => [call.at, `${call.kind}/${String(call.detail)}`]),
+    ).toEqual([
+      [AETHER_POLL_WAKE_GRACE_MS + AETHER_POLL_PULL_REQUEST_INTERVAL_MS, "turns/1"],
+      [AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_PULL_REQUEST_INTERVAL_MS, "turns/1"],
+    ]);
+    expect(settledAt).toBe(AETHER_POLL_WAKE_GRACE_MS + 2 * AETHER_POLL_PULL_REQUEST_INTERVAL_MS);
+    const ci = outputs.flatMap((output) => {
+      if (output._tag !== "TaskUpdated") return [];
+      const report = aetherThreadPullRequest(output.task);
+      return [report._tag === "Reported" ? report.pullRequest?.checks?.status : report.detail];
+    });
+    expect(ci).toEqual(["pending", "passed"]);
+  });
+
+  it("hands over the newer task the consumer read while settling, and watches its pull request", async () => {
+    // The tick's turns read shows no pull request yet; the adapter's mirror, settling the
+    // turn, reads the task again and finds the one the agent just opened, its CI running.
+    const newer = Schema.decodeUnknownSync(AetherConversationTurnsPage)(
+      turnsBody(
+        { ...idleTask(), primary_pull_request: pullRequestBody({ ci_status: "pending" }) },
+        "settled",
+      ),
+    );
+    let noted = false;
+    const { calls, outputs } = await run(
+      {
+        live: () => liveBody(),
+        turns: () =>
+          turnsBody(
+            noted
+              ? { ...idleTask(), primary_pull_request: pullRequestBody({ ci_status: "pending" }) }
+              : idleTask(),
+            "settled",
+          ),
+      },
+      {
+        seconds: 120,
+        onEmit: (output, poller) => {
+          if (output._tag !== "TurnSettled") return Effect.void;
+          noted = true;
+          return poller.noteTask(newer);
+        },
+      },
+    );
+    const tasks = outputs.flatMap((output) => {
+      if (output._tag !== "TaskUpdated") return [];
+      const report = aetherThreadPullRequest(output.task);
+      return [report._tag === "Reported" ? (report.pullRequest?.checks?.status ?? "none") : "?"];
+    });
+    // Never the tick's older read after the newer one.
+    expect(tasks).toEqual(["pending"]);
+    // Its CI runs, so the loop keeps reading the task once a minute.
+    expect(
+      calls.filter((call) => call.at > AETHER_POLL_WAKE_GRACE_MS).map((call) => call.at),
+    ).toEqual([AETHER_POLL_WAKE_GRACE_MS + AETHER_POLL_PULL_REQUEST_INTERVAL_MS]);
   });
 
   it("reads a turn's older activity pages and applies the rows oldest first", async () => {

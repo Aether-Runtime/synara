@@ -1,6 +1,6 @@
 {
   "source": "fixture-claude-v2-live.json.txt: a Claude Code task on acme-checkout asking one question, then editing a file, running a shell command and streaming a long reply.",
-  "trimmed": "Entries are copied in order from the recorded run. Removed: the recorder's periodic safety turns reads (not part of the polling model), live ticks identical to the tick before that triggered no other read, the ticks after the turn settled, and every response field the client's decoders do not read.",
+  "trimmed": "Entries are copied in order from the recorded run, reordered only where the polling model reads differently. Removed: the recorder's periodic safety turns reads (not part of the polling model) except those made while the task was queued, which stand for the one-turn turns reads the loop makes in place of /live then (one per distinct status line, cut to the page's last turn), plus the one-turn read that sees the head move; live ticks identical to the tick before that triggered no other read; the ticks after the turn settled; and every response field the client's decoders do not read. A live read that saw a queued task's run start follows the turns read that saw it, as the loop reads them.",
   "note": "An entry with sameAsPrevious=true returned a body identical to the previous response for the same path; the body is omitted.",
   "log": [
     {
@@ -23,7 +23,13 @@
           "status": "queued",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Provisioning machine",
+          "latest_status_source": "infra"
         },
         "head_revision": 2671322,
         "turns": [
@@ -55,18 +61,108 @@
       }
     },
     {
-      "why": "tick",
-      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
+      "why": "queued",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/turns?limit=1",
       "status": 200,
       "body": {
-        "activeExecution": {
-          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
-          "processingMessageId": "afe3ef02-9374-4f5a-ba1b-fce213c93f31"
+        "task": {
+          "status": "queued",
+          "run_context": {
+            "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Booting workspace",
+          "latest_status_source": "infra"
         },
-        "headRevision": 2671406,
-        "resetSequence": 0,
-        "open": [],
-        "replacements": []
+        "head_revision": 2671322,
+        "turns": [
+          {
+            "id": "8a117558-1d50-40f0-ab8f-579a346732f2",
+            "root_message": {
+              "id": "afe3ef02-9374-4f5a-ba1b-fce213c93f31",
+              "role": "user",
+              "content": "This task generates API fixtures, so follow the steps exactly:\n1. Before changing anything, ask me exactly one multiple-choice question using your question tool: \"Which label should the checkout submit button use?\" with the options \"Pay now\" and \"Place order\".\n2. After I answer, change the checkout submit button's label to my choice using your file-editing tool (not a shell command).\n3. Run `git diff --stat` in the shell.\n4. Finish with a summary of about 150 words describing what you changed and why.\nKeep the code change to that one label."
+            },
+            "members": [],
+            "state": "queued",
+            "revision_sequence": 2671322
+          }
+        ],
+        "has_more_older": false,
+        "oldest_sequence_loaded": 2671322
+      }
+    },
+    {
+      "why": "queued",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/turns?limit=1",
+      "status": 200,
+      "body": {
+        "task": {
+          "status": "queued",
+          "run_context": {
+            "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Preparing workspace",
+          "latest_status_source": "infra"
+        },
+        "head_revision": 2671322,
+        "turns": [
+          {
+            "id": "8a117558-1d50-40f0-ab8f-579a346732f2",
+            "root_message": {
+              "id": "afe3ef02-9374-4f5a-ba1b-fce213c93f31",
+              "role": "user",
+              "content": "This task generates API fixtures, so follow the steps exactly:\n1. Before changing anything, ask me exactly one multiple-choice question using your question tool: \"Which label should the checkout submit button use?\" with the options \"Pay now\" and \"Place order\".\n2. After I answer, change the checkout submit button's label to my choice using your file-editing tool (not a shell command).\n3. Run `git diff --stat` in the shell.\n4. Finish with a summary of about 150 words describing what you changed and why.\nKeep the code change to that one label."
+            },
+            "members": [],
+            "state": "queued",
+            "revision_sequence": 2671322
+          }
+        ],
+        "has_more_older": false,
+        "oldest_sequence_loaded": 2671322
+      }
+    },
+    {
+      "why": "queued",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/turns?limit=1",
+      "status": 200,
+      "body": {
+        "task": {
+          "status": "processing",
+          "run_context": {
+            "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
+        },
+        "head_revision": 2671406,
+        "turns": [
+          {
+            "id": "8a117558-1d50-40f0-ab8f-579a346732f2",
+            "root_message": {
+              "id": "afe3ef02-9374-4f5a-ba1b-fce213c93f31",
+              "role": "user",
+              "content": "This task generates API fixtures, so follow the steps exactly:\n1. Before changing anything, ask me exactly one multiple-choice question using your question tool: \"Which label should the checkout submit button use?\" with the options \"Pay now\" and \"Place order\".\n2. After I answer, change the checkout submit button's label to my choice using your file-editing tool (not a shell command).\n3. Run `git diff --stat` in the shell.\n4. Finish with a summary of about 150 words describing what you changed and why.\nKeep the code change to that one label."
+            },
+            "members": [],
+            "state": "running",
+            "revision_sequence": 2671406
+          }
+        ],
+        "has_more_older": false,
+        "oldest_sequence_loaded": 2671322
       }
     },
     {
@@ -78,7 +174,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2671406,
         "turns": [
@@ -118,6 +220,21 @@
           "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
           "processingMessageId": "afe3ef02-9374-4f5a-ba1b-fce213c93f31"
         },
+        "headRevision": 2671406,
+        "resetSequence": 0,
+        "open": [],
+        "replacements": []
+      }
+    },
+    {
+      "why": "tick",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
+      "status": 200,
+      "body": {
+        "activeExecution": {
+          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
+          "processingMessageId": "afe3ef02-9374-4f5a-ba1b-fce213c93f31"
+        },
         "headRevision": 2673098,
         "resetSequence": 0,
         "open": [],
@@ -133,7 +250,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Ask user",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673098,
         "turns": [
@@ -204,7 +327,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673106,
         "turns": [
@@ -312,7 +441,13 @@
                 }
               ]
             }
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Awaiting input",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673117,
         "turns": [
@@ -397,7 +532,13 @@
           "status": "queued",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Starting workspace",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673126,
         "turns": [
@@ -476,18 +617,38 @@
       }
     },
     {
-      "why": "tick",
-      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
+      "why": "queued",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/turns?limit=1",
       "status": 200,
       "body": {
-        "activeExecution": {
-          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
-          "processingMessageId": "1a8748cd-0473-4351-a542-b8c97e2f4e97"
+        "task": {
+          "status": "processing",
+          "run_context": {
+            "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
-        "headRevision": 2673141,
-        "resetSequence": 0,
-        "open": [],
-        "replacements": []
+        "head_revision": 2673141,
+        "turns": [
+          {
+            "id": "8a117558-1d50-40f0-ab8f-579a346732f2",
+            "root_message": {
+              "id": "afe3ef02-9374-4f5a-ba1b-fce213c93f31",
+              "role": "user",
+              "content": "This task generates API fixtures, so follow the steps exactly:\n1. Before changing anything, ask me exactly one multiple-choice question using your question tool: \"Which label should the checkout submit button use?\" with the options \"Pay now\" and \"Place order\".\n2. After I answer, change the checkout submit button's label to my choice using your file-editing tool (not a shell command).\n3. Run `git diff --stat` in the shell.\n4. Finish with a summary of about 150 words describing what you changed and why.\nKeep the code change to that one label."
+            },
+            "members": [],
+            "state": "running",
+            "revision_sequence": 2673141
+          }
+        ],
+        "has_more_older": false,
+        "oldest_sequence_loaded": 2671322
       }
     },
     {
@@ -499,7 +660,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673141,
         "turns": [
@@ -587,6 +754,21 @@
           "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
           "processingMessageId": "1a8748cd-0473-4351-a542-b8c97e2f4e97"
         },
+        "headRevision": 2673141,
+        "resetSequence": 0,
+        "open": [],
+        "replacements": []
+      }
+    },
+    {
+      "why": "tick",
+      "path": "/tasks/47d30b95-4103-43e7-a0f3-5e353792716e/conversation/live?messageIds=%5B%5D",
+      "status": 200,
+      "body": {
+        "activeExecution": {
+          "conversationTurnId": "8a117558-1d50-40f0-ab8f-579a346732f2",
+          "processingMessageId": "1a8748cd-0473-4351-a542-b8c97e2f4e97"
+        },
         "headRevision": 2673160,
         "resetSequence": 0,
         "open": [],
@@ -602,7 +784,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Run command",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673160,
         "turns": [
@@ -720,7 +908,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Run command",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673185,
         "turns": [
@@ -859,7 +1053,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Read file",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673201,
         "turns": [
@@ -1024,7 +1224,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Edit file",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673217,
         "turns": [
@@ -1206,7 +1412,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673239,
         "turns": [
@@ -1459,7 +1671,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673241,
         "turns": [
@@ -1903,7 +2121,13 @@
           "status": "processing",
           "run_context": {
             "workspace_id": "4e616fb3-03c2-4990-9de0-0f27aaa4e0e7"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "Workspace ready",
+          "latest_status_source": "infra"
         },
         "head_revision": 2673259,
         "turns": [
@@ -2125,7 +2349,13 @@
           },
           "awaiting_input": {
             "kind": "message"
-          }
+          },
+          "base_branch": "main",
+          "head_branch": "aether/acme-checkout-47d30b954103",
+          "primary_pull_request": null,
+          "pr_review_summary": null,
+          "latest_status_message": "The checkout submit button now says \"Place order\" instead of \"Pay now\", as you chose. The change is one line in `web/src/components/CheckoutForm.tsx:76`, and `git diff --stat` shows one file changed with one insertion and one deletion.\n\nThe label lives in the `CheckoutForm` component, inside the button that submits the form. I left the in-progress text, \"Paying…\", as it was, since you asked for only the one label. That means the button still switches to \"Paying…\" while the payment is processing. The `data-testid=\"pay\"` attribute is also unchanged, and I found no end-to-end or unit tests that look for the text \"Pay now\", so none should need updating. I haven't run the tests.\n\nI changed nothing else: no styles, no backend code, and no API behaviour. Because you asked me to follow the steps exactly, I haven't committed, pushed or opened a pull request, so the change is only in the working tree.",
+          "latest_status_source": "agent"
         },
         "head_revision": 2673392,
         "turns": [

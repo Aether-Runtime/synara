@@ -26,8 +26,19 @@ const threadIdB = "thread-b" as ThreadId;
 const messageId = "message-1" as MessageId;
 const projectId = "project-1" as ProjectId;
 
-const shellA = { id: threadIdA, projectId, title: "A" } as ThreadShell;
-const shellB = { id: threadIdB, projectId, title: "B" } as ThreadShell;
+const codexSelection = { provider: "codex", model: "gpt-5-codex" } as const;
+const shellA = {
+  id: threadIdA,
+  projectId,
+  title: "A",
+  modelSelection: codexSelection,
+} as ThreadShell;
+const shellB = {
+  id: threadIdB,
+  projectId,
+  title: "B",
+  modelSelection: codexSelection,
+} as ThreadShell;
 const summaryA = {
   id: threadIdA,
   projectId,
@@ -600,7 +611,34 @@ describe("createThreadGitActionsMetadataSelector", () => {
       associatedWorktreeBranch: "feature",
       createBranchFlowCompleted: true,
       title: "A",
+      branchOwner: null,
+      lastKnownPr: null,
+      sessionStatus: null,
     });
+  });
+
+  it("names the provider that owns the thread's branch, with the PR it reported", () => {
+    const reported = {
+      number: 18,
+      title: "Add docs/demo.md with checkout edge cases",
+      url: "https://github.com/Aether-Runtime/acme-checkout/pull/18",
+      baseBranch: "main",
+      headBranch: "aether/acme-checkout-640050b7d9ed",
+      state: "open",
+    } as const;
+    const selected = createThreadGitActionsMetadataSelector(threadIdA)(
+      makeState({
+        threadIds: [threadIdA],
+        threadShellById: {
+          [threadIdA]: {
+            ...shellA,
+            modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+            lastKnownPr: reported,
+          },
+        },
+      }),
+    );
+    expect(selected).toMatchObject({ branchOwner: "aether", lastKnownPr: reported });
   });
 
   it("re-derives when a git field or the title changes and empties for unknown threads", () => {
@@ -623,6 +661,9 @@ describe("createThreadGitActionsMetadataSelector", () => {
       associatedWorktreeBranch: null,
       createBranchFlowCompleted: false,
       title: undefined,
+      branchOwner: null,
+      lastKnownPr: null,
+      sessionStatus: null,
     });
     expect(createThreadGitActionsMetadataSelector(null)(makeState({}))).toBe(
       createThreadGitActionsMetadataSelector(undefined)(makeState({})),

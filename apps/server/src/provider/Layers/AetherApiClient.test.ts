@@ -26,6 +26,9 @@ import {
   PROJECT_ID,
   profileBody,
   projectBody,
+  PULL_REQUEST_ID,
+  pullRequestBody,
+  reviewSummaryBody,
   TASK_ID,
   taskBody,
   TOOL_ID,
@@ -253,6 +256,9 @@ describe("AetherApiClient", () => {
     expect(page.task).toEqual({
       status: "awaiting_input",
       run_context: { workspace_id: WORKSPACE_ID },
+      base_branch: "main",
+      primary_pull_request: null,
+      pr_review_summary: null,
       // The input is kept whole, unknown keys included: the respond fence digests all of it.
       awaiting_input: {
         kind: "questions",
@@ -261,6 +267,89 @@ describe("AetherApiClient", () => {
       },
     });
     expect(page.turns[0]).toMatchObject({ id: TURN_ID, state: "settled", revision_sequence: 9 });
+  });
+
+  it("decodes the task's branch, pull request, review and status message from the turns page", async () => {
+    const page = await succeed(
+      clientWith(
+        json(
+          200,
+          turnsPageBody({
+            task: taskBody("processing", {
+              head_branch: "aether/acme-checkout-640050b7d9ed",
+              primary_pull_request: pullRequestBody(),
+              pr_review_summary: reviewSummaryBody(),
+              latest_status_message: "Booting workspace",
+              latest_status_source: "infra",
+            }),
+          }),
+        ),
+      ).client.getConversationTurns(TASK_ID),
+    );
+
+    expect(page.task).toMatchObject({
+      base_branch: "main",
+      head_branch: "aether/acme-checkout-640050b7d9ed",
+      primary_pull_request: {
+        pull_request_id: PULL_REQUEST_ID,
+        pr_number: 18,
+        html_url: "https://github.com/Aether-Runtime/acme-checkout/pull/18",
+        title: "Add docs/demo.md with checkout edge cases",
+        state: "open",
+        ci_status: "passed",
+        checks_passed: 9,
+        checks_failed: 0,
+        checks_total: 9,
+        branch_name: "aether/acme-checkout-640050b7d9ed",
+        additions: 3,
+        deletions: 0,
+      },
+      pr_review_summary: {
+        pull_request_id: PULL_REQUEST_ID,
+        run_status: "completed",
+        verdict: "APPROVE",
+      },
+      latest_status_message: "Booting workspace",
+      latest_status_source: "infra",
+    });
+  });
+
+  it("decodes a status source it does not know as Unknown", async () => {
+    const page = await succeed(
+      clientWith(
+        json(
+          200,
+          turnsPageBody({ task: taskBody("processing", { latest_status_source: "scheduler" }) }),
+        ),
+      ).client.getConversationTurns(TASK_ID),
+    );
+
+    expect(page.task).toMatchObject({
+      latest_status_source: { _tag: "Unknown", raw: "scheduler" },
+    });
+  });
+
+  it("decodes the task whatever its pull request, review or base branch hold: they are display-only", async () => {
+    for (const extra of [
+      { primary_pull_request: pullRequestBody({ additions: null }) },
+      { primary_pull_request: withoutKey(pullRequestBody(), ["checks_total"]) },
+      { pr_review_summary: reviewSummaryBody({ run_status: 5 }) },
+      { base_branch: "" },
+    ]) {
+      const page = await succeed(
+        clientWith(
+          json(200, turnsPageBody({ task: taskBody("processing", extra) })),
+        ).client.getConversationTurns(TASK_ID),
+      );
+      expect(page.task.status).toBe("processing");
+    }
+    // The page's core fields stay strict.
+    const missing = await fail(
+      clientWith(
+        json(200, withoutKey(turnsPageBody(), ["task", "run_context"])),
+      ).client.getConversationTurns(TASK_ID),
+    );
+    expect(missing._tag === "AetherApiDecodeError" && missing.detail).toContain('["task"]');
   });
 
   it("decodes activity rows, with exitCode and durationMs on tool rows", async () => {
@@ -298,6 +387,7 @@ describe("AetherApiClient", () => {
         withoutKey(turnsPageBody(), ["turns", 0, "revision_sequence"]),
         '["turns"][0]["revision_sequence"]',
       ],
+
       [(client) => client.createTask(createRequest), { id: "not-a-uuid" }, '["id"]'],
     ];
     for (const [call, body, named] of cases) {

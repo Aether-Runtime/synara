@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveTimelineEntries,
+  deriveWorkingDetail,
   deriveWorkLogEntries,
   isFileChangeWorkLogEntry,
   isProviderFileEditWorkLogEntry,
@@ -4984,5 +4985,54 @@ describe("deriveWorkLogEntries Codex find regression", () => {
       itemType: "command_execution",
       toolCallId: "call_UmQKQmLCCrj9PF82rupLIFDO",
     });
+  });
+});
+
+describe("runtime status", () => {
+  const turnId = TurnId.makeUnsafe("turn-aether-boot");
+  const status = (id: string, summary: string, createdAt: string) =>
+    makeActivity({ id, kind: "runtime.status", summary, turnId, createdAt, payload: {} });
+
+  it("is never a transcript row", () => {
+    expect(
+      deriveWorkLogEntries([status("s1", "Booting workspace", "2026-09-25T17:37:29.000Z")], turnId),
+    ).toEqual([]);
+  });
+
+  it("shows the turn's latest status until anything else of the turn, or its reply, arrives", () => {
+    const booting = [
+      status("s1", "Booting workspace", "2026-09-25T17:37:29.000Z"),
+      status("s2", "Preparing workspace", "2026-09-25T17:37:33.000Z"),
+    ];
+    expect(deriveWorkingDetail({ activities: booting, turnId, replyStarted: false })).toBe(
+      "Preparing workspace",
+    );
+    expect(deriveWorkingDetail({ activities: booting, turnId, replyStarted: true })).toBeNull();
+    expect(
+      deriveWorkingDetail({
+        activities: [
+          ...booting,
+          makeActivity({
+            id: "tool-1",
+            kind: "tool.started",
+            summary: "Run command",
+            turnId,
+            createdAt: "2026-09-25T17:37:50.000Z",
+          }),
+        ],
+        turnId,
+        replyStarted: false,
+      }),
+    ).toBeNull();
+    expect(
+      deriveWorkingDetail({
+        activities: booting,
+        turnId: TurnId.makeUnsafe("another-turn"),
+        replyStarted: false,
+      }),
+    ).toBeNull();
+    expect(
+      deriveWorkingDetail({ activities: booting, turnId: null, replyStarted: false }),
+    ).toBeNull();
   });
 });

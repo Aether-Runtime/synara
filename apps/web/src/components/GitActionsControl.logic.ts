@@ -2,8 +2,10 @@ import type {
   GitRunStackedActionResult,
   GitStackedAction,
   GitStatusResult,
+  ProviderKind,
 } from "@synara/contracts";
 import { isTemporaryWorktreeBranch, resolveUniqueSynaraBranchName } from "@synara/shared/git";
+import { providerFeatureUnavailableMessage } from "@synara/shared/providerMetadata";
 
 export type GitActionIconName = "commit" | "push" | "pr";
 
@@ -27,6 +29,46 @@ export interface GitQuickAction {
   kind: "run_action" | "run_pull" | "open_pr" | "show_hint" | "create_branch";
   action?: GitStackedAction;
   hint?: string;
+}
+
+/** Sent to the agent when "Create PR" is chosen on a thread whose agent owns the branch. */
+export const OPEN_PULL_REQUEST_REQUEST =
+  "Open a pull request for this work: commit what is not committed yet, push the branch, and open the pull request. Reply with its URL.";
+
+export interface ProviderOwnedGitActions {
+  readonly quickAction: GitQuickAction;
+  /** Why Synara's own commit, push, pull and branch creation are unavailable. */
+  readonly unavailableReason: string;
+}
+
+/**
+ * Git actions on a thread whose provider owns its branch (Aether): its agent commits and pushes
+ * the branch, so Synara's own commit, push, pull and branch creation would race it. The PR
+ * action opens the PR the provider reported, or asks the agent to open one, once: not while a
+ * turn runs or the request is on its way, which would queue the same request again.
+ */
+export function resolveProviderOwnedGitActions(input: {
+  readonly owner: ProviderKind;
+  readonly pullRequest: { readonly url: string } | null;
+  readonly isBusy: boolean;
+  /** A turn runs, or the request for a pull request is on its way to one. */
+  readonly agentWorking: boolean;
+}): ProviderOwnedGitActions {
+  return {
+    quickAction:
+      input.pullRequest !== null
+        ? { label: "View PR", disabled: false, kind: "open_pr" }
+        : input.agentWorking
+          ? {
+              label: "Create PR",
+              disabled: true,
+              kind: "run_action",
+              action: "create_pr",
+              hint: "The agent is working. Ask it for a pull request once it is done.",
+            }
+          : { label: "Create PR", disabled: input.isBusy, kind: "run_action", action: "create_pr" },
+    unavailableReason: providerFeatureUnavailableMessage(input.owner, "branch-git"),
+  };
 }
 
 const FALLBACK_DEFAULT_BRANCH_NAMES = new Set(["main", "master"]);

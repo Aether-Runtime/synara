@@ -19,6 +19,7 @@ import { Input } from "~/components/ui/input";
 import {
   buildGitActionProgressStages,
   buildMenuItems,
+  OPEN_PULL_REQUEST_REQUEST,
   type GitDialogContext,
   type GitActionMenuItem,
   type GitGlyphName,
@@ -34,6 +35,7 @@ import {
   resolveCreatePrBaseBranch,
   resolveCreatePrDialogRuntimeStatus,
   resolveCreatePrExecution,
+  resolveProviderOwnedGitActions,
   resolveQuickAction,
   resolvePullActionAvailability,
   resolvePromotedPullPresentation,
@@ -99,10 +101,13 @@ import {
   isGitExpensiveReadCapacityError,
   refreshGitActionAvailability,
 } from "~/lib/gitReactQuery";
-import { cn, newCommandId, randomUUID } from "~/lib/utils";
+import { cn, newCommandId, newMessageId, randomUUID } from "~/lib/utils";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { readNativeApi } from "~/nativeApi";
-import { createThreadGitActionsMetadataSelector } from "~/storeSelectors";
+import {
+  createThreadGitActionsMetadataSelector,
+  type ThreadGitActionsMetadata,
+} from "~/storeSelectors";
 import { useStore } from "~/store";
 
 interface GitActionsControlProps {
@@ -270,6 +275,31 @@ export default function GitActionsControl({
     useMemo(() => createThreadGitActionsMetadataSelector(activeThreadId), [activeThreadId]),
   );
   const setThreadWorkspaceAction = useStore((store) => store.setThreadWorkspace);
+  // The thread's provider owns its branch (Aether): its agent commits and pushes, so only the
+  // PR action applies; it opens the PR the provider reported, or asks the agent for one.
+  const branchOwner = activeThread.branchOwner;
+  const reportedPullRequest = activeThread.lastKnownPr;
+  const turnRunning = activeThread.sessionStatus === "running";
+  // Per thread (the pane can show another): the session status when its request for a pull
+  // request was sent, until its session moves on (its turn runs, or fails to start) or the send
+  // fails; from then `turnRunning` covers it.
+  const [pullRequestAskedAt, setPullRequestAskedAt] = useState<
+    ReadonlyMap<ThreadId, ThreadGitActionsMetadata["sessionStatus"]>
+  >(() => new Map());
+  const forgetPullRequestAsk = useCallback((threadId: ThreadId) => {
+    setPullRequestAskedAt((current) => {
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
+  }, []);
+  const pullRequestAsked = activeThreadId !== null && pullRequestAskedAt.has(activeThreadId);
+  useEffect(() => {
+    if (activeThreadId === null || !pullRequestAskedAt.has(activeThreadId)) return;
+    if (pullRequestAskedAt.get(activeThreadId) !== activeThread.sessionStatus) {
+      forgetPullRequestAsk(activeThreadId);
+    }
+  }, [activeThread.sessionStatus, activeThreadId, forgetPullRequestAsk, pullRequestAskedAt]);
   const threadToastData = useMemo(
     () => (activeThreadId ? { threadId: activeThreadId } : undefined),
     [activeThreadId],
@@ -424,8 +454,21 @@ export default function GitActionsControl({
     [activeThread?.associatedWorktreeBranch, activeThread?.title, existingBranchNames],
   );
 
+  const providerOwnedGitActions = useMemo(
+    () =>
+      branchOwner === null
+        ? null
+        : resolveProviderOwnedGitActions({
+            owner: branchOwner,
+            pullRequest: reportedPullRequest,
+            isBusy: isGitActionRunning,
+            agentWorking: turnRunning || pullRequestAsked,
+          }),
+    [branchOwner, isGitActionRunning, pullRequestAsked, reportedPullRequest, turnRunning],
+  );
   const quickAction = useMemo(
     () =>
+      providerOwnedGitActions?.quickAction ??
       resolveQuickAction(
         gitStatusForActions,
         isGitActionRunning,
@@ -440,19 +483,29 @@ export default function GitActionsControl({
       hasOriginRemote,
       isDefaultBranch,
       isGitActionRunning,
+      providerOwnedGitActions,
       shouldOfferCreateBranch,
     ],
   );
   const gitActionMenuItems = useMemo(
     () =>
-      buildMenuItems(
-        gitStatusForActions,
-        isGitActionRunning,
-        hasOriginRemote,
-        isDefaultBranch,
-        defaultBranchName,
-      ),
-    [defaultBranchName, gitStatusForActions, hasOriginRemote, isDefaultBranch, isGitActionRunning],
+      providerOwnedGitActions
+        ? []
+        : buildMenuItems(
+            gitStatusForActions,
+            isGitActionRunning,
+            hasOriginRemote,
+            isDefaultBranch,
+            defaultBranchName,
+          ),
+    [
+      defaultBranchName,
+      gitStatusForActions,
+      hasOriginRemote,
+      isDefaultBranch,
+      isGitActionRunning,
+      providerOwnedGitActions,
+    ],
   );
   const quickActionDisabledReason = quickAction.disabled
     ? (quickAction.hint ?? "This action is currently unavailable.")
@@ -552,7 +605,12 @@ export default function GitActionsControl({
       });
       return;
     }
-    const prUrl = gitStatusForActions?.pr?.state === "open" ? gitStatusForActions.pr.url : null;
+    const prUrl =
+      branchOwner !== null
+        ? (reportedPullRequest?.url ?? null)
+        : gitStatusForActions?.pr?.state === "open"
+          ? gitStatusForActions.pr.url
+          : null;
     if (!prUrl) {
       toastManager.add({
         type: "error",
@@ -569,7 +627,60 @@ export default function GitActionsControl({
         data: threadToastData,
       });
     });
-  }, [gitStatusForActions, threadToastData]);
+  }, [branchOwner, gitStatusForActions, reportedPullRequest, threadToastData]);
+
+  /** "Create PR" on a thread whose agent owns the branch: the agent is asked to open one. */
+  const askAgentToOpenPullRequest = useCallback(() => {
+    if (turnRunning || pullRequestAsked) return;
+    const api = readNativeApi();
+    const thread = activeThreadId
+      ? useStore.getState().threadShellById?.[activeThreadId]
+      : undefined;
+    if (!api || !thread) {
+      toastManager.add({
+        type: "error",
+        title: "Unable to ask the agent for a pull request.",
+        data: threadToastData,
+      });
+      return;
+    }
+    const askedAt = activeThread.sessionStatus;
+    setPullRequestAskedAt((current) => new Map(current).set(thread.id, askedAt));
+    void api.orchestration
+      .dispatchCommand({
+        type: "thread.turn.start",
+        commandId: newCommandId(),
+        threadId: thread.id,
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: OPEN_PULL_REQUEST_REQUEST,
+          attachments: [],
+        },
+        modelSelection: thread.modelSelection,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: "default",
+        // Behind a turn that is still running, never into it.
+        dispatchMode: "queue",
+        createdAt: new Date().toISOString(),
+      })
+      .catch((error: unknown) => {
+        forgetPullRequestAsk(thread.id);
+        toastManager.add({
+          type: "error",
+          title: "Unable to ask the agent for a pull request",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          data: threadToastData,
+        });
+      });
+  }, [
+    activeThread.sessionStatus,
+    activeThreadId,
+    forgetPullRequestAsk,
+    pullRequestAsked,
+    threadToastData,
+    turnRunning,
+  ]);
 
   // Single entry point for every "Create PR" surface: opens the PR dialog when a
   // PR can be created, opens the existing PR when one is already open, and
@@ -580,6 +691,11 @@ export default function GitActionsControl({
       statusOverrideSource?: GitStatusResult | null;
       isDefaultBranchOverride?: boolean;
     }) => {
+      if (branchOwner !== null) {
+        if (reportedPullRequest === null) askAgentToOpenPullRequest();
+        else void openExistingPr();
+        return;
+      }
       const execution = resolveCreatePrExecution({
         gitStatus: input?.statusOverride ?? gitStatusForActions,
         isBusy: isGitActionRunning,
@@ -607,12 +723,15 @@ export default function GitActionsControl({
       });
     },
     [
+      askAgentToOpenPullRequest,
+      branchOwner,
       defaultBranchName,
       gitStatusForActions,
       hasOriginRemote,
       isDefaultBranch,
       isGitActionRunning,
       openExistingPr,
+      reportedPullRequest,
       threadToastData,
     ],
   );
@@ -1299,6 +1418,35 @@ export default function GitActionsControl({
   }, [gitActionMenuItems, onRegisterCommitAndPushTrigger, openDialogForMenuItem, visibleWhen]);
 
   const gitPickerMenuItems = useMemo<GitPickerMenuItem[]>(() => {
+    if (providerOwnedGitActions) {
+      const unavailable = (
+        id: GitPickerMenuItem["id"],
+        label: string,
+        icon: GitGlyphName,
+      ): GitPickerMenuItem => ({
+        id,
+        label,
+        icon,
+        disabled: true,
+        disabledReason: providerOwnedGitActions.unavailableReason,
+        onSelect: () => {},
+      });
+      const pr = providerOwnedGitActions.quickAction;
+      return [
+        unavailable("commit_push", "Commit & push", "push"),
+        unavailable("push", "Push", "push"),
+        unavailable("sync", "Pull", "sync"),
+        {
+          id: "pr",
+          label: pr.label,
+          icon: "pr",
+          disabled: pr.disabled,
+          disabledReason: pr.disabled ? (pr.hint ?? "Git action in progress.") : null,
+          onSelect: () => openCreatePrDialog(),
+        },
+        unavailable("create_branch", "Create Branch", "branch"),
+      ];
+    }
     const items: GitPickerMenuItem[] = [];
     const commitMenuItem = gitActionMenuItems.find((item) => item.id === "commit");
     const commitPushMenuItem = gitActionMenuItems.find((item) => item.id === "commit_push");
@@ -1413,7 +1561,9 @@ export default function GitActionsControl({
     isDefaultBranch,
     isGitActionRunning,
     openCreateBranchDialog,
+    openCreatePrDialog,
     openDialogForMenuItem,
+    providerOwnedGitActions,
     runSyncWithRemote,
   ]);
 
@@ -1499,20 +1649,23 @@ export default function GitActionsControl({
           return <GitPickerMenuRow key={item.id} item={item} />;
         })}
       </MenuGroup>
-      {(gitStatusForActions?.branch === null ||
-        (gitStatusForActions &&
-          gitStatusForActions.branch !== null &&
-          !gitStatusForActions.hasWorkingTreeChanges &&
-          gitStatusForActions.behindCount > 0 &&
-          gitStatusForActions.aheadCount === 0) ||
-        isGitStatusOutOfSync ||
-        gitStatusError) && <MenuSeparator className="mx-3 mt-2" />}
-      {gitStatusForActions?.branch === null && (
+      {/* The agent that owns the branch keeps it in sync: no advice to pull or branch. */}
+      {!providerOwnedGitActions &&
+        (gitStatusForActions?.branch === null ||
+          (gitStatusForActions &&
+            gitStatusForActions.branch !== null &&
+            !gitStatusForActions.hasWorkingTreeChanges &&
+            gitStatusForActions.behindCount > 0 &&
+            gitStatusForActions.aheadCount === 0) ||
+          isGitStatusOutOfSync ||
+          gitStatusError) && <MenuSeparator className="mx-3 mt-2" />}
+      {!providerOwnedGitActions && gitStatusForActions?.branch === null && (
         <p className="px-3 py-1.5 text-ui leading-snug text-warning">
           Detached HEAD: create and checkout a branch to enable push and PR actions.
         </p>
       )}
-      {gitStatusForActions &&
+      {!providerOwnedGitActions &&
+        gitStatusForActions &&
         gitStatusForActions.branch !== null &&
         !gitStatusForActions.hasWorkingTreeChanges &&
         gitStatusForActions.behindCount > 0 &&
@@ -1691,11 +1844,24 @@ export default function GitActionsControl({
     const showPanelPullRow = showPromotedPullAction;
     // The panel row runs its action on click — exactly like Pull — and the chevron
     // beside it is the only way into the git actions menu (and its dialogs).
-    const panelPrimaryLabel = showPanelPullRow
-      ? (promotedPull?.label ?? "Pull")
-      : (runnableCommitPushMenuItem?.label ?? "Commit and Push");
-    const panelPrimaryGlyph: GitGlyphName = showPanelPullRow ? "sync" : "push";
+    const panelPrimaryLabel = providerOwnedGitActions
+      ? quickAction.label
+      : showPanelPullRow
+        ? (promotedPull?.label ?? "Pull")
+        : (runnableCommitPushMenuItem?.label ?? "Commit and Push");
+    const panelPrimaryGlyph: GitGlyphName = providerOwnedGitActions
+      ? "pr"
+      : showPanelPullRow
+        ? "sync"
+        : "push";
+    const panelPrimaryDisabled = providerOwnedGitActions
+      ? quickAction.disabled
+      : !showPanelPullRow && !runnableCommitPushMenuItem;
     const runPanelPrimaryAction = () => {
+      if (providerOwnedGitActions) {
+        runQuickAction();
+        return;
+      }
       if (showPanelPullRow) {
         runSyncWithRemote();
         return;
@@ -1744,7 +1910,7 @@ export default function GitActionsControl({
               className={cn(ENVIRONMENT_ROW_CLASS_NAME, "min-w-0 flex-1")}
               aria-label={panelPrimaryLabel}
               title={panelPrimaryLabel}
-              disabled={isGitActionRunning || (!showPanelPullRow && !runnableCommitPushMenuItem)}
+              disabled={isGitActionRunning || panelPrimaryDisabled}
               onClick={runPanelPrimaryAction}
             >
               <EnvironmentRowBody

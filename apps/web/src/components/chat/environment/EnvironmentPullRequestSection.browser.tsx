@@ -21,6 +21,7 @@ import { page } from "vitest/browser";
 import { cleanup, render } from "vitest-browser-react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
+import { useStore } from "~/store";
 import { gitPullRequestSnapshotQueryOptions, gitQueryKeys } from "~/lib/gitReactQuery";
 import { deferred } from "~/lib/pullRequestReactQuery.testUtils";
 import { EnvironmentPullRequestSection } from "./EnvironmentPullRequestSection";
@@ -208,6 +209,56 @@ describe("EnvironmentPullRequestSection", () => {
         .toBeVisible();
     },
   );
+
+  it("shows the PR, CI and Aether Review a provider that owns the branch reported, without gh", async () => {
+    const initialStore = useStore.getState();
+    useStore.setState({
+      threadShellById: {
+        ...initialStore.threadShellById,
+        [threadId]: {
+          id: threadId,
+          modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+          lastKnownPr: {
+            number: 18,
+            title: "Add docs/demo.md with checkout edge cases",
+            url: "https://github.com/Aether-Runtime/acme-checkout/pull/18",
+            baseBranch: "main",
+            headBranch: "aether/acme-checkout-640050b7d9ed",
+            state: "open",
+            additions: 3,
+            deletions: 0,
+            checks: { status: "pending", passed: 8, failed: 0, total: 9 },
+            review: { status: "completed", verdict: "approve" },
+          },
+        },
+      } as never,
+    });
+    try {
+      await render(section(new QueryClient()));
+
+      const row = page.getByText("#18 Add docs/demo.md with checkout edge cases", { exact: true });
+      await expect.element(row).toBeVisible();
+      await row.click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Checks 1 pending check" }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Aether Review Approved" }))
+        .toBeVisible();
+      // Nothing is looked up for it: no git status, no gh snapshot, no GitHub actions.
+      expect(getGitStatus).not.toHaveBeenCalled();
+      expect(getPullRequestSnapshot).not.toHaveBeenCalled();
+      expect(page.getByRole("menuitem", { name: /^Merge/ }).query()).toBeNull();
+      // Synara never read its comments or checks one by one: no rows that would claim it did.
+      expect(page.getByRole("menuitem", { name: /^Comments/ }).query()).toBeNull();
+      expect(page.getByTestId("pr-repair-trigger").query()).toBeNull();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Status Ready for review" }))
+        .toHaveAttribute("data-disabled");
+    } finally {
+      useStore.setState(initialStore);
+    }
+  });
 
   it("closes the pull request from the Status menu after confirmation", async () => {
     const queryClient = createQueryClient();

@@ -113,12 +113,20 @@ export const makeFakeWorkspace = () => {
   let files = new Map<string, Uint8Array>();
   let diffFailure: string | undefined;
   let readFailure: string | undefined;
+  /** Runs once, right after the next diff is read: the VM moving on meanwhile. */
+  let afterDiff: (() => void) | undefined;
   const reads: Array<string> = [];
 
   const workspace: AetherMirrorWorkspace = {
     requestGitDiff: () =>
       diffFailure === undefined
-        ? Effect.succeed(diff)
+        ? Effect.sync(() => {
+            const served = diff;
+            const then = afterDiff;
+            afterDiff = undefined;
+            then?.();
+            return served;
+          })
         : Effect.fail(
             new AetherWorkspaceRequestError({
               workspaceId: WORKSPACE_ID,
@@ -169,6 +177,9 @@ export const makeFakeWorkspace = () => {
     },
     failRead: (detail: string) => {
       readFailure = detail;
+    },
+    afterNextDiff: (then: () => void) => {
+      afterDiff = then;
     },
   };
 };

@@ -1,5 +1,11 @@
-import { CommandId, type ProviderRuntimeEvent, type ThreadId } from "@synara/contracts";
+import {
+  CommandId,
+  type OrchestrationThreadPullRequest,
+  type ProviderRuntimeEvent,
+  type ThreadId,
+} from "@synara/contracts";
 import { makeDrainableWorker, startDrainableWorkerProducers } from "@synara/shared/DrainableWorker";
+import { PROVIDER_DESCRIPTOR_BY_KIND } from "@synara/shared/providerMetadata";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -41,9 +47,19 @@ interface CapturedThreadGitMetadata {
   readonly observedBranch: string | null;
   readonly upstreamRef: string | null;
   readonly hasDedicatedWorktree: boolean;
+  /**
+   * Set when the provider owns the thread's branch: the pull request it reported (null for none),
+   * or undefined when it reported none, and nothing is looked up.
+   */
+  readonly providerReport?: {
+    readonly pullRequest: OrchestrationThreadPullRequest | null | undefined;
+  };
 }
 
 const turnKey = (threadId: ThreadId, turnId: string) => `${threadId}\0${turnId}`;
+
+const providerOwnsBranch = (event: ProviderRuntimeEvent) =>
+  PROVIDER_DESCRIPTOR_BY_KIND[event.provider].managesWorktreeBranch;
 
 const serverCommandId = (): CommandId =>
   CommandId.makeUnsafe(`server:thread-git-metadata:${crypto.randomUUID()}`);
@@ -188,6 +204,7 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     context: ThreadWorkspaceContext,
     eventId: string,
+    providerReport?: CapturedThreadGitMetadata["providerReport"],
   ) {
     const threadOption = yield* projectionSnapshotQuery.getThreadShellById(threadId);
     const thread = Option.getOrUndefined(threadOption);
@@ -206,6 +223,7 @@ const make = Effect.gen(function* () {
       observedBranch: details.branch,
       upstreamRef: details.upstreamRef,
       hasDedicatedWorktree: context.hasDedicatedWorktree,
+      ...(providerReport === undefined ? {} : { providerReport }),
     });
   });
 
@@ -227,7 +245,12 @@ const make = Effect.gen(function* () {
       }
     }
 
-    yield* enqueueMetadataCapture(event.threadId, context, event.eventId);
+    yield* enqueueMetadataCapture(
+      event.threadId,
+      context,
+      event.eventId,
+      providerOwnsBranch(event) ? { pullRequest: event.payload.pullRequest } : undefined,
+    );
   });
 
   const lookupPullRequest = (
@@ -235,6 +258,12 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<ThreadPullRequestLookup> => {
     if (captured.observedBranch === null) {
       return Effect.succeed({ status: "resolved", pullRequest: null });
+    }
+    if (captured.providerReport !== undefined) {
+      const { pullRequest } = captured.providerReport;
+      return Effect.succeed(
+        pullRequest === undefined ? { status: "unavailable" } : { status: "resolved", pullRequest },
+      );
     }
     return gitManager
       .pullRequestForBranch({
@@ -324,8 +353,11 @@ const make = Effect.gen(function* () {
     // in providerRefs. Treating them as parent turns would make shared-root ownership ambiguous
     // and suppress reconciliation when the actual parent turn completes.
     if (event.providerRefs?.providerParentThreadId !== undefined) return Effect.void;
-    if (event.type === "turn.started") return trackTurnStart(event);
     if (event.type === "vcs.state.changed") return captureVcsMetadata(event);
+    // A provider that owns the thread's branch reports it and its PR with `vcs.state.changed`
+    // (Aether reads the PR from its task, not from gh); its turn boundaries say nothing more.
+    if (providerOwnsBranch(event)) return Effect.void;
+    if (event.type === "turn.started") return trackTurnStart(event);
     if (
       event.type === "turn.completed" ||
       event.type === "turn.aborted" ||

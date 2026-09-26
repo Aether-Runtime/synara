@@ -319,6 +319,26 @@ export function omitRoutedSubagentWorkEntries<Entry extends WorkLogEntry>(
   return kept.length === entries.length ? entries : kept;
 }
 
+/** The provider's status for a turn before its agent outputs anything (`runtime.status`). */
+export const RUNTIME_STATUS_ACTIVITY_KIND = "runtime.status";
+
+/**
+ * What the provider reports for the turn in flight before its agent outputs anything (Aether:
+ * its cloud workspace booting): the turn's latest status, while nothing else of the turn came
+ * after it and its reply has not started. Shown under the working indicator.
+ */
+export function deriveWorkingDetail(input: {
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly turnId: TurnId | null | undefined;
+  readonly replyStarted: boolean;
+}): string | null {
+  if (!input.turnId || input.replyStarted) return null;
+  const last = orderedActivities(input.activities).findLast(
+    (activity) => activity.turnId === input.turnId,
+  );
+  return last?.kind === RUNTIME_STATUS_ACTIVITY_KIND ? last.summary : null;
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
@@ -340,6 +360,8 @@ export function deriveWorkLogEntries(
         activity.kind !== "task.updated" &&
         activity.kind !== "task.completed",
     )
+    // Shown under the working indicator (`deriveWorkingDetail`), never as a row.
+    .filter((activity) => activity.kind !== RUNTIME_STATUS_ACTIVITY_KIND)
     .filter((activity) => !isQuietTurnLifecycleActivity(activity))
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
     .filter(
