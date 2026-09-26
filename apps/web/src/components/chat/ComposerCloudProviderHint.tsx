@@ -1,6 +1,7 @@
 // FILE: ComposerCloudProviderHint.tsx
-// Purpose: First-run composer tip for Aether, the cloud provider: it runs remotely, needs the
-// repo on GitHub imported as a project there, and an API key from its site.
+// Purpose: First-run composer tip for Aether, the cloud provider: it runs remotely and needs the
+// repo on GitHub imported as a project there. Until Aether has a working API key, the tip also
+// links to its site to get one.
 // Layer: Chat composer UI
 // Exports: ComposerCloudProviderHint
 
@@ -12,6 +13,7 @@ import { COMPOSER_STACKED_PANEL_ICON_CLASS_NAME } from "./composerStackedPanelSt
 import { ComposerTipStrip } from "./ComposerTipStrip";
 
 export function ComposerCloudProviderHint(props: {
+  needsApiKey: boolean;
   onDismiss: () => void;
   attachedToPrevious?: boolean;
 }) {
@@ -21,14 +23,16 @@ export function ComposerCloudProviderHint(props: {
       wrap
       icon={<CloudIcon aria-hidden="true" className={COMPOSER_STACKED_PANEL_ICON_CLASS_NAME} />}
       action={
-        <a
-          href={PROVIDER_DESCRIPTOR_BY_KIND.aether.setupDocsHref}
-          target="_blank"
-          rel="noreferrer"
-          className={COMPOSER_INLINE_ACTION_PILL_CLASS_NAME}
-        >
-          Get an API key
-        </a>
+        props.needsApiKey ? (
+          <a
+            href={PROVIDER_DESCRIPTOR_BY_KIND.aether.setupDocsHref}
+            target="_blank"
+            rel="noreferrer"
+            className={COMPOSER_INLINE_ACTION_PILL_CLASS_NAME}
+          >
+            Get an API key
+          </a>
+        ) : null
       }
       onDismiss={props.onDismiss}
       {...(props.attachedToPrevious !== undefined

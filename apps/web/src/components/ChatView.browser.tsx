@@ -9018,6 +9018,32 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  // Aether enabled, with the status Settings reads as "Needs sign-in" (no key, or a rejected
+  // one) or "Connected".
+  const withAetherStatus =
+    (authStatus: "authenticated" | "unauthenticated") => (nextFixture: TestFixture) => {
+      const providers: ServerConfig["providers"] = [
+        ...nextFixture.serverConfig.providers,
+        {
+          provider: "aether",
+          status: authStatus === "authenticated" ? "ready" : "warning",
+          available: true,
+          authStatus,
+          checkedAt: NOW_ISO,
+        },
+      ];
+      nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+      nextFixture.providerStatusesSnapshot = providers;
+      const settings = createBrowserTestServerSettings(NOW_ISO);
+      nextFixture.serverSettings = {
+        ...settings,
+        providers: {
+          ...settings.providers,
+          aether: { ...settings.providers.aether, enabled: true },
+        },
+      };
+    };
+
   it("explains a cloud provider once on a new chat and hides it after dismissal", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -9025,6 +9051,7 @@ describe("ChatView transcript geometry (full app)", () => {
         targetMessageId: "msg-user-cloud-hint-test" as MessageId,
         targetText: "cloud hint test",
       }),
+      configureFixture: withAetherStatus("unauthenticated"),
     });
 
     try {
@@ -9052,6 +9079,40 @@ describe("ChatView transcript geometry (full app)", () => {
 
       await page.getByRole("button", { name: "Dismiss tip" }).click();
       await expect.element(hint).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the cloud provider tip without the API key link once Aether is connected", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-hint-connected-test" as MessageId,
+        targetText: "cloud hint connected test",
+      }),
+      configureFixture: withAetherStatus("authenticated"),
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForComposerEditor();
+
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
+      const hint = page.getByTestId("composer-cloud-provider-hint");
+      await expect.element(hint).toBeInTheDocument();
+      expect(hint.element().textContent).toContain(
+        "Aether runs this chat in the cloud. The repo must be on GitHub and imported as a project in Aether.",
+      );
+      expect(hint.element().querySelector("a")).toBeNull();
     } finally {
       await mounted.cleanup();
     }
