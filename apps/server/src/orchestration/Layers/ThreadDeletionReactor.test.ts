@@ -1,6 +1,13 @@
-import { EventId, ThreadId, type OrchestrationEvent } from "@synara/contracts";
-import { Cause, Effect, Exit } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { CommandId, EventId, ThreadId, type OrchestrationEvent } from "@synara/contracts";
+import { Cause, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   cleanupSucceededUnlessInterrupted,
@@ -8,11 +15,34 @@ import {
   detachThreadDevice,
   isThreadCurrentlyArchived,
   isThreadLifecycleCleanupEvent,
+  ThreadDeletionReactorLive,
 } from "./ThreadDeletionReactor";
-import { DeviceService } from "../../device/Services/DeviceService";
+import { ServerConfig, type ServerConfigShape } from "../../config";
+import { DeviceService, type DeviceServiceShape } from "../../device/Services/DeviceService";
 import { DeviceManager } from "../../device/DeviceManager";
 import { FakeDeviceBackend } from "../../device/FakeDeviceBackend";
-import { TerminalError } from "../../terminal/Services/Manager";
+import { GitCoreLive } from "../../git/Layers/GitCore";
+import { GitCore, type WorktreeOwner } from "../../git/Services/GitCore";
+import { ProfileStatsArchive, type ProfileStatsArchiveShape } from "../../profileStatsArchive";
+import {
+  ProviderService,
+  type ProviderServiceShape,
+} from "../../provider/Services/ProviderService";
+import { ServerLifecycleEvents, ServerLifecycleEventsLive } from "../../serverLifecycleEvents";
+import {
+  TerminalError,
+  TerminalManager,
+  type TerminalManagerShape,
+} from "../../terminal/Services/Manager";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../Services/OrchestrationEngine";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotQueryShape,
+} from "../Services/ProjectionSnapshotQuery";
+import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor";
 
 describe("terminal scope cleanup", () => {
   it("closes dock terminals even when the host terminal close fails", async () => {
@@ -144,5 +174,196 @@ describe("detachThreadDevice", () => {
 
     expect((await manager.getThreadState(threadId)).attachedDeviceUdid).toBeNull();
     expect(backend.hasStream("FAKE-0001")).toBe(false);
+  });
+});
+
+describe("a deleted thread's worktree", () => {
+  const THREAD_ID = ThreadId.makeUnsafe("thread-delete-worktree");
+  const DELETED_AT = "2026-09-26T12:00:00.000Z";
+  const aetherOwner: WorktreeOwner = { threadId: THREAD_ID, provider: "aether" };
+  const cleanups: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).toReversed()) await cleanup();
+  });
+
+  const git = (cwd: string, args: ReadonlyArray<string>) =>
+    execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
+
+  /**
+   * A repository with one linked worktree under the managed worktrees directory, dirty with an
+   * untracked file, and the deletion reactor running against it. Only git is real.
+   */
+  const makeHarness = async (input: {
+    readonly claimedBy?: WorktreeOwner;
+    /** Whether stopping the thread's session releases its claim, as Aether's release does. */
+    readonly stopReleasesClaim: boolean;
+  }) => {
+    const base = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "synara-thread-delete-")));
+    cleanups.push(() => fs.rm(base, { recursive: true, force: true }));
+    const repo = path.join(base, "repo");
+    const worktreesDir = path.join(base, "worktrees");
+    const worktreePath = path.join(worktreesDir, "acme", "synara");
+    await fs.mkdir(repo);
+    git(repo, ["init", "--initial-branch=main"]);
+    git(repo, ["config", "user.email", "test@test.com"]);
+    git(repo, ["config", "user.name", "Test"]);
+    await fs.writeFile(path.join(repo, "README.md"), "# test\n");
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-m", "initial commit"]);
+    git(repo, ["worktree", "add", "-b", "feature/thread", worktreePath]);
+    await fs.writeFile(path.join(worktreePath, "mirrored.txt"), "cloud\n");
+
+    const domainEvents = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
+    const stoppedSessions: ThreadId[] = [];
+    let releaseClaim: Effect.Effect<void> = Effect.void;
+    const layer = ThreadDeletionReactorLive.pipe(
+      Layer.provideMerge(ServerLifecycleEventsLive),
+      Layer.provideMerge(
+        GitCoreLive.pipe(
+          Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "synara-delete-git-" })),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ServerConfig, {
+            homeDir: base,
+            worktreesDir,
+          } as unknown as ServerConfigShape),
+          Layer.succeed(OrchestrationEngineService, {
+            streamDomainEvents: Stream.fromPubSub(domainEvents),
+            refreshCommandReadModel: () => Effect.void,
+          } as unknown as OrchestrationEngineShape),
+          Layer.succeed(ProfileStatsArchive, {
+            hasThreadPurgeFence: () => Effect.succeed(false),
+            purgeThreadWithStatsSnapshot: () => Effect.succeed(true),
+            purgeSoftDeletedManualThreads: () => Effect.succeed(0),
+          } as unknown as ProfileStatsArchiveShape),
+          Layer.succeed(ProviderService, {
+            stopSession: ({ threadId }: { threadId: ThreadId }) =>
+              Effect.sync(() => stoppedSessions.push(threadId)).pipe(
+                Effect.andThen(input.stopReleasesClaim ? releaseClaim : Effect.void),
+              ),
+          } as unknown as ProviderServiceShape),
+          Layer.succeed(TerminalManager, {
+            close: () => Effect.void,
+            closeSessionsOpenedAtOrBefore: () => Effect.void,
+          } as unknown as TerminalManagerShape),
+          Layer.succeed(ProjectionSnapshotQuery, {
+            listManagedWorktreeThreads: () =>
+              Effect.succeed([
+                {
+                  id: THREAD_ID,
+                  archivedAt: null,
+                  deletedAt: DELETED_AT,
+                  worktreePath,
+                  associatedWorktreePath: worktreePath,
+                },
+              ]),
+          } as unknown as ProjectionSnapshotQueryShape),
+          Layer.succeed(DeviceService, {
+            supported: false,
+            manager: { handleThreadRemoved: async () => undefined },
+          } as unknown as DeviceServiceShape),
+        ),
+      ),
+    );
+    const runtime = ManagedRuntime.make(layer);
+    cleanups.push(() => runtime.dispose());
+
+    if (input.claimedBy) {
+      const claimScope = await Effect.runPromise(Scope.make());
+      const gitCore = await runtime.runPromise(Effect.service(GitCore));
+      await runtime.runPromise(
+        Scope.provide(gitCore.claimWorktree(worktreePath, input.claimedBy), claimScope),
+      );
+      releaseClaim = Scope.close(claimScope, Exit.void);
+      cleanups.push(() => Effect.runPromise(Scope.close(claimScope, Exit.void)));
+    }
+
+    const reactor = await runtime.runPromise(Effect.service(ThreadDeletionReactor));
+    const reactorScope = await Effect.runPromise(Scope.make("sequential"));
+    cleanups.push(() => Effect.runPromise(Scope.close(reactorScope, Exit.void)));
+    await Effect.runPromise(reactor.start().pipe(Scope.provide(reactorScope)));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const deleteThread = async (removeWorktree: boolean) => {
+      await Effect.runPromise(
+        PubSub.publish(domainEvents, {
+          sequence: 1,
+          eventId: EventId.makeUnsafe("event-thread-deleted"),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          type: "thread.deleted",
+          occurredAt: DELETED_AT,
+          commandId: CommandId.makeUnsafe("cmd-thread-delete"),
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            threadId: THREAD_ID,
+            deletedAt: DELETED_AT,
+            ...(removeWorktree
+              ? { removeWorktree: { workspaceRoot: repo, path: worktreePath } }
+              : {}),
+          },
+        }),
+      );
+      await runtime.runPromise(reactor.drain);
+    };
+    const maintenanceEvents = async () =>
+      (
+        await runtime.runPromise(
+          Effect.service(ServerLifecycleEvents).pipe(Effect.flatMap((events) => events.snapshot)),
+        )
+      ).events.filter((event) => event.type === "maintenance");
+
+    return { worktreePath, stoppedSessions, deleteThread, maintenanceEvents };
+  };
+
+  it("removes the worktree the user chose to delete, dirty and claimed, once the stop releases it", async () => {
+    const harness = await makeHarness({ claimedBy: aetherOwner, stopReleasesClaim: true });
+
+    await harness.deleteThread(true);
+
+    expect(harness.stoppedSessions).toEqual([THREAD_ID]);
+    expect(existsSync(harness.worktreePath)).toBe(false);
+    expect(await harness.maintenanceEvents()).toEqual([]);
+  });
+
+  it("keeps a dirty, claimed worktree the user did not choose to delete", async () => {
+    const harness = await makeHarness({ claimedBy: aetherOwner, stopReleasesClaim: true });
+
+    await harness.deleteThread(false);
+
+    expect(harness.stoppedSessions).toEqual([THREAD_ID]);
+    expect(existsSync(path.join(harness.worktreePath, "mirrored.txt"))).toBe(true);
+  });
+
+  it("keeps an unclaimed local thread's dirty worktree the user did not choose to delete", async () => {
+    const harness = await makeHarness({ stopReleasesClaim: false });
+
+    await harness.deleteThread(false);
+
+    expect(existsSync(path.join(harness.worktreePath, "mirrored.txt"))).toBe(true);
+  });
+
+  it("reports a failed removal to connected clients and keeps the worktree", async () => {
+    const harness = await makeHarness({ claimedBy: aetherOwner, stopReleasesClaim: false });
+
+    await harness.deleteThread(true);
+
+    expect(existsSync(path.join(harness.worktreePath, "mirrored.txt"))).toBe(true);
+    expect(await harness.maintenanceEvents()).toEqual([
+      expect.objectContaining({
+        type: "maintenance",
+        payload: expect.objectContaining({
+          task: "thread-worktree-removal",
+          state: "failed",
+          error: expect.stringContaining(`Could not remove ${harness.worktreePath}.`),
+        }),
+      }),
+    ]);
   });
 });

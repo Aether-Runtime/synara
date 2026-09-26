@@ -23,10 +23,6 @@ vi.mock("react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react")>()),
   useState: <T>(initial: T) => [initial, vi.fn()] as const,
 }));
-vi.mock("@tanstack/react-query", () => ({
-  useMutation: () => ({ mutateAsync: vi.fn() }),
-  useQueryClient: () => ({}),
-}));
 vi.mock("~/appSettings", () => ({
   useAppSettings: () => ({
     settings: { confirmThreadArchive: false, confirmThreadDelete: false },
@@ -39,7 +35,6 @@ vi.mock("~/hooks/useCopyToClipboard", () => ({
 vi.mock("~/lib/activeThreadDelete", () => ({
   deleteActiveThreadFromClient: harness.deleteActiveThread,
 }));
-vi.mock("~/lib/gitReactQuery", () => ({ gitRemoveWorktreeMutationOptions: () => ({}) }));
 vi.mock("~/lib/threadArchive", () => ({ archiveThreadFromClient: harness.archiveThread }));
 vi.mock("~/lib/threadRename", () => ({ dispatchThreadRename: vi.fn() }));
 vi.mock("../../composerDraftStore", () => ({

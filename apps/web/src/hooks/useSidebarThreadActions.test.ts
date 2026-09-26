@@ -111,12 +111,7 @@ vi.mock("react", () => ({
   useState: reactHarness.useState,
 }));
 
-vi.mock("@tanstack/react-query", () => ({
-  useMutation: () => ({ mutateAsync: vi.fn() }),
-  useQueryClient: () => ({}),
-}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => harness.navigate }));
-vi.mock("../lib/gitReactQuery", () => ({ gitRemoveWorktreeMutationOptions: () => ({}) }));
 vi.mock("../composerDraftStore", () => ({
   useComposerDraftStore: (selector: (state: unknown) => unknown) =>
     selector({

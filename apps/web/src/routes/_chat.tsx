@@ -166,6 +166,34 @@ function ThreadRetentionMaintenanceToast() {
   return null;
 }
 
+// The server removes the worktree a user chose to delete with a thread once the thread's session
+// has stopped, after the delete itself was accepted. A reconnect replays the latest maintenance
+// event, so each failure is shown once.
+function DeletedThreadWorktreeRemovalToast() {
+  const shownAtRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return onServerMaintenanceUpdated((event) => {
+      if (event.type !== "maintenance" || event.payload.task !== "thread-worktree-removal") {
+        return;
+      }
+      const { at, error } = event.payload;
+      if (at === shownAtRef.current || Date.now() - Date.parse(at) > MAINTENANCE_EVENT_STALE_MS) {
+        return;
+      }
+      shownAtRef.current = at;
+      toastManager.add({
+        type: "error",
+        title: "Thread deleted, but worktree removal failed",
+        description: error,
+        data: { allowCrossThreadVisibility: true },
+      });
+    });
+  }, []);
+
+  return null;
+}
+
 function resolveBrowserNavigationShortcut(
   event: KeyboardEvent,
   platform: string,
@@ -597,6 +625,7 @@ function ChatRouteLayout() {
       data-sidebar-side="left"
     >
       <ThreadRetentionMaintenanceToast />
+      <DeletedThreadWorktreeRemovalToast />
       <ChatRouteGlobalShortcuts />
       {sidebarElement}
       {mainContentShell}

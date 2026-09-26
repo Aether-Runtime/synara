@@ -9,6 +9,7 @@ import { GitCore } from "../../git/Services/GitCore";
 import { pruneProjectedArchivedManagedWorktrees } from "../../managedWorktrees";
 import { ProfileStatsArchive } from "../../profileStatsArchive";
 import { ProviderService } from "../../provider/Services/ProviderService";
+import { ServerLifecycleEvents } from "../../serverLifecycleEvents";
 import { TerminalManager, type TerminalManagerShape } from "../../terminal/Services/Manager";
 import { THREAD_RETENTION_COMMAND_ID_PREFIX } from "../../threadRetention";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine";
@@ -111,6 +112,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const serverConfig = yield* ServerConfig;
   const git = yield* GitCore;
+  const lifecycleEvents = yield* ServerLifecycleEvents;
 
   const pruneManagedWorktreesAfterLifecycle = (context: {
     readonly eventType: ThreadDeletedEvent["type"];
@@ -130,6 +132,48 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+
+  // The user chose to delete this worktree with the thread, so a dirty one goes too. It runs
+  // after the session stop, which releases the claim of a provider that owns its worktree, such
+  // as Aether, and whether or not that stop succeeded: a stop can fail after releasing it.
+  const removeWorktreeUserChoseToDelete = (
+    threadId: ThreadId,
+    worktree: NonNullable<ThreadDeletedEvent["payload"]["removeWorktree"]>,
+  ) =>
+    git
+      .withMutation(
+        worktree.workspaceRoot,
+        git.removeWorktree({
+          cwd: worktree.workspaceRoot,
+          path: worktree.path,
+          force: true,
+          reclaimTemporaryBranch: true,
+        }),
+      )
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logError(
+            "thread deletion could not remove the worktree the user chose to delete",
+            {
+              threadId,
+              worktreePath: worktree.path,
+              error: error.message,
+            },
+          ).pipe(
+            Effect.andThen(
+              lifecycleEvents.publish({
+                type: "maintenance",
+                payload: {
+                  task: "thread-worktree-removal",
+                  state: "failed",
+                  at: new Date().toISOString(),
+                  error: `Could not remove ${worktree.path}. ${error.message}`,
+                },
+              }),
+            ),
+          ),
+        ),
+      );
 
   const refreshCommandReadModelAfterPurge = (threadId: string) =>
     orchestrationEngine.refreshCommandReadModel().pipe(
@@ -269,6 +313,9 @@ const make = Effect.gen(function* () {
     const { threadId } = event.payload;
     yield* detachThreadDevice(threadId);
     const cleanupSucceeded = yield* cleanupThreadBeforePurge(threadId);
+    if (event.payload.removeWorktree !== undefined) {
+      yield* removeWorktreeUserChoseToDelete(threadId, event.payload.removeWorktree);
+    }
     // Reclaim while the soft-deleted projection row still names the worktree.
     // Dirty managed worktrees are snapped and left with a warning (no force).
     yield* pruneManagedWorktreesAfterLifecycle({

@@ -536,3 +536,53 @@ describe("decider user input answers", () => {
     });
   });
 });
+
+describe("decider thread deletion", () => {
+  it("records the worktree the user chose to delete with the thread", async () => {
+    const now = new Date().toISOString();
+    const readModel = await createWorktreeThreadReadModel(now);
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.delete",
+          commandId: CommandId.makeUnsafe("cmd-thread-delete-worktree"),
+          threadId: THREAD_ID,
+          removeWorktreePath: WORKTREE_PATH,
+        },
+        readModel,
+      }),
+    );
+
+    const event = Array.isArray(result) ? result[0] : result;
+    expect(event?.type).toBe("thread.deleted");
+    expect(event?.payload).toMatchObject({
+      threadId: THREAD_ID,
+      removeWorktree: { workspaceRoot: "/tmp/project", path: WORKTREE_PATH },
+    });
+  });
+
+  it("refuses to delete a worktree the thread does not use", async () => {
+    const now = new Date().toISOString();
+    const readModel = await createWorktreeThreadReadModel(now);
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.delete",
+            commandId: CommandId.makeUnsafe("cmd-thread-delete-other-worktree"),
+            threadId: THREAD_ID,
+            removeWorktreePath: "/tmp/worktrees/someone-else",
+          },
+          readModel,
+        }),
+      ),
+    );
+
+    expect(error).toMatchObject({
+      _tag: "OrchestrationCommandInvariantError",
+      commandType: "thread.delete",
+    });
+  });
+});

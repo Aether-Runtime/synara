@@ -501,15 +501,24 @@ export const ServerLifecycleStreamEvent = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("maintenance"),
-    payload: Schema.Struct({
-      task: Schema.Literal("thread-retention"),
-      state: Schema.Literals(["started", "progress", "completed", "failed"]),
-      at: IsoDateTime,
-      // Legacy wire name retained so older clients can read retention progress.
-      deletedCount: Schema.optional(Schema.Number),
-      totalCount: Schema.optional(Schema.Number),
-      error: Schema.optional(Schema.String),
-    }),
+    payload: Schema.Union([
+      Schema.Struct({
+        task: Schema.Literal("thread-retention"),
+        state: Schema.Literals(["started", "progress", "completed", "failed"]),
+        at: IsoDateTime,
+        // Legacy wire name retained so older clients can read retention progress.
+        deletedCount: Schema.optional(Schema.Number),
+        totalCount: Schema.optional(Schema.Number),
+        error: Schema.optional(Schema.String),
+      }),
+      // A deleted thread's worktree the user chose to delete could not be removed.
+      Schema.Struct({
+        task: Schema.Literal("thread-worktree-removal"),
+        state: Schema.Literal("failed"),
+        at: IsoDateTime,
+        error: Schema.String,
+      }),
+    ]),
   }),
 ]);
 export type ServerLifecycleStreamEvent = typeof ServerLifecycleStreamEvent.Type;

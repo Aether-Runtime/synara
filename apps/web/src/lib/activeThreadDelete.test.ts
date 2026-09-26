@@ -5,6 +5,8 @@
 import { ProjectId, ThreadId } from "@synara/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { WsTransportRequestInterruptedError } from "../wsTransport";
+
 const harness = vi.hoisted(() => ({
   events: [] as string[],
   dispatchCommand: vi.fn(),
@@ -20,7 +22,6 @@ const harness = vi.hoisted(() => ({
     session: { status: string } | null;
   }>,
   orphanResolver: vi.fn(),
-  toast: vi.fn(),
 }));
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-delete");
@@ -64,10 +65,6 @@ vi.mock("./deletedThreadClientReconciliation", () => ({
   reconcileDeletedThreadFromClient: harness.reconcile,
 }));
 
-vi.mock("../components/ui/toast", () => ({
-  toastManager: { add: harness.toast },
-}));
-
 import { deleteActiveThreadFromClient } from "./activeThreadDelete";
 
 beforeEach(() => {
@@ -85,7 +82,6 @@ beforeEach(() => {
   harness.reconcile.mockReset().mockImplementation(() => {
     harness.events.push("reconcile");
   });
-  harness.toast.mockReset();
 });
 
 describe("deleteActiveThreadFromClient", () => {
@@ -101,7 +97,6 @@ describe("deleteActiveThreadFromClient", () => {
         return "prepared";
       },
       onDeleted,
-      removeWorktree: vi.fn(),
     });
 
     expect(harness.events).toEqual([
@@ -114,6 +109,7 @@ describe("deleteActiveThreadFromClient", () => {
     ]);
     expect(harness.disposeThread.mock.calls).toEqual([[THREAD_ID], [`dock-terminal:${THREAD_ID}`]]);
     expect(onDeleted).toHaveBeenCalledWith({ thread: THREAD, prepared: "prepared" });
+    expect(harness.dispatchCommand.mock.calls[0]![0]).not.toHaveProperty("removeWorktreePath");
   });
 
   it("leaves client state untouched when the server rejects deletion", async () => {
@@ -127,7 +123,6 @@ describe("deleteActiveThreadFromClient", () => {
       deleteActiveThreadFromClient({
         threadId: THREAD_ID,
         onDeleted,
-        removeWorktree: vi.fn(),
       }),
     ).rejects.toThrow("delete rejected");
 
@@ -135,81 +130,83 @@ describe("deleteActiveThreadFromClient", () => {
     expect(onDeleted).not.toHaveBeenCalled();
   });
 
-  it("reports worktree cleanup failure without rolling back the accepted delete", async () => {
-    harness.orphanedWorktreePath = "/repo-worktree";
-    harness.confirm.mockResolvedValue(true);
-    const onDeleted = vi.fn();
-    const removeWorktree = vi.fn().mockRejectedValue(new Error("busy"));
-
-    await deleteActiveThreadFromClient({
-      threadId: THREAD_ID,
-      onDeleted,
-      removeWorktree,
-    });
-
-    expect(onDeleted).toHaveBeenCalledOnce();
-    expect(removeWorktree).toHaveBeenCalledWith({
-      cwd: "/repo",
-      path: "/repo-worktree",
-      force: true,
-    });
-    expect(harness.toast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "error",
-        title: "Thread deleted, but worktree removal failed",
-        description: "Could not remove /repo-worktree. busy",
-      }),
-    );
-  });
-
-  it("names the full worktree path in the prompt and removes it after the delete", async () => {
+  it("names the full worktree path in the prompt and hands it to the server with the delete", async () => {
     const worktreePath = "/Users/me/.synara/worktrees/acme-checkout/synara";
     harness.orphanedWorktreePath = worktreePath;
     harness.confirm.mockImplementation(async () => {
       harness.events.push("confirm");
       return true;
     });
-    const removeWorktree = vi.fn(async () => {
-      harness.events.push("removeWorktree");
-    });
 
-    await deleteActiveThreadFromClient({ threadId: THREAD_ID, onDeleted: vi.fn(), removeWorktree });
+    await deleteActiveThreadFromClient({ threadId: THREAD_ID, onDeleted: vi.fn() });
 
     expect(harness.confirm).toHaveBeenCalledWith(
       `This thread is the only one linked to this worktree:\n${worktreePath}\n\nDelete the worktree too?`,
     );
-    // The server releases a claim the deleted thread still holds before it removes the worktree.
     expect(harness.events).toEqual([
       "confirm",
       "thread.delete",
       "terminal.dispose",
       "terminal.dispose",
       "reconcile",
-      "removeWorktree",
     ]);
-    expect(removeWorktree).toHaveBeenCalledWith({ cwd: "/repo", path: worktreePath, force: true });
+    expect(harness.dispatchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.delete",
+        threadId: THREAD_ID,
+        removeWorktreePath: worktreePath,
+      }),
+    );
+  });
+
+  it("keeps the confirmed worktree removal when the reply to an accepted delete is lost", async () => {
+    harness.orphanedWorktreePath = "/repo-worktree";
+    harness.confirm.mockResolvedValue(true);
+    const acceptedCommands: unknown[] = [];
+    // The server accepted the delete; a transport reconnect then interrupted the request.
+    harness.dispatchCommand.mockImplementation(async (command: unknown) => {
+      acceptedCommands.push(command);
+      throw new WsTransportRequestInterruptedError({
+        message:
+          "WebSocket RPC orchestration.dispatchCommand was interrupted by a transport reconnect.",
+        code: "WS_REQUEST_RECONNECTED",
+        method: "orchestration.dispatchCommand",
+        retryable: true,
+      });
+    });
+
+    await expect(
+      deleteActiveThreadFromClient({ threadId: THREAD_ID, onDeleted: vi.fn() }),
+    ).rejects.toThrow("interrupted by a transport reconnect");
+
+    // The removal is part of the durable delete, so the server removes the worktree anyway.
+    expect(acceptedCommands).toEqual([
+      expect.objectContaining({
+        type: "thread.delete",
+        threadId: THREAD_ID,
+        removeWorktreePath: "/repo-worktree",
+      }),
+    ]);
   });
 
   it("excludes every planned batch deletion and skips worktree prompting when requested", async () => {
     const otherThreadId = ThreadId.makeUnsafe("thread-delete-other");
     harness.threads = [THREAD, { id: otherThreadId, projectId: PROJECT_ID, session: null }];
     harness.orphanedWorktreePath = "/repo-worktree";
-    const removeWorktree = vi.fn();
 
     await deleteActiveThreadFromClient({
       threadId: THREAD_ID,
       deletedThreadIds: new Set([THREAD_ID, otherThreadId]),
       worktreeCleanupMode: "skip",
       onDeleted: vi.fn(),
-      removeWorktree,
     });
 
     expect(harness.orphanResolver).toHaveBeenCalledWith([THREAD], THREAD_ID);
     expect(harness.confirm).not.toHaveBeenCalled();
-    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(harness.dispatchCommand.mock.calls[0]![0]).not.toHaveProperty("removeWorktreePath");
   });
 
-  it("deletes a side chat's descendants first and cleans each accepted thread before its worktree", async () => {
+  it("deletes a side chat's descendants first and removes the worktree with the last delete", async () => {
     const child = { ...THREAD, id: ThreadId.makeUnsafe("child"), parentThreadId: THREAD_ID };
     const grandchild = {
       ...THREAD,
@@ -221,19 +218,20 @@ describe("deleteActiveThreadFromClient", () => {
     harness.orphanedWorktreePath = "/repo-worktree";
     harness.confirm.mockResolvedValue(true);
     const onDeleted = vi.fn();
-    const removeWorktree = vi.fn();
 
     await deleteActiveThreadFromClient({
       threadId: THREAD_ID,
       includeSubagentDescendants: true,
       onDeleted,
-      removeWorktree,
     });
 
     const deletionOrder = [grandchild.id, child.id, THREAD_ID];
     expect(harness.dispatchCommand.mock.calls.map(([command]) => command.threadId)).toEqual(
       deletionOrder,
     );
+    expect(
+      harness.dispatchCommand.mock.calls.map(([command]) => command.removeWorktreePath),
+    ).toEqual([undefined, undefined, "/repo-worktree"]);
     expect(harness.reconcile.mock.calls.map(([input]) => input.threadId)).toEqual(deletionOrder);
     expect(onDeleted.mock.calls.map(([input]) => input.thread.id)).toEqual(deletionOrder);
     expect(harness.disposeThread.mock.calls).toEqual(
@@ -241,10 +239,6 @@ describe("deleteActiveThreadFromClient", () => {
     );
     expect(harness.orphanResolver).toHaveBeenCalledWith([THREAD, unrelated], THREAD_ID);
     expect(harness.confirm).toHaveBeenCalledOnce();
-    expect(removeWorktree).toHaveBeenCalledOnce();
-    expect(removeWorktree.mock.invocationCallOrder[0]).toBeGreaterThan(
-      onDeleted.mock.invocationCallOrder[2]!,
-    );
   });
 
   it("keeps the parent reachable and its worktree intact when a descendant delete fails", async () => {
@@ -261,14 +255,12 @@ describe("deleteActiveThreadFromClient", () => {
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error("busy"));
     const onDeleted = vi.fn();
-    const removeWorktree = vi.fn();
 
     await expect(
       deleteActiveThreadFromClient({
         threadId: THREAD_ID,
         includeSubagentDescendants: true,
         onDeleted,
-        removeWorktree,
       }),
     ).rejects.toThrow("busy");
 
@@ -283,6 +275,5 @@ describe("deleteActiveThreadFromClient", () => {
       [grandchild.id],
       [`dock-terminal:${grandchild.id}`],
     ]);
-    expect(removeWorktree).not.toHaveBeenCalled();
   });
 });
