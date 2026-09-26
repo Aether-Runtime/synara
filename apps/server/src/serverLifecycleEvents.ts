@@ -16,22 +16,15 @@ export interface ServerLifecycleReadyPayload {
   readonly at: string;
 }
 
-export type ServerLifecycleMaintenancePayload =
-  | {
-      readonly task: "thread-retention";
-      readonly state: "started" | "progress" | "completed" | "failed";
-      readonly at: string;
-      /** Legacy wire name retained so maintenance events remain backward-compatible. */
-      readonly deletedCount?: number;
-      readonly totalCount?: number;
-      readonly error?: string;
-    }
-  | {
-      readonly task: "thread-worktree-removal";
-      readonly state: "failed";
-      readonly at: string;
-      readonly error: string;
-    };
+export interface ServerLifecycleMaintenancePayload {
+  readonly task: "thread-retention";
+  readonly state: "started" | "progress" | "completed" | "failed";
+  readonly at: string;
+  /** Legacy wire name retained so maintenance events remain backward-compatible. */
+  readonly deletedCount?: number;
+  readonly totalCount?: number;
+  readonly error?: string;
+}
 
 export type ServerLifecycleEvent =
   | {

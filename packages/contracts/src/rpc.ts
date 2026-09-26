@@ -248,6 +248,7 @@ import {
   ServerListProviderUsageInput,
   ServerListProviderUsageResult,
   ServerLifecycleStreamEvent,
+  DeletedThreadWorktreeRemovalFailure,
   ServerGetSettingsResult,
   ServerListLocalServersResult,
   ServerListWorktreesResult,
@@ -1400,6 +1401,16 @@ export const WsSubscribeServerSettingsRpc = Rpc.make(WS_METHODS.subscribeServerS
   stream: true,
 });
 
+export const WsSubscribeDeletedThreadWorktreeRemovalFailuresRpc = Rpc.make(
+  WS_METHODS.subscribeDeletedThreadWorktreeRemovalFailures,
+  {
+    payload: Schema.Struct({}),
+    success: DeletedThreadWorktreeRemovalFailure,
+    error: WsRpcError,
+    stream: true,
+  },
+);
+
 export const WsProviderGetComposerCapabilitiesRpc = Rpc.make(
   WS_METHODS.providerGetComposerCapabilities,
   {
@@ -1638,6 +1649,7 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsSubscribeServerConfigRpc,
   WsSubscribeServerProviderStatusesRpc,
   WsSubscribeServerSettingsRpc,
+  WsSubscribeDeletedThreadWorktreeRemovalFailuresRpc,
   WsProviderGetComposerCapabilitiesRpc,
   WsProviderCompactThreadRpc,
   WsProviderListCommandsRpc,

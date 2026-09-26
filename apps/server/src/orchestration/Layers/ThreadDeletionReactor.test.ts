@@ -6,7 +6,7 @@ import * as path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CommandId, EventId, ThreadId, type OrchestrationEvent } from "@synara/contracts";
-import { Cause, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
+import { Cause, Effect, Exit, Layer, ManagedRuntime, Option, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -18,17 +18,24 @@ import {
   ThreadDeletionReactorLive,
 } from "./ThreadDeletionReactor";
 import { ServerConfig, type ServerConfigShape } from "../../config";
+import {
+  DeletedThreadWorktreeRemovalFailures,
+  DeletedThreadWorktreeRemovalFailuresLive,
+} from "../../deletedThreadWorktreeRemovalFailures";
 import { DeviceService, type DeviceServiceShape } from "../../device/Services/DeviceService";
 import { DeviceManager } from "../../device/DeviceManager";
 import { FakeDeviceBackend } from "../../device/FakeDeviceBackend";
 import { GitCoreLive } from "../../git/Layers/GitCore";
 import { GitCore, type WorktreeOwner } from "../../git/Services/GitCore";
+import {
+  GitStatusBroadcaster,
+  type GitStatusBroadcasterShape,
+} from "../../git/Services/GitStatusBroadcaster";
 import { ProfileStatsArchive, type ProfileStatsArchiveShape } from "../../profileStatsArchive";
 import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService";
-import { ServerLifecycleEvents, ServerLifecycleEventsLive } from "../../serverLifecycleEvents";
 import {
   TerminalError,
   TerminalManager,
@@ -216,9 +223,10 @@ describe("a deleted thread's worktree", () => {
 
     const domainEvents = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
     const stoppedSessions: ThreadId[] = [];
+    const refreshedStatuses: string[] = [];
     let releaseClaim: Effect.Effect<void> = Effect.void;
     const layer = ThreadDeletionReactorLive.pipe(
-      Layer.provideMerge(ServerLifecycleEventsLive),
+      Layer.provideMerge(DeletedThreadWorktreeRemovalFailuresLive),
       Layer.provideMerge(
         GitCoreLive.pipe(
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "synara-delete-git-" })),
@@ -246,6 +254,10 @@ describe("a deleted thread's worktree", () => {
                 Effect.andThen(input.stopReleasesClaim ? releaseClaim : Effect.void),
               ),
           } as unknown as ProviderServiceShape),
+          Layer.succeed(GitStatusBroadcaster, {
+            refreshStatus: (cwd: string) =>
+              Effect.sync(() => refreshedStatuses.push(cwd)).pipe(Effect.as({})),
+          } as unknown as GitStatusBroadcasterShape),
           Layer.succeed(TerminalManager, {
             close: () => Effect.void,
             closeSessionsOpenedAtOrBefore: () => Effect.void,
@@ -312,14 +324,22 @@ describe("a deleted thread's worktree", () => {
       );
       await runtime.runPromise(reactor.drain);
     };
-    const maintenanceEvents = async () =>
-      (
-        await runtime.runPromise(
-          Effect.service(ServerLifecycleEvents).pipe(Effect.flatMap((events) => events.snapshot)),
-        )
-      ).events.filter((event) => event.type === "maintenance");
+    // A new subscriber, like a client that reconnects after the failure, receives it first.
+    const firstReportedFailure = () =>
+      runtime.runPromise(
+        Effect.service(DeletedThreadWorktreeRemovalFailures).pipe(
+          Effect.flatMap((failures) => Stream.runHead(failures.stream)),
+        ),
+      );
 
-    return { worktreePath, stoppedSessions, deleteThread, maintenanceEvents };
+    return {
+      repo,
+      worktreePath,
+      stoppedSessions,
+      refreshedStatuses,
+      deleteThread,
+      firstReportedFailure,
+    };
   };
 
   it("removes the worktree the user chose to delete, dirty and claimed, once the stop releases it", async () => {
@@ -329,7 +349,7 @@ describe("a deleted thread's worktree", () => {
 
     expect(harness.stoppedSessions).toEqual([THREAD_ID]);
     expect(existsSync(harness.worktreePath)).toBe(false);
-    expect(await harness.maintenanceEvents()).toEqual([]);
+    expect(harness.refreshedStatuses).toEqual([harness.repo]);
   });
 
   it("keeps a dirty, claimed worktree the user did not choose to delete", async () => {
@@ -346,6 +366,7 @@ describe("a deleted thread's worktree", () => {
 
     await harness.deleteThread(false);
 
+    expect(harness.stoppedSessions).toEqual([THREAD_ID]);
     expect(existsSync(path.join(harness.worktreePath, "mirrored.txt"))).toBe(true);
   });
 
@@ -355,15 +376,13 @@ describe("a deleted thread's worktree", () => {
     await harness.deleteThread(true);
 
     expect(existsSync(path.join(harness.worktreePath, "mirrored.txt"))).toBe(true);
-    expect(await harness.maintenanceEvents()).toEqual([
-      expect.objectContaining({
-        type: "maintenance",
-        payload: expect.objectContaining({
-          task: "thread-worktree-removal",
-          state: "failed",
-          error: expect.stringContaining(`Could not remove ${harness.worktreePath}.`),
-        }),
+    expect(harness.refreshedStatuses).toEqual([]);
+    expect(await harness.firstReportedFailure()).toEqual(
+      Option.some({
+        worktreePath: harness.worktreePath,
+        error: expect.stringContaining("is managed by the aether session"),
+        at: expect.any(String),
       }),
-    ]);
+    );
   });
 });

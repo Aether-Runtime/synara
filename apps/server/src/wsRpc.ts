@@ -135,6 +135,7 @@ import { redactSensitiveProcessArgs } from "./processArgumentRedaction";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment";
 import { ExternalMcpService } from "./externalMcp/Services/ExternalMcpService";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents";
+import { DeletedThreadWorktreeRemovalFailures } from "./deletedThreadWorktreeRemovalFailures";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup";
 import { ServerSettingsService } from "./serverSettings";
 import { isLoopbackHost } from "./startupAccess";
@@ -486,6 +487,7 @@ const makeWsRpcHandlersLayer = () =>
       const providerHealth = yield* ProviderHealth;
       const providerService = yield* ProviderService;
       const lifecycleEvents = yield* ServerLifecycleEvents;
+      const worktreeRemovalFailures = yield* DeletedThreadWorktreeRemovalFailures;
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
       const serverSettings = yield* ServerSettingsService;
@@ -2107,6 +2109,12 @@ const makeWsRpcHandlersLayer = () =>
             ).pipe(
               Stream.mapError((cause) => toWsRpcError(cause, "Server settings stream failed")),
             ),
+          ),
+        [WS_METHODS.subscribeDeletedThreadWorktreeRemovalFailures]: (_, { clientId }) =>
+          streamAdmission.guard(
+            clientId,
+            { key: "server.deleted-thread-worktree-removal-failures" },
+            worktreeRemovalFailures.stream,
           ),
 
         [WS_METHODS.providerGetComposerCapabilities]: (input) =>

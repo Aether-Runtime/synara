@@ -501,27 +501,27 @@ export const ServerLifecycleStreamEvent = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("maintenance"),
-    payload: Schema.Union([
-      Schema.Struct({
-        task: Schema.Literal("thread-retention"),
-        state: Schema.Literals(["started", "progress", "completed", "failed"]),
-        at: IsoDateTime,
-        // Legacy wire name retained so older clients can read retention progress.
-        deletedCount: Schema.optional(Schema.Number),
-        totalCount: Schema.optional(Schema.Number),
-        error: Schema.optional(Schema.String),
-      }),
-      // A deleted thread's worktree the user chose to delete could not be removed.
-      Schema.Struct({
-        task: Schema.Literal("thread-worktree-removal"),
-        state: Schema.Literal("failed"),
-        at: IsoDateTime,
-        error: Schema.String,
-      }),
-    ]),
+    payload: Schema.Struct({
+      task: Schema.Literal("thread-retention"),
+      state: Schema.Literals(["started", "progress", "completed", "failed"]),
+      at: IsoDateTime,
+      // Legacy wire name retained so older clients can read retention progress.
+      deletedCount: Schema.optional(Schema.Number),
+      totalCount: Schema.optional(Schema.Number),
+      error: Schema.optional(Schema.String),
+    }),
   }),
 ]);
 export type ServerLifecycleStreamEvent = typeof ServerLifecycleStreamEvent.Type;
+
+// A worktree the user chose to delete with its thread that the server could not remove. It has
+// its own subscription so that clients which predate it never receive it.
+export const DeletedThreadWorktreeRemovalFailure = Schema.Struct({
+  worktreePath: TrimmedNonEmptyString,
+  error: Schema.String,
+  at: IsoDateTime,
+});
+export type DeletedThreadWorktreeRemovalFailure = typeof DeletedThreadWorktreeRemovalFailure.Type;
 
 export const ServerConfigStreamEvent = Schema.Union([
   Schema.Struct({

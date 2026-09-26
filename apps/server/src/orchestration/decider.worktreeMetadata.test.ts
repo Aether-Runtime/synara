@@ -562,6 +562,32 @@ describe("decider thread deletion", () => {
     });
   });
 
+  it("refuses to delete a worktree another thread still uses", async () => {
+    const now = new Date().toISOString();
+    const readModel = await createWorktreeThreadReadModel(now);
+    const sharingThread = { ...readModel.threads[0]!, id: FORK_THREAD_ID };
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.delete",
+            commandId: CommandId.makeUnsafe("cmd-thread-delete-shared-worktree"),
+            threadId: THREAD_ID,
+            removeWorktreePath: WORKTREE_PATH,
+          },
+          readModel: { ...readModel, threads: [...readModel.threads, sharingThread] },
+        }),
+      ),
+    );
+
+    expect(error).toMatchObject({
+      _tag: "OrchestrationCommandInvariantError",
+      commandType: "thread.delete",
+      detail: `Thread '${FORK_THREAD_ID}' also uses the worktree '${WORKTREE_PATH}'.`,
+    });
+  });
+
   it("refuses to delete a worktree the thread does not use", async () => {
     const now = new Date().toISOString();
     const readModel = await createWorktreeThreadReadModel(now);

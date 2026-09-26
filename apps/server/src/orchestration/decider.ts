@@ -1458,6 +1458,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             detail: `Thread '${command.threadId}' does not use the worktree '${command.removeWorktreePath}'.`,
           });
         }
+        const sharingThread = readModel.threads.find(
+          (candidate) =>
+            candidate.id !== thread.id &&
+            candidate.deletedAt === null &&
+            candidate.worktreePath === command.removeWorktreePath,
+        );
+        if (sharingThread) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${sharingThread.id}' also uses the worktree '${command.removeWorktreePath}'.`,
+          });
+        }
         const project = yield* requireProject({ readModel, command, projectId: thread.projectId });
         removeWorktree = { workspaceRoot: project.workspaceRoot, path: command.removeWorktreePath };
       }

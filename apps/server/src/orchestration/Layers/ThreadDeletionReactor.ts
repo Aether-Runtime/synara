@@ -4,12 +4,13 @@ import { terminalScopeIdsForThread } from "@synara/shared/terminalThreads";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
 
 import { ServerConfig } from "../../config";
+import { DeletedThreadWorktreeRemovalFailures } from "../../deletedThreadWorktreeRemovalFailures";
 import { DeviceService } from "../../device/Services/DeviceService";
 import { GitCore } from "../../git/Services/GitCore";
+import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster";
 import { pruneProjectedArchivedManagedWorktrees } from "../../managedWorktrees";
 import { ProfileStatsArchive } from "../../profileStatsArchive";
 import { ProviderService } from "../../provider/Services/ProviderService";
-import { ServerLifecycleEvents } from "../../serverLifecycleEvents";
 import { TerminalManager, type TerminalManagerShape } from "../../terminal/Services/Manager";
 import { THREAD_RETENTION_COMMAND_ID_PREFIX } from "../../threadRetention";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine";
@@ -112,7 +113,8 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const serverConfig = yield* ServerConfig;
   const git = yield* GitCore;
-  const lifecycleEvents = yield* ServerLifecycleEvents;
+  const gitStatusBroadcaster = yield* GitStatusBroadcaster;
+  const worktreeRemovalFailures = yield* DeletedThreadWorktreeRemovalFailures;
 
   const pruneManagedWorktreesAfterLifecycle = (context: {
     readonly eventType: ThreadDeletedEvent["type"];
@@ -151,28 +153,34 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(
-        Effect.catch((error) =>
-          Effect.logError(
-            "thread deletion could not remove the worktree the user chose to delete",
-            {
-              threadId,
-              worktreePath: worktree.path,
-              error: error.message,
-            },
-          ).pipe(
-            Effect.andThen(
-              lifecycleEvents.publish({
-                type: "maintenance",
-                payload: {
-                  task: "thread-worktree-removal",
-                  state: "failed",
-                  at: new Date().toISOString(),
-                  error: `Could not remove ${worktree.path}. ${error.message}`,
-                },
-              }),
+        Effect.matchEffect({
+          // Git status is cached per repository, and the removal changed its worktrees and
+          // branches.
+          onSuccess: () =>
+            gitStatusBroadcaster.refreshStatus(worktree.workspaceRoot).pipe(
+              Effect.asVoid,
+              Effect.catch((error) =>
+                Effect.logWarning("thread deletion could not refresh git status after removal", {
+                  threadId,
+                  workspaceRoot: worktree.workspaceRoot,
+                  error: error.message,
+                }),
+              ),
             ),
-          ),
-        ),
+          onFailure: (error) =>
+            Effect.logError(
+              "thread deletion could not remove the worktree the user chose to delete",
+              { threadId, worktreePath: worktree.path, error: error.message },
+            ).pipe(
+              Effect.andThen(
+                worktreeRemovalFailures.publish({
+                  worktreePath: worktree.path,
+                  error: error.message,
+                  at: new Date().toISOString(),
+                }),
+              ),
+            ),
+        }),
       );
 
   const refreshCommandReadModelAfterPurge = (threadId: string) =>

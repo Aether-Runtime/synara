@@ -36,7 +36,7 @@ import { createProjectLastActivityAtSelector } from "../storeSelectors";
 import { useSpacesUiStore } from "../spacesUiStore";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
-import { onServerMaintenanceUpdated } from "../wsNativeApi";
+import { onDeletedThreadWorktreeRemovalFailed, onServerMaintenanceUpdated } from "../wsNativeApi";
 import { useWorkspacePathsStore } from "../workspacePathsStore";
 import { useProviderStatusesForLocalConfig } from "~/hooks/useProviderStatusesForLocalConfig";
 import { useRefreshProviderStatusesNow } from "~/hooks/useProviderStatusRefresh";
@@ -167,17 +167,13 @@ function ThreadRetentionMaintenanceToast() {
 }
 
 // The server removes the worktree a user chose to delete with a thread once the thread's session
-// has stopped, after the delete itself was accepted. A reconnect replays the latest maintenance
-// event, so each failure is shown once.
+// has stopped, after the delete itself was accepted. Every (re)subscription replays the latest
+// failure, so each one is shown once.
 function DeletedThreadWorktreeRemovalToast() {
   const shownAtRef = useRef<string | null>(null);
 
   useEffect(() => {
-    return onServerMaintenanceUpdated((event) => {
-      if (event.type !== "maintenance" || event.payload.task !== "thread-worktree-removal") {
-        return;
-      }
-      const { at, error } = event.payload;
+    return onDeletedThreadWorktreeRemovalFailed(({ worktreePath, error, at }) => {
       if (at === shownAtRef.current || Date.now() - Date.parse(at) > MAINTENANCE_EVENT_STALE_MS) {
         return;
       }
@@ -185,7 +181,7 @@ function DeletedThreadWorktreeRemovalToast() {
       toastManager.add({
         type: "error",
         title: "Thread deleted, but worktree removal failed",
-        description: error,
+        description: `Could not remove ${worktreePath}. ${error}`,
         data: { allowCrossThreadVisibility: true },
       });
     });

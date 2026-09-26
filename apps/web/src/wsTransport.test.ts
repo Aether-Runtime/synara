@@ -16,6 +16,7 @@ import {
   WS_PROTOCOL_MAX_REVISION,
   WS_PROTOCOL_MIN_REVISION,
   WS_PROJECT_FILE_WATCH_CAPABILITY,
+  WS_DELETED_THREAD_WORKTREE_REMOVAL_FAILURES_CAPABILITY,
   WsCompatibilityError,
   type WsBootstrapNegotiateResult,
 } from "@synara/contracts";
@@ -308,6 +309,42 @@ describe("WsTransport", () => {
 
     expect(internals.projectFileSubscriptions.size).toBe(0);
     expect(internals.stopStream).toHaveBeenCalledWith(key);
+  });
+
+  it("subscribes to worktree removal failures only on a server that offers them", async () => {
+    const failure = {
+      worktreePath: "/repo/.synara/worktrees/a/synara",
+      error: "git worktree remove failed",
+      at: "2026-09-26T12:00:00.000Z",
+    };
+    for (const capabilities of [[], [WS_DELETED_THREAD_WORKTREE_REMOVAL_FAILURES_CAPABILITY]]) {
+      const { transport, internals } = makeBareTransport();
+      const subscribeFailures = vi.fn(() => Stream.make(failure));
+      const emit = vi.fn();
+      Object.assign(internals, {
+        listeners: new Map(),
+        compatibility: { capabilities },
+        emit,
+        getClient: vi.fn(async () => ({
+          [WS_METHODS.subscribeDeletedThreadWorktreeRemovalFailures]: subscribeFailures,
+        })),
+      });
+
+      transport.subscribe(WS_CHANNELS.deletedThreadWorktreeRemovalFailed, vi.fn());
+
+      if (capabilities.length === 0) {
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(subscribeFailures).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() =>
+          expect(emit).toHaveBeenCalledWith(
+            WS_CHANNELS.deletedThreadWorktreeRemovalFailed,
+            failure,
+          ),
+        );
+      }
+    }
   });
 
   it("does not open a file stream after its subscription is cancelled during connection", async () => {
