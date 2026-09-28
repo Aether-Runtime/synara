@@ -4,12 +4,12 @@ import {
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
 import {
-  PROVIDER_DESCRIPTOR_BY_KIND,
   type ProviderGatedFeature,
   providerFeatureUnavailableMessage,
   providerIsCloudService,
   providerLackingFeature,
   providerSupportsFeature,
+  startedThreadModelIsFixed,
 } from "@synara/shared/providerMetadata";
 import {
   MessageId,
@@ -3539,10 +3539,7 @@ export default function ChatView({
       }
       // A started thread whose provider cannot change its model keeps it: the adapter would
       // drop the change and keep running the model the task was created with.
-      if (
-        lockedProvider !== null &&
-        !PROVIDER_DESCRIPTOR_BY_KIND[lockedProvider].supportsSessionModelSwitch
-      ) {
+      if (startedThreadModelIsFixed(lockedProvider)) {
         scheduleComposerFocus();
         return;
       }
@@ -3610,14 +3607,16 @@ export default function ChatView({
 
   // The model shortcuts cycle a cloud selection within its harness's hosted list, and do
   // nothing on a started thread whose provider cannot change its model.
-  const modelSwitchLocked =
-    lockedProvider !== null &&
-    !PROVIDER_DESCRIPTOR_BY_KIND[lockedProvider].supportsSessionModelSwitch;
-  const modelCycleOptions = resolveModelCycleOptions({
-    provider: selectedProvider,
-    model: selectedModel,
-    modelOptionsByProvider,
-  });
+  const modelSwitchLocked = startedThreadModelIsFixed(lockedProvider);
+  const modelCycleOptions = useMemo(
+    () =>
+      resolveModelCycleOptions({
+        provider: selectedProvider,
+        model: selectedModel,
+        modelOptionsByProvider,
+      }),
+    [modelOptionsByProvider, selectedModel, selectedProvider],
+  );
 
   useChatKeyboardShortcuts({
     onToggleDevicePanel,

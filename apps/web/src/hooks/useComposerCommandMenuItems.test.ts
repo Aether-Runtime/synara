@@ -56,6 +56,17 @@ describe("buildSearchableModelOptions", () => {
       { provider: "aether", providerLabel: "Codex · Cloud", slug: "gpt-6-astra" },
     ]);
   });
+
+  it("lists nothing on a started cloud thread, whose model is fixed", () => {
+    expect(
+      buildSearchableModelOptions({ ...base, cloud: "aether", lockedProvider: "aether" }),
+    ).toEqual([]);
+    expect(
+      buildSearchableModelOptions({ ...base, cloud: null, lockedProvider: "codex" }).map(
+        (option) => `${option.provider}:${option.slug}`,
+      ),
+    ).toEqual(["codex:gpt-5.5"]);
+  });
 });
 
 function project(id: string, kind: Project["kind"], name: string): Project {

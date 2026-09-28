@@ -2,6 +2,7 @@ import "../../index.css";
 
 import {
   type CodexModelOptions,
+  type ModelSelection,
   type ModelSlug,
   type ProviderKind,
   type ServerProviderStatus,
@@ -72,11 +73,16 @@ function readyProvider(provider: ProviderKind): ServerProviderStatus {
 type HarnessProps = {
   provider?: ProviderKind;
   lockedProvider?: ProviderKind | null;
+  /** A server thread's persisted selection, read when the draft holds none. */
+  threadModelSelection?: ModelSelection;
   providers?: ReadonlyArray<ServerProviderStatus>;
   modelOptionsByProvider?: React.ComponentProps<
     typeof ComposerModelPicker
   >["modelOptionsByProvider"];
   effortControl?: "menu" | "slider";
+  discoveryErrorsByProvider?: React.ComponentProps<
+    typeof ComposerModelPicker
+  >["discoveryErrorsByProvider"];
   onProviderModelChange?: React.ComponentProps<typeof ComposerModelPicker>["onProviderModelChange"];
 };
 
@@ -87,7 +93,7 @@ function Harness(props: HarnessProps) {
   const { modelOptions, selectedModel } = useEffectiveComposerModelState({
     threadId: THREAD_ID,
     selectedProvider: provider,
-    threadModelSelection: null,
+    threadModelSelection: props.threadModelSelection ?? null,
     projectModelSelection: null,
     customModelsByProvider: EMPTY_BY_PROVIDER,
   });
@@ -105,6 +111,9 @@ function Harness(props: HarnessProps) {
         ]
       }
       modelOptionsByProvider={props.modelOptionsByProvider ?? MODEL_OPTIONS_BY_PROVIDER}
+      {...(props.discoveryErrorsByProvider
+        ? { discoveryErrorsByProvider: props.discoveryErrorsByProvider }
+        : {})}
       onProviderModelChange={props.onProviderModelChange ?? vi.fn()}
       threadId={THREAD_ID}
       modelOptions={modelOptions?.[provider]}
@@ -545,6 +554,7 @@ describe("ComposerModelPicker", () => {
           readyProvider("cursor"),
           readyProvider("aether"),
         ]}
+        discoveryErrorsByProvider={{ claudeAgent: "Claude model discovery failed" }}
       />,
     );
     try {
@@ -552,6 +562,8 @@ describe("ComposerModelPicker", () => {
       await expect
         .element(page.getByRole("tab", { name: "Claude" }))
         .toHaveAttribute("aria-selected", "true");
+      // The hosted tab lists the cloud's catalog: the local CLI's discovery is not its own.
+      expect(page.getByText("Claude model discovery failed").elements()).toHaveLength(0);
       await expect.element(page.getByRole("tab", { name: "Codex" })).toBeEnabled();
       await expect
         .element(page.getByRole("tab", { name: "Cursor · Not available in Cloud" }))
@@ -560,6 +572,31 @@ describe("ComposerModelPicker", () => {
       await expect
         .element(page.getByRole("menuitem", { name: /Claude Opus 5\.5/u }))
         .toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens a saved cloud model no host lists on the cloud's first harness", async () => {
+    const onProviderModelChange = vi.fn();
+    const screen = await render(
+      <Harness
+        provider="aether"
+        threadModelSelection={{ provider: "aether", model: "gpt-5" }}
+        onProviderModelChange={onProviderModelChange}
+      />,
+    );
+    try {
+      const trigger = page.getByRole("button", { name: "Change model and reasoning" });
+      await expect.element(trigger).toHaveTextContent("GPT-5");
+      await trigger.click();
+      await expect
+        .element(page.getByRole("tab", { name: "Claude" }))
+        .toHaveAttribute("aria-selected", "true");
+      await expect.element(page.getByRole("tab", { name: "Codex" })).toBeEnabled();
+      // A hosted pick is the way out: it commits the cloud.
+      await page.getByRole("menuitem", { name: /Claude Opus 5\.5/u }).click();
+      expect(onProviderModelChange.mock.calls[0]?.slice(0, 2)).toEqual(["aether", AETHER_OPUS]);
     } finally {
       await screen.unmount();
     }
@@ -588,6 +625,15 @@ describe("ComposerModelPicker", () => {
       expect(page.getByRole("tab", { name: "Codex" }).elements()).toHaveLength(0);
       await row.click({ force: true });
       expect(onProviderModelChange).not.toHaveBeenCalled();
+
+      // Starring is not a model change: the read-only row keeps its star.
+      await page
+        .getByRole("button", { name: "Star Claude Opus 5.5 with its current effort and speed" })
+        .click();
+      await expect
+        .element(page.getByRole("button", { name: "Remove Claude Opus 5.5 from starred" }))
+        .toBeInTheDocument();
+      expect(readStoredStars()).toMatchObject([{ provider: "aether", model: AETHER_OPUS }]);
 
       // The cloud takes an effort with every message, so it stays adjustable.
       const slider = page.getByRole("slider", { name: "Reasoning effort" });

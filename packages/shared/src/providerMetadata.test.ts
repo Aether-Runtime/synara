@@ -5,9 +5,11 @@ import {
   PROVIDER_DESCRIPTOR_BY_KIND,
   PROVIDER_DESCRIPTORS,
   cloudHostsFor,
+  hostedModelsFor,
   hostedProviderForModel,
   parsePresentedProvider,
   resolvePresentedProvider,
+  startedThreadModelIsFixed,
 } from "./providerMetadata";
 
 const slugsOf = (models: ReadonlyArray<{ slug: string }>) => models.map((model) => model.slug);
@@ -92,9 +94,19 @@ describe("cloud hosts", () => {
     });
   });
 
+  it("lists only the cloud models a harness runs there", () => {
+    const options = [{ slug: "claude-opus-5-5" }, { slug: "gpt-6-astra" }, { slug: "gpt-5" }];
+    expect(slugsOf(hostedModelsFor("aether", "claudeAgent", options))).toEqual(["claude-opus-5-5"]);
+    expect(slugsOf(hostedModelsFor("aether", "codex", options))).toEqual(["gpt-6-astra"]);
+    expect(hostedModelsFor("aether", "cursor", options)).toEqual([]);
+  });
+
   it("lets only a CLI provider switch a started thread's model", () => {
     for (const descriptor of PROVIDER_DESCRIPTORS) {
       expect(descriptor.supportsSessionModelSwitch).toBe(descriptor.runtime === "cli");
     }
+    expect(startedThreadModelIsFixed("aether")).toBe(true);
+    expect(startedThreadModelIsFixed("codex")).toBe(false);
+    expect(startedThreadModelIsFixed(null)).toBe(false);
   });
 });

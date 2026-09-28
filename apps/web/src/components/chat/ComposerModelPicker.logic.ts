@@ -138,17 +138,6 @@ export type ComposerModelPickerRow = {
   preset: StarredModel | null;
 };
 
-/** The cloud's catalog entries that `harness` runs: the rows of a hosted tab. */
-export function hostedTabOptions(input: {
-  cloud: ProviderKind;
-  harness: ProviderKind;
-  options: ReadonlyArray<ProviderModelOption>;
-}): ProviderModelOption[] {
-  return input.options.filter(
-    (option) => hostedProviderForModel(input.cloud, option.slug) === input.harness,
-  );
-}
-
 export function buildProviderTabRows(input: {
   /** The tab: the harness the rows present. */
   provider: ProviderKind;

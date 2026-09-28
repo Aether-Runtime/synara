@@ -9360,6 +9360,72 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  it("refuses to run a saved Aether model no host lists and offers no way back to this machine", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-cloud-unhosted-model-test" as MessageId,
+      targetText: "cloud unhosted model test",
+    });
+    const thread = snapshot.threads[0]!;
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: [
+          {
+            ...thread,
+            // An unstarted thread saved with a slug the cloud's catalog no longer lists.
+            modelSelection: { provider: "aether", model: "gpt-5" },
+            messages: [],
+            session: null,
+          },
+        ],
+      },
+      configureFixture: withAetherStatus("authenticated"),
+    });
+
+    try {
+      await waitForComposerEditor();
+      const trigger = page.getByRole("button", { name: "Change model and reasoning" });
+      // The raw slug, formatted: no catalog entry names it.
+      await expect.element(trigger).toHaveTextContent("GPT-5");
+
+      (await waitForEnvironmentModeButton("Cloud")).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Cloud (Aether)", exact: true }))
+        .toBeInTheDocument();
+      expect(page.getByRole("menuitem", { name: "Local project", exact: true }).elements()).toEqual(
+        [],
+      );
+      expect(page.getByRole("menuitem", { name: "New worktree", exact: true }).elements()).toEqual(
+        [],
+      );
+      await userEvent.keyboard("{Escape}");
+
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Run on the retired model");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      wsRequests.length = 0;
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector('[data-slot="toast-viewport"]')?.textContent ?? "",
+          ).toContain('Aether no longer offers "gpt-5". Pick another model.');
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(hasDispatchedCommandType("thread.turn.start")).toBe(false);
+    } finally {
+      restoreNativeApi();
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps worktree setup resolvable while attachments upload", async () => {
     const restoreNativeApi = installDeterministicSendNativeApi();
     let releaseAttachmentUpload = () => {};

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type ProviderKind } from "@synara/contracts";
+import { hostedModelsFor } from "@synara/shared/providerMetadata";
 
 import {
   normalizeStarredModels,
@@ -13,7 +14,6 @@ import {
   buildStarredTabRows,
   buildStarredModelOptionsPatch,
   formatStarredTraitsLabel,
-  hostedTabOptions,
   modelPickerShortcutRowIndex,
   resolveStarredTraits,
 } from "./ComposerModelPicker.logic";
@@ -151,22 +151,11 @@ describe("hosted tab rows", () => {
     { slug: "gpt-6-astra", name: "GPT-6 Astra" },
   ];
 
-  it("lists only the cloud models the harness runs", () => {
-    expect(
-      hostedTabOptions({ cloud: "aether", harness: "claudeAgent", options: cloudOptions }).map(
-        (option) => option.slug,
-      ),
-    ).toEqual(["claude-opus-5-5"]);
-    expect(hostedTabOptions({ cloud: "aether", harness: "cursor", options: cloudOptions })).toEqual(
-      [],
-    );
-  });
-
   it("commits the cloud from a harness tab and keys rows by it", () => {
     const [row] = buildProviderTabRows({
       provider: "claudeAgent",
       commitProvider: "aether",
-      options: hostedTabOptions({ cloud: "aether", harness: "claudeAgent", options: cloudOptions }),
+      options: hostedModelsFor("aether", "claudeAgent", cloudOptions),
       query: "",
       selectedModel: "claude-opus-5-5",
     });

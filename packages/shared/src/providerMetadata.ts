@@ -281,6 +281,14 @@ export const providerSupportsNativeTurnSteering = (kind: string): boolean =>
 export const providerIsCloudService = (kind: ProviderKind): boolean =>
   PROVIDER_DESCRIPTOR_BY_KIND[kind].runtime === "cloud";
 
+/**
+ * True when a started thread keeps its model: `lockedProvider`, the provider a started thread
+ * is bound to (null before its first turn), cannot switch a session's model.
+ */
+export const startedThreadModelIsFixed = (lockedProvider: ProviderKind | null): boolean =>
+  lockedProvider !== null &&
+  !PROVIDER_DESCRIPTOR_BY_KIND[lockedProvider].supportsSessionModelSwitch;
+
 /** The cloud providers that run `harness` remotely, each with the host it offers for it. */
 export function cloudHostsFor(
   harness: ProviderKind,
@@ -308,6 +316,15 @@ export function hostedProviderForModel(
     candidate.models.some((entry) => entry.slug === slug),
   );
   return host?.provider ?? null;
+}
+
+/** The entries of `cloud`'s model list that `harness` runs there. */
+export function hostedModelsFor<T extends { readonly slug: string }>(
+  cloud: ProviderKind,
+  harness: ProviderKind,
+  options: ReadonlyArray<T>,
+): T[] {
+  return options.filter((option) => hostedProviderForModel(cloud, option.slug) === harness);
 }
 
 export type PresentedProvider =
@@ -343,9 +360,10 @@ export function parsePresentedProvider(selection: {
 }
 
 /**
- * `parsePresentedProvider` for a composer selection, which the composer's catalog boundary
- * keeps hosted (`getAppModelOptions` offers a cloud provider only its hosts' models), so an
- * unhosted model here is an invariant violation.
+ * `parsePresentedProvider` for a selection the caller already knows is hosted: a composer pick
+ * (`getAppModelOptions` offers a cloud provider only its hosts' models), or a way back from the
+ * cloud, which is offered only for a hosted model. An unhosted model here is an invariant
+ * violation.
  */
 export function resolvePresentedProvider(selection: {
   readonly provider: ProviderKind;

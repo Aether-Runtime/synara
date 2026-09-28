@@ -21,7 +21,7 @@ import {
   type ServerProviderAuthStatus,
   type ThreadId as ThreadIdType,
 } from "@synara/contracts";
-import { hostedProviderForModel, parsePresentedProvider } from "@synara/shared/providerMetadata";
+import { hostedModelsFor, parsePresentedProvider } from "@synara/shared/providerMetadata";
 import { getDefaultModel, normalizeModelSlug } from "@synara/shared/model";
 import { buildSynaraBranchName } from "@synara/shared/git";
 import { isGenericChatThreadTitle } from "@synara/shared/chatThreads";
@@ -575,9 +575,10 @@ export function resolveModelCycleOptions<T extends { slug: string }>(input: {
   if (presented.harness === null) {
     return [];
   }
-  const { cloud, harness } = presented;
-  return input.modelOptionsByProvider[cloud].filter(
-    (option) => hostedProviderForModel(cloud, option.slug) === harness,
+  return hostedModelsFor(
+    presented.cloud,
+    presented.harness,
+    input.modelOptionsByProvider[presented.cloud],
   );
 }
 

@@ -82,6 +82,7 @@ export function ComposerModelPickerRow(props: {
   const rowClassName = cn("pe-1", row.selected && PICKER_PANEL_ROW_SELECTED_CLASS_NAME);
   // The task's model is fixed: the current row says so, every row is read-only.
   const detail = props.locked && row.selected ? "Fixed for this cloud task" : row.detail;
+  const readOnly = props.locked || row.selectableModel === null;
   const starButton = (
     <ModelStarButton
       starred={starred}
@@ -114,27 +115,20 @@ export function ComposerModelPickerRow(props: {
           {props.shortcutHint}
         </Kbd>
       ) : null}
-      {row.selectableModel !== null ? starButton : null}
+      {readOnly ? null : starButton}
     </>
   );
 
-  if (props.locked) {
-    return (
-      <MenuItem
-        disabled
-        aria-current={row.selected ? "true" : undefined}
-        className={rowClassName}
-        closeOnClick={false}
-      >
-        {rowContent}
-      </MenuItem>
-    );
-  }
-
-  if (row.selectableModel === null) {
+  // A disabled item takes no pointer events, so a read-only row keeps its star outside it.
+  if (readOnly) {
     return (
       <div className="relative">
-        <MenuItem disabled className="pe-8" closeOnClick={false}>
+        <MenuItem
+          disabled
+          aria-current={row.selected ? "true" : undefined}
+          className={cn(rowClassName, "pe-8")}
+          closeOnClick={false}
+        >
           {rowContent}
         </MenuItem>
         <div className="absolute inset-y-0 end-1 flex items-center">{starButton}</div>

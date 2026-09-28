@@ -16,7 +16,9 @@ import {
 } from "@synara/contracts";
 import {
   PROVIDER_DESCRIPTOR_BY_KIND,
+  hostedModelsFor,
   parsePresentedProvider,
+  startedThreadModelIsFixed,
 } from "@synara/shared/providerMetadata";
 import {
   useDeferredValue,
@@ -48,7 +50,6 @@ import {
   buildStarredTabRows,
   type ComposerModelPickerRow as PickerRow,
   type ComposerModelPickerTab,
-  hostedTabOptions,
   MODEL_PICKER_POPUP_ATTRIBUTE,
   MODEL_PICKER_SHORTCUT_ROW_LIMIT,
   modelPickerShortcutRowIndex,
@@ -172,9 +173,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
   const homeTab: ProviderKind =
     presented.harness ?? (cloud === null ? activeProvider : firstHostOf(cloud));
   // A started thread whose provider cannot change its model shows the rows read-only.
-  const modelSwitchLocked =
-    lockedProvider !== null &&
-    !PROVIDER_DESCRIPTOR_BY_KIND[lockedProvider].supportsSessionModelSwitch;
+  const modelSwitchLocked = startedThreadModelIsFixed(lockedProvider);
   const effortControl = props.effortControl ?? "menu";
   const usesEffortSlider = effortControl === "slider";
 
@@ -273,7 +272,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
     presented,
     lockedProvider,
   });
-  const isHostedTab = (candidate: ComposerModelPickerTab): candidate is ProviderKind =>
+  const isHostedTab = (candidate: ProviderKind): boolean =>
     cloud !== null &&
     PROVIDER_DESCRIPTOR_BY_KIND[cloud].hosts.some((host) => host.provider === candidate);
 
@@ -294,11 +293,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
         ? buildProviderTabRows({
             provider: tab,
             commitProvider: cloud,
-            options: hostedTabOptions({
-              cloud,
-              harness: tab,
-              options: props.modelOptionsByProvider[cloud],
-            }),
+            options: hostedModelsFor(cloud, tab, props.modelOptionsByProvider[cloud]),
             query: normalizedQuery,
             selectedModel: presented.harness === tab ? props.model : null,
           })
@@ -421,9 +416,14 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
   }, [isMenuOpen]);
 
   const shortcutModifierLabel = isMacNavigatorPlatform() ? "⌘" : "Ctrl ";
+  // A hosted tab lists the cloud's catalog: the local CLI's discovery state is not its own.
+  const discoveryTab = tab === STARRED_TAB || isHostedTab(tab) ? null : tab;
   const isTabLoading =
-    tab !== STARRED_TAB && (props.loadingModelProviders?.[tab] ?? false) && rows.length === 0;
-  const discoveryError = tab === STARRED_TAB ? undefined : props.discoveryErrorsByProvider?.[tab];
+    discoveryTab !== null &&
+    (props.loadingModelProviders?.[discoveryTab] ?? false) &&
+    rows.length === 0;
+  const discoveryError =
+    discoveryTab === null ? undefined : props.discoveryErrorsByProvider?.[discoveryTab];
 
   return (
     <Menu
