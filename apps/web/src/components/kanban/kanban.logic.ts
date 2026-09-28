@@ -8,6 +8,7 @@ import type { ProjectId, ProviderKind, ThreadEnvironmentMode, ThreadId } from "@
 import { buildPromptThreadTitleFallback } from "@synara/shared/chatThreads";
 import { isPendingThreadWorktree } from "@synara/shared/threadEnvironment";
 import type { ComposerThreadDraftState } from "../../composerDraftStore";
+import { resolveThreadDisplaySelection } from "../../lib/threadDisplayProvider";
 import {
   canSessionAnswerPendingRequests,
   deriveActiveWorkStartedAt,
@@ -31,6 +32,8 @@ export interface KanbanComposerDraftSnapshot {
   /** Files, images, terminal contexts, or references attached to the composer draft. */
   hasAttachments: boolean;
   provider: ProviderKind | null;
+  /** The draft's model for `provider`; null when it names none. */
+  model: string | null;
 }
 
 type KanbanComposerDraftSource = Pick<
@@ -43,6 +46,7 @@ type KanbanComposerDraftSource = Pick<
   | "assistantSelections"
   | "fileComments"
   | "activeProvider"
+  | "modelSelectionByProvider"
 > &
   Partial<Pick<ComposerThreadDraftState, "browserAnnotations">>;
 
@@ -64,6 +68,10 @@ export function buildKanbanComposerDraftSnapshot(
       (draft.browserAnnotations?.length ?? 0) > 0 ||
       draft.fileComments.length > 0,
     provider: draft.activeProvider,
+    model:
+      draft.activeProvider === null
+        ? null
+        : (draft.modelSelectionByProvider[draft.activeProvider]?.model ?? null),
   };
 }
 
@@ -77,6 +85,8 @@ export interface KanbanOptimisticDispatchSnapshot {
   /** Display title for the window where neither thread nor composer prompt exists. */
   title: string;
   provider: ProviderKind | null;
+  /** The model dispatched with `provider`. */
+  model: string;
   /** latestTurn.turnId at dispatch time; any different (or first) turn settles the entry. */
   baselineTurnId: string | null;
   /** Epoch ms of the drop — recency sort key and expiry baseline. */
@@ -105,7 +115,8 @@ export function areKanbanComposerDraftSnapshotsEqual(
       !rightSnapshot ||
       leftSnapshot.prompt !== rightSnapshot.prompt ||
       leftSnapshot.hasAttachments !== rightSnapshot.hasAttachments ||
-      leftSnapshot.provider !== rightSnapshot.provider
+      leftSnapshot.provider !== rightSnapshot.provider ||
+      leftSnapshot.model !== rightSnapshot.model
     ) {
       return false;
     }
@@ -134,6 +145,8 @@ export interface KanbanCard {
   column: KanbanColumnKey;
   title: string;
   provider: ProviderKind | null;
+  /** The model `provider` runs, for the avatar; null when a draft names none. */
+  model: string | null;
   /** Terminal-first thread — renders the terminal glyph instead of a provider icon. */
   isTerminal: boolean;
   branch: string | null;
@@ -266,12 +279,18 @@ function resolveThreadCardTimestamp(
 function resolveComposerDraft(
   composerDraftByThreadId: BuildKanbanBoardInput["composerDraftByThreadId"],
   threadId: ThreadId,
-): { prompt: string; hasAttachments: boolean; provider: ProviderKind | null } {
+): {
+  prompt: string;
+  hasAttachments: boolean;
+  provider: ProviderKind | null;
+  model: string | null;
+} {
   const snapshot = composerDraftByThreadId[threadId];
   return {
     prompt: snapshot?.prompt.trim() ?? "",
     hasAttachments: snapshot?.hasAttachments ?? false,
     provider: snapshot?.provider ?? null,
+    model: snapshot?.model ?? null,
   };
 }
 
@@ -283,9 +302,9 @@ function buildThreadCard(
   const column = deriveKanbanColumn(thread);
   const composerDraft = resolveComposerDraft(composerDraftByThreadId, thread.id);
   const timestamp = resolveThreadCardTimestamp(thread, column);
-  const threadProvider = isTerminal
-    ? null
-    : (thread.session?.provider ?? thread.modelSelection.provider);
+  const threadSelection = isTerminal ? null : resolveThreadDisplaySelection(thread);
+  // A draft card shows the provider its composer picked, with that pick's model.
+  const draftPicked = column === "draft" && composerDraft.provider !== null;
   const activeWorkStartedAt =
     column === "inProgress"
       ? deriveActiveWorkStartedAt(thread.latestTurn, thread.session, timestamp)
@@ -296,8 +315,8 @@ function buildThreadCard(
     projectId: thread.projectId,
     column,
     title: thread.title,
-    provider:
-      column === "draft" && composerDraft.provider ? composerDraft.provider : threadProvider,
+    provider: draftPicked ? composerDraft.provider : (threadSelection?.provider ?? null),
+    model: draftPicked ? composerDraft.model : (threadSelection?.model ?? null),
     isTerminal,
     branch: thread.branch,
     envMode: thread.envMode ?? null,
@@ -327,16 +346,16 @@ function buildUnsentPromptCard(
     return null;
   }
   const titleSeed = composerDraft.prompt.length > 0 ? composerDraft.prompt : "Attached references";
-  const threadProvider = isTerminal
-    ? null
-    : (thread.session?.provider ?? thread.modelSelection.provider);
+  const threadSelection = isTerminal ? null : resolveThreadDisplaySelection(thread);
+  const draftPicked = composerDraft.provider !== null;
   return {
     cardId: kanbanDraftCardId(thread.id),
     threadId: thread.id,
     projectId: thread.projectId,
     column: "draft",
     title: buildPromptThreadTitleFallback(titleSeed),
-    provider: composerDraft.provider ?? threadProvider,
+    provider: draftPicked ? composerDraft.provider : (threadSelection?.provider ?? null),
+    model: draftPicked ? composerDraft.model : (threadSelection?.model ?? null),
     isTerminal,
     branch: thread.branch,
     envMode: thread.envMode ?? null,
@@ -370,6 +389,7 @@ function buildLocalDraftCard(
           ? "Attached references"
           : KANBAN_FALLBACK_DRAFT_TITLE,
     provider: composerDraft.provider,
+    model: composerDraft.model,
     isTerminal: false,
     branch: draftThread.branch,
     envMode: draftThread.envMode ?? null,
@@ -425,6 +445,7 @@ function buildSyntheticOptimisticCard(
     column: "inProgress",
     title: entry.title,
     provider: entry.provider,
+    model: entry.model,
     isTerminal: false,
     branch: null,
     envMode: null,

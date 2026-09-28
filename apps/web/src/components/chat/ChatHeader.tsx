@@ -13,6 +13,7 @@ import {
   type ThreadId,
 } from "@synara/contracts";
 import { isGenericChatThreadTitle } from "@synara/shared/chatThreads";
+import { parsePresentedProvider } from "@synara/shared/providerMetadata";
 import React, { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { FiGitBranch } from "react-icons/fi";
 import { HiMiniArrowsPointingOut } from "react-icons/hi2";
@@ -61,7 +62,8 @@ import {
 import { cn } from "~/lib/utils";
 import { useOpenFavoriteEditorShortcut } from "~/hooks/useOpenFavoriteEditorShortcut";
 import type { RepoDiffTotals } from "~/hooks/useRepoDiffTotals";
-import { ProviderIcon } from "../ProviderIcon";
+import { resolveThreadDisplaySelection } from "~/lib/threadDisplayProvider";
+import { ProviderAvatar, ProviderIcon } from "../ProviderIcon";
 import { ProviderUsageMenuControl } from "../ProviderUsageMenuControl";
 import { EnvironmentToggle, type EnvironmentToggleState } from "./environment/EnvironmentToggle";
 
@@ -77,6 +79,8 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeThreadEntryPoint: ThreadPrimarySurface;
   activeProvider: ProviderKind;
+  /** The active thread's model: with `activeProvider`, what the title's avatar presents. */
+  activeModel: string;
   activeProjectName: string | undefined;
   threadBreadcrumbs: ReadonlyArray<{
     threadId: ThreadId;
@@ -214,8 +218,8 @@ function EditorChatHistoryMenu(props: {
                 }
               }}
             >
-              <ProviderIcon
-                provider={thread.session?.provider ?? thread.modelSelection.provider}
+              <ProviderAvatar
+                selection={resolveThreadDisplaySelection(thread)}
                 tone="header"
                 className="size-3.5 shrink-0"
               />
@@ -354,6 +358,9 @@ function EditorRailTabs(props: {
       },
     ]),
   );
+  // A tab whose thread is loaded presents the harness running it; a stored tab whose thread is
+  // not shows its saved provider.
+  const projectThreadById = new Map(sortedProjectThreads.map((thread) => [thread.id, thread]));
   const activeChatAlreadyOpen = openChatTabs.some((thread) => thread.id === props.activeThreadId);
   const orderedOpenTabs =
     props.activeSurface === "chat" && !activeChatAlreadyOpen
@@ -449,25 +456,36 @@ function EditorRailTabs(props: {
         // app reads identically. Pushed to the header's right edge (ml-auto) so the
         // title and new/history controls stay grouped on the left.
         <div className="ml-auto flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {chatTabs.map((thread, index) => (
-            <SurfaceTabChip
-              key={thread.id}
-              active={props.activeSurface === "chat" && thread.id === props.activeThreadId}
-              title={thread.title}
-              label={`Chat ${index + 1}`}
-              labelClassName="max-w-24"
-              icon={
-                <ProviderIcon
-                  provider={thread.provider}
-                  tone="header"
-                  className="size-3 shrink-0"
-                />
-              }
-              closeLabel={`Close ${thread.title}`}
-              onSelect={() => openChatTab(thread.id)}
-              onClose={() => closeChatTab(thread.id)}
-            />
-          ))}
+          {chatTabs.map((thread, index) => {
+            const projectThread = projectThreadById.get(thread.id);
+            return (
+              <SurfaceTabChip
+                key={thread.id}
+                active={props.activeSurface === "chat" && thread.id === props.activeThreadId}
+                title={thread.title}
+                label={`Chat ${index + 1}`}
+                labelClassName="max-w-24"
+                icon={
+                  projectThread ? (
+                    <ProviderAvatar
+                      selection={resolveThreadDisplaySelection(projectThread)}
+                      tone="header"
+                      className="size-3 shrink-0"
+                    />
+                  ) : (
+                    <ProviderIcon
+                      provider={thread.provider}
+                      tone="header"
+                      className="size-3 shrink-0"
+                    />
+                  )
+                }
+                closeLabel={`Close ${thread.title}`}
+                onSelect={() => openChatTab(thread.id)}
+                onClose={() => closeChatTab(thread.id)}
+              />
+            );
+          })}
           {terminalTabVisible ? (
             <SurfaceTabChip
               active={props.activeSurface === "terminal"}
@@ -508,6 +526,7 @@ export function ChatHeader({
   activeThreadTitle,
   activeThreadEntryPoint,
   activeProvider,
+  activeModel,
   activeProjectName,
   threadBreadcrumbs,
   className,
@@ -590,6 +609,15 @@ export function ChatHeader({
   // "maximize" affordance for an already-split focused pane.
   const inlineChatLayoutAction = chatLayoutAction?.kind === "maximize" ? chatLayoutAction : null;
   const threadIconKind = resolveChatHeaderThreadIconKind(activeThreadEntryPoint, activeThreadTitle);
+  // The title's avatar presents the harness running the thread; its name says when that is
+  // in the cloud.
+  const activePresented = parsePresentedProvider({ provider: activeProvider, model: activeModel });
+  const activeAvatarLabel =
+    activePresented.harness === null
+      ? PROVIDER_DISPLAY_NAMES[activePresented.cloud]
+      : activePresented.cloud === null
+        ? PROVIDER_DISPLAY_NAMES[activePresented.harness]
+        : `${PROVIDER_DISPLAY_NAMES[activePresented.harness]} · Cloud`;
   const showSidechatTitleChip = isSidechat && compact;
 
   useEffect(() => {
@@ -733,16 +761,16 @@ export function ChatHeader({
                 {threadIconKind === "none" ? null : (
                   <span
                     className="inline-flex size-3.5 shrink-0 items-center justify-center"
-                    title={
-                      threadIconKind === "terminal"
-                        ? "Terminal"
-                        : PROVIDER_DISPLAY_NAMES[activeProvider]
-                    }
+                    title={threadIconKind === "terminal" ? "Terminal" : activeAvatarLabel}
                   >
                     {threadIconKind === "terminal" ? (
                       <TerminalIcon className="size-3.5 text-[var(--color-text-accent)]" />
                     ) : (
-                      renderProviderIcon(activeProvider, "size-3.5")
+                      <ProviderAvatar
+                        selection={{ provider: activeProvider, model: activeModel }}
+                        tone="header"
+                        className="size-3.5"
+                      />
                     )}
                   </span>
                 )}

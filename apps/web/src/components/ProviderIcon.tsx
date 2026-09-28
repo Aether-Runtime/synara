@@ -5,6 +5,7 @@
  * branching across every UI surface.
  */
 import { type ProviderKind } from "@synara/contracts";
+import { parsePresentedProvider } from "@synara/shared/providerMetadata";
 import type { ReactNode, SVGProps } from "react";
 
 import { CentralIcon } from "~/lib/central-icons";
@@ -117,6 +118,26 @@ export function ProviderIcon({
       aria-hidden={ariaHidden}
       {...svgProps}
       className={cn(providerIconToneClassName(provider, tone), className)}
+    />
+  );
+}
+
+/**
+ * The avatar of a model selection: the icon of the harness that runs it, so a cloud selection
+ * shows the host's harness (Claude, Codex) rather than the cloud. A persisted cloud model no
+ * host lists has no harness and shows the cloud's own icon.
+ */
+export function ProviderAvatar({
+  selection,
+  ...iconProps
+}: Omit<ProviderIconProps, "provider" | "fallback"> & {
+  readonly selection: { readonly provider: ProviderKind; readonly model: string };
+}) {
+  const presented = parsePresentedProvider(selection);
+  return (
+    <ProviderIcon
+      {...iconProps}
+      provider={presented.harness === null ? presented.cloud : presented.harness}
     />
   );
 }

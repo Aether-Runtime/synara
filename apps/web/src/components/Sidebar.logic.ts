@@ -3,6 +3,7 @@
 // Exports: Sidebar row state derivation, add-project error helpers, sort utilities, and visibility helpers.
 
 import {
+  type AutomationDefinition,
   MAX_PINNED_PROJECTS,
   type ProjectId,
   type PullRequestReviewRequestCountResult,
@@ -27,7 +28,14 @@ import {
   SIDEBAR_ROW_IDLE_TEXT_CLASS_NAME,
   SIDEBAR_THREAD_ROW_BASE_CLASS_NAME,
 } from "../sidebarRowStyles";
+import { formatCadence } from "../lib/automationForm";
 import { isDuplicateProjectCreateError } from "../lib/projectCreateRecovery";
+import { resolveThreadDisplayProvider } from "../lib/threadDisplayProvider";
+import {
+  resolveCloudProvider,
+  resolveThreadEnvironmentPresentation,
+} from "../lib/threadEnvironment";
+import { resolveThreadHandoffBadgeLabel } from "../lib/threadHandoff";
 import {
   canSessionAnswerPendingRequests,
   hasLiveLatestTurn,
@@ -537,6 +545,70 @@ export function pruneProjectThreadListPagingForCollapsedProjects<
  *
  * Literal class strings are required so Tailwind's JIT scanner emits them.
  */
+/**
+ * A thread row's trailing meta chip, as data: the row draws its icon. Back-to-front order:
+ * first = behind, last = in front. Priority lowest -> highest: handoff -> fork -> worktree ->
+ * cloud.
+ */
+export type ThreadRowMetaChipSpec =
+  | { readonly id: "automation"; readonly tooltip: string; readonly anyEnabled: boolean }
+  | { readonly id: "handoff" | "fork" | "worktree" | "cloud"; readonly tooltip: string };
+
+export function resolveThreadRowMetaChipSpecs(input: {
+  thread: Pick<
+    Thread,
+    "forkSourceThreadId" | "envMode" | "worktreePath" | "handoff" | "session" | "modelSelection"
+  >;
+  includeHandoffBadge: boolean;
+  /**
+   * When the leading provider avatar already renders the source → target handoff
+   * pair, the trailing handoff chip is a redundant double icon and is dropped.
+   */
+  handoffShownInAvatar?: boolean;
+  /** Heartbeat automations targeting this thread; surfaced as an at-a-glance clock chip. */
+  threadAutomations?: readonly AutomationDefinition[] | undefined;
+}): ThreadRowMetaChipSpec[] {
+  const chips: ThreadRowMetaChipSpec[] = [];
+  const threadAutomations = input.threadAutomations;
+  if (threadAutomations && threadAutomations.length > 0) {
+    const firstAutomation = threadAutomations[0]!;
+    chips.push({
+      id: "automation",
+      tooltip:
+        threadAutomations.length === 1
+          ? `${firstAutomation.name} · ${
+              firstAutomation.enabled ? formatCadence(firstAutomation.schedule) : "Paused"
+            }`
+          : `${threadAutomations.length} automations`,
+      anyEnabled: threadAutomations.some((automation) => automation.enabled),
+    });
+  }
+
+  const handoffBadgeLabel = resolveThreadHandoffBadgeLabel(input.thread);
+  if (input.includeHandoffBadge && !input.handoffShownInAvatar && handoffBadgeLabel) {
+    chips.push({ id: "handoff", tooltip: handoffBadgeLabel });
+  }
+
+  if (input.thread.forkSourceThreadId) {
+    chips.push({ id: "fork", tooltip: "Forked thread" });
+  }
+
+  const { worktreeBadgeLabel, cloudBadgeLabel } = resolveThreadEnvironmentPresentation({
+    envMode: input.thread.envMode,
+    worktreePath: input.thread.worktreePath,
+    cloud: resolveCloudProvider(resolveThreadDisplayProvider(input.thread)),
+  });
+  if (worktreeBadgeLabel) {
+    chips.push({ id: "worktree", tooltip: worktreeBadgeLabel });
+  }
+
+  if (cloudBadgeLabel) {
+    chips.push({ id: "cloud", tooltip: cloudBadgeLabel });
+  }
+
+  return chips;
+}
+
 export function resolveThreadRowTrailingReserveClass(input: {
   metaChipCount: number;
   hasTrailingGlyph: boolean;

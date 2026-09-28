@@ -27,6 +27,7 @@ import {
   Undo2Icon,
   WorktreeIcon,
 } from "~/lib/icons";
+import { resolveThreadDisplaySelection } from "~/lib/threadDisplayProvider";
 import { beginThreadDrag, endThreadDrag } from "~/lib/threadDrag";
 import { cn } from "~/lib/utils";
 import {
@@ -41,7 +42,7 @@ import { resolveThreadPullRequestFallback } from "../hooks/useThreadPullRequests
 import type { Project, SidebarThreadSummary } from "../types";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import { FolderClosed } from "./FolderClosed";
-import { ProviderIcon } from "./ProviderIcon";
+import { ProviderAvatar } from "./ProviderIcon";
 import { PrStateChip } from "./pullRequest/PrStateChip";
 import {
   createSidebarThreadHoverAnchorId,
@@ -135,7 +136,6 @@ function ActivityThreadRow({
   onContextMenu: (threadId: ThreadId, position: SidebarRowContextMenuPosition) => void;
   renderHoverCard: (anchorId: string) => ReactNode;
 }) {
-  const provider = thread.session?.provider ?? thread.modelSelection.provider;
   const branch = resolveThreadDisplayBranch(thread);
   const isWorktree =
     resolveThreadEnvironmentMode({
@@ -198,12 +198,9 @@ function ActivityThreadRow({
               "group-hover/activity-row:pr-[4.25rem] group-focus-within/activity-row:pr-[4.25rem]",
             )}
           >
-            <ProviderIcon
-              provider={provider}
+            <ProviderAvatar
+              selection={resolveThreadDisplaySelection(thread)}
               className="size-3 shrink-0"
-              fallback={
-                <span className="size-3 shrink-0 rounded-full border border-dashed border-muted-foreground/40" />
-              }
             />
             <span
               className={cn(

@@ -14,8 +14,9 @@ import {
 import { PrStateChip } from "../pullRequest/PrStateChip";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadStatusPillChip } from "../ThreadStatusPillChip";
-import { ProviderIcon } from "../ProviderIcon";
+import { ProviderAvatar, ProviderIcon } from "../ProviderIcon";
 import {
+  CloudIcon,
   GitBranchIcon,
   LoaderIcon,
   PaperclipIcon,
@@ -23,7 +24,10 @@ import {
   TerminalIcon,
   WorktreeIcon,
 } from "~/lib/icons";
-import { resolveThreadEnvironmentPresentation } from "~/lib/threadEnvironment";
+import {
+  resolveCloudProvider,
+  resolveThreadEnvironmentPresentation,
+} from "~/lib/threadEnvironment";
 import { formatRelativeTime } from "~/lib/relativeTime";
 import { cn } from "~/lib/utils";
 import { formatElapsed } from "../../session-logic";
@@ -108,10 +112,11 @@ function KanbanCardViewComponent({
     card.cardId === kanbanThreadCardId(card.threadId);
 
   const isForked = Boolean(card.thread?.forkSourceThreadId);
-  const worktreeBadgeLabel = resolveThreadEnvironmentPresentation({
+  const { worktreeBadgeLabel, cloudBadgeLabel } = resolveThreadEnvironmentPresentation({
     envMode: card.envMode,
     worktreePath: card.worktreePath,
-  }).worktreeBadgeLabel;
+    cloud: card.provider === null ? null : resolveCloudProvider(card.provider),
+  });
   // An explicit null from the resolver means the persisted PR was ruled out (e.g. the
   // checkout moved on); rows the board root has not resolved yet get the same validation
   // without live status instead of the raw — possibly stale — persisted badge.
@@ -163,7 +168,13 @@ function KanbanCardViewComponent({
         </span>
       ) : null}
       <span className="flex min-w-0 items-center gap-2 pt-0.5">
-        {card.isTerminal ? null : (
+        {card.isTerminal ? null : card.provider !== null && card.model !== null ? (
+          <ProviderAvatar
+            selection={{ provider: card.provider, model: card.model }}
+            className="size-3.5 shrink-0 opacity-80"
+          />
+        ) : (
+          // A draft that names no model shows its provider; one with no provider, a placeholder.
           <ProviderIcon
             provider={card.provider}
             className="size-3.5 shrink-0 opacity-80"
@@ -181,6 +192,11 @@ function KanbanCardViewComponent({
         {worktreeBadgeLabel ? (
           <span title={worktreeBadgeLabel} className="flex shrink-0 items-center">
             <WorktreeIcon className="size-3 text-muted-foreground/70" aria-hidden />
+          </span>
+        ) : null}
+        {cloudBadgeLabel ? (
+          <span title={cloudBadgeLabel} className="flex shrink-0 items-center">
+            <CloudIcon className="size-3 text-muted-foreground/70" aria-hidden />
           </span>
         ) : null}
         {isForked ? (

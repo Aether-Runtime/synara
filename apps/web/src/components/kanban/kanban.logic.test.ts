@@ -19,6 +19,7 @@ import {
   resolveOptimisticDispatchOutcome,
   type BuildKanbanBoardInput,
   type KanbanCard,
+  type KanbanComposerDraftSnapshot,
   type KanbanOptimisticDispatchSnapshot,
   type KanbanProjectBoard,
 } from "./kanban.logic";
@@ -263,6 +264,7 @@ describe("buildKanbanBoard", () => {
             prompt: "  Fix the flaky reconnect test  ",
             hasAttachments: false,
             provider: "claudeAgent",
+            model: "claude-sonnet-4-6",
           },
         },
       }),
@@ -295,6 +297,7 @@ describe("buildKanbanBoard", () => {
             prompt: "Follow up on the review notes",
             hasAttachments: false,
             provider: "cursor",
+            model: "auto",
           },
         },
       }),
@@ -308,6 +311,37 @@ describe("buildKanbanBoard", () => {
     expect(draftCard.thread).not.toBeNull();
     expect(draftCard.provider).toBe("cursor");
     expect(resolveDraftDropAction(draftCard)).toBe("dispatch");
+  });
+
+  it("carries the model a card's provider runs, so its avatar can present the harness", () => {
+    const cloudThreadId = ThreadId.makeUnsafe("thread-cloud-done");
+    const draftThreadId = ThreadId.makeUnsafe("thread-cloud-draft");
+    const board = buildKanbanBoard(
+      makeBoardInput({
+        threads: [
+          makeSidebarThreadSummary({
+            id: cloudThreadId,
+            modelSelection: { provider: "aether", model: "gpt-6-astra" },
+            session: makeSession({ provider: "aether" }),
+            latestTurn: makeLatestTurn(),
+          }),
+          makeSidebarThreadSummary({ id: draftThreadId }),
+        ],
+        composerDraftByThreadId: {
+          // An unstarted thread whose composer picked a hosted Claude model.
+          [draftThreadId]: {
+            prompt: "Draft in the cloud",
+            hasAttachments: false,
+            provider: "aether",
+            model: "claude-opus-5-5",
+          },
+        },
+      }),
+    );
+
+    const project = board.projects[0]!;
+    expect(project.done[0]).toMatchObject({ provider: "aether", model: "gpt-6-astra" });
+    expect(project.draft[0]).toMatchObject({ provider: "aether", model: "claude-opus-5-5" });
   });
 
   it("distinguishes prompt draft cards from durable thread cards", () => {
@@ -349,7 +383,7 @@ describe("buildKanbanBoard", () => {
           },
         ],
         composerDraftByThreadId: {
-          "thread-orphan": { prompt: "orphan", hasAttachments: false, provider: null },
+          "thread-orphan": { prompt: "orphan", hasAttachments: false, provider: null, model: null },
         },
       }),
     );
@@ -388,7 +422,7 @@ describe("buildKanbanBoard", () => {
           },
         ],
         composerDraftByThreadId: {
-          [threadId]: { prompt: "", hasAttachments: true, provider: "cursor" },
+          [threadId]: { prompt: "", hasAttachments: true, provider: "cursor", model: "auto" },
         },
       }),
     );
@@ -427,9 +461,9 @@ describe("buildKanbanBoard", () => {
           },
         ],
         composerDraftByThreadId: {
-          [first]: { prompt: "a", hasAttachments: false, provider: null },
-          [second]: { prompt: "b", hasAttachments: false, provider: null },
-          [newest]: { prompt: "c", hasAttachments: false, provider: null },
+          [first]: { prompt: "a", hasAttachments: false, provider: null, model: null },
+          [second]: { prompt: "b", hasAttachments: false, provider: null, model: null },
+          [newest]: { prompt: "c", hasAttachments: false, provider: null, model: null },
         },
         draftOrderByProjectId: {
           "project-1": [kanbanDraftCardId(first), kanbanDraftCardId(second)],
@@ -452,6 +486,7 @@ describe("buildKanbanBoard optimistic dispatch", () => {
     projectId: ProjectId.makeUnsafe("project-1"),
     title: "Fix the flaky reconnect test",
     provider: "cursor",
+    model: "auto",
     baselineTurnId: null,
     droppedAtMs: Date.parse("2026-03-09T12:00:00.000Z"),
     ...overrides,
@@ -482,7 +517,7 @@ describe("buildKanbanBoard optimistic dispatch", () => {
       makeBoardInput({
         threads: [makeSidebarThreadSummary({ id: threadId, latestTurn: makeLatestTurn() })],
         composerDraftByThreadId: {
-          [threadId]: { prompt: "Follow up", hasAttachments: false, provider: null },
+          [threadId]: { prompt: "Follow up", hasAttachments: false, provider: null, model: null },
         },
         optimisticDispatchByThreadId: {
           [threadId]: makeOptimisticEntry({ baselineTurnId: "turn-1" }),
@@ -739,10 +774,11 @@ describe("resolveOptimisticDispatchOutcome", () => {
   });
 });
 
-const makeComposerSnapshot = (prompt: string) => ({
+const makeComposerSnapshot = (prompt: string): KanbanComposerDraftSnapshot => ({
   prompt,
   hasAttachments: false,
   provider: null,
+  model: null,
 });
 
 describe("buildKanbanComposerDraftSnapshot", () => {
@@ -767,13 +803,34 @@ describe("buildKanbanComposerDraftSnapshot", () => {
       assistantSelections: [],
       fileComments: [],
       activeProvider: null,
+      modelSelectionByProvider: {},
     });
 
     expect(snapshot).toEqual({
       prompt: "",
       hasAttachments: false,
       provider: null,
+      model: null,
     });
+  });
+
+  it("takes the model the draft picked for its active provider", () => {
+    const snapshot = buildKanbanComposerDraftSnapshot({
+      prompt: "Draft",
+      files: [],
+      images: [],
+      persistedAttachments: [],
+      terminalContexts: [],
+      assistantSelections: [],
+      fileComments: [],
+      activeProvider: "aether",
+      modelSelectionByProvider: {
+        codex: { provider: "codex", model: "gpt-5.4" },
+        aether: { provider: "aether", model: "gpt-6-astra" },
+      },
+    });
+
+    expect(snapshot).toMatchObject({ provider: "aether", model: "gpt-6-astra" });
   });
 
   it("counts file attachments as pending draft attachments", () => {
@@ -795,6 +852,7 @@ describe("buildKanbanComposerDraftSnapshot", () => {
       assistantSelections: [],
       fileComments: [],
       activeProvider: null,
+      modelSelectionByProvider: {},
     });
 
     expect(snapshot?.hasAttachments).toBe(true);
@@ -814,7 +872,7 @@ describe("areKanbanComposerDraftSnapshotsEqual", () => {
     expect(areKanbanComposerDraftSnapshotsEqual({}, {})).toBe(true);
   });
 
-  it("detects differing prompts, flags, providers, and key sets", () => {
+  it("detects differing prompts, flags, providers, models, and key sets", () => {
     expect(
       areKanbanComposerDraftSnapshotsEqual(
         { "thread-1": snapshot("hello") },
@@ -835,6 +893,12 @@ describe("areKanbanComposerDraftSnapshotsEqual", () => {
     ).toBe(false);
     expect(
       areKanbanComposerDraftSnapshotsEqual(
+        { "thread-1": { ...snapshot("hello"), provider: "aether", model: "claude-opus-5-5" } },
+        { "thread-1": { ...snapshot("hello"), provider: "aether", model: "gpt-6-astra" } },
+      ),
+    ).toBe(false);
+    expect(
+      areKanbanComposerDraftSnapshotsEqual(
         { "thread-1": snapshot("hello") },
         { "thread-2": snapshot("hello") },
       ),
@@ -851,6 +915,7 @@ describe("orderDraftCards", () => {
     column: "draft",
     title: cardId,
     provider: null,
+    model: null,
     isTerminal: false,
     branch: null,
     envMode: null,
@@ -898,6 +963,7 @@ describe("resolveDraftDropAction", () => {
     column: "draft",
     title: "Draft",
     provider: null,
+    model: null,
     isTerminal: false,
     branch: null,
     envMode: null,
@@ -948,6 +1014,7 @@ describe("flattenProjectBoardForOverview", () => {
     column,
     title: cardId,
     provider: null,
+    model: null,
     isTerminal: false,
     branch: null,
     envMode: null,

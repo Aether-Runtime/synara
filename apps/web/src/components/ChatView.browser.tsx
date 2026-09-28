@@ -9319,6 +9319,52 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  it.each([
+    ["codex", "gpt-5", null, "Codex"],
+    ["aether", "claude-opus-5-5", "Worktree · Runs in the cloud (Aether)", "Claude · Cloud"],
+    // A saved slug no host lists still runs in the cloud; it has no harness to present.
+    ["aether", "gpt-5", "Worktree · Runs in the cloud (Aether)", "Aether"],
+  ] as const)(
+    "marks a %s thread on %s in the sidebar and header by where it runs and what runs it",
+    async (provider, model, chipStackLabel, avatarLabel) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: `msg-user-cloud-badge-${provider}-${model}` as MessageId,
+        targetText: "cloud badge test",
+      });
+      const thread = snapshot.threads[0]!;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            {
+              ...thread,
+              modelSelection: { provider, model },
+              session: { ...thread.session!, providerName: provider },
+              envMode: "worktree",
+              worktreePath: "/repo/.worktrees/cloud-badge",
+            },
+          ],
+        },
+        configureFixture: withAetherStatus("authenticated"),
+      });
+
+      try {
+        await waitForComposerEditor();
+        // The header's avatar names the harness, and the cloud it runs in.
+        await expect.element(page.getByTitle(avatarLabel, { exact: true })).toBeInTheDocument();
+        // The row's chips stack back to front: the cloud chip sits in front of the worktree.
+        if (chipStackLabel === null) {
+          expect(page.getByLabelText(/Runs in the cloud/u).elements()).toHaveLength(0);
+        } else {
+          await expect.element(page.getByLabelText(chipStackLabel)).toBeInTheDocument();
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("reads a started Aether thread's hosted model without the cloud's name and keeps it read-only", async () => {
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: "msg-user-cloud-locked-model-test" as MessageId,

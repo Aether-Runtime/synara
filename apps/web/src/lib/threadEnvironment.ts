@@ -6,6 +6,7 @@
 import type { ProviderKind, ThreadEnvironmentMode } from "@synara/contracts";
 import {
   PROVIDER_DESCRIPTOR_BY_KIND,
+  providerIsCloudService,
   providerSupportsFeature,
 } from "@synara/shared/providerMetadata";
 import {
@@ -54,6 +55,11 @@ export function cloudLocationLabel(cloud: ProviderKind): string {
   return `Cloud (${PROVIDER_DESCRIPTOR_BY_KIND[cloud].displayName})`;
 }
 
+/** `provider` when it is a cloud service; null when it runs on this machine. */
+export function resolveCloudProvider(provider: ProviderKind): ProviderKind | null {
+  return providerIsCloudService(provider) ? provider : null;
+}
+
 export interface ThreadEnvironmentPresentation {
   mode: ThreadEnvironmentMode;
   workspaceState: ResolvedThreadWorkspaceState;
@@ -63,6 +69,8 @@ export interface ThreadEnvironmentPresentation {
   localOptionLabel: "Local project";
   worktreeOptionLabel: "Worktree";
   worktreeBadgeLabel: "Worktree" | "Worktree pending" | null;
+  /** The tooltip of a cloud thread's badge; null when it runs on this machine. */
+  cloudBadgeLabel: string | null;
 }
 
 export function resolveThreadEnvironmentPresentation(input: {
@@ -87,6 +95,10 @@ export function resolveThreadEnvironmentPresentation(input: {
         : workspaceState === "worktree-pending"
           ? "Worktree pending"
           : null,
+    cloudBadgeLabel:
+      cloud === null
+        ? null
+        : `Runs in the cloud (${PROVIDER_DESCRIPTOR_BY_KIND[cloud].displayName})`,
   };
 }
 
