@@ -39,8 +39,8 @@ export function ComposerCloudProviderHint(props: {
         ? { attachedToPrevious: props.attachedToPrevious }
         : {})}
     >
-      Aether runs this chat in the cloud. The repo must be on GitHub and imported as a project in
-      Aether.
+      This chat runs in the cloud on {PROVIDER_DESCRIPTOR_BY_KIND.aether.displayName}. The repo must
+      be on GitHub and imported as a project in {PROVIDER_DESCRIPTOR_BY_KIND.aether.displayName}.
     </ComposerTipStrip>
   );
 }

@@ -1,6 +1,6 @@
 // Purpose: Floating composer that retains a transcript quote while the user writes a new prompt.
 
-import type { ThreadEnvironmentMode } from "@synara/contracts";
+import type { ProviderKind, ThreadEnvironmentMode } from "@synara/contracts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { ArrowUpRightIcon, ComposerSendArrowIcon, LoaderCircleIcon, XIcon } from "~/lib/icons";
@@ -26,6 +26,8 @@ interface SelectionNewChatComposerProps {
   canUseWorktree: boolean;
   /** Shown as a new worktree with no Local option; the chosen mode is still what is sent. */
   providerOwnsWorktree?: boolean;
+  /** The cloud provider the new chat runs on: the environment reads "Cloud". */
+  cloud?: ProviderKind | null;
   /** Where that provider cannot run at all: shown in place of the environment picker. */
   environmentUnavailableMessage: string | null;
   onSend: (prompt: string, envMode: ThreadEnvironmentMode) => Promise<void>;
@@ -38,12 +40,14 @@ export function SelectionNewChatComposer({
   defaultEnvMode,
   canUseWorktree,
   providerOwnsWorktree: providerOwnsWorktreeProp,
+  cloud: cloudProp,
   environmentUnavailableMessage,
   onSend,
   onOpenInChat,
   onClose,
 }: SelectionNewChatComposerProps) {
   const providerOwnsWorktree = providerOwnsWorktreeProp ?? false;
+  const cloud = cloudProp ?? null;
   const [prompt, setPrompt] = useState("");
   const [cursor, setCursor] = useState(0);
   const [envMode, setEnvMode] = useState(canUseWorktree ? defaultEnvMode : "local");
@@ -215,6 +219,7 @@ export function SelectionNewChatComposer({
                   <ComposerEnvironmentPicker
                     environmentPresentation={resolveThreadEnvironmentPresentation({
                       envMode: providerOwnsWorktree ? "worktree" : envMode,
+                      cloud,
                     })}
                     onEnvModeChange={setEnvMode}
                     canSwitchToWorktree={

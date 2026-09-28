@@ -386,6 +386,7 @@ import { useChatTurnFollowUps } from "./chat/useChatTurnFollowUps";
 import { useChatTurnSubmission } from "./chat/useChatTurnSubmission";
 import { useChatWorkLog } from "./chat/useChatWorkLog";
 import { deriveWorkingDetail } from "../workLog";
+import { useChatCloudLocation } from "./chat/useChatCloudLocation";
 import { useChatWorkspaceSelection } from "./chat/useChatWorkspaceSelection";
 import { useComposerDiscovery } from "./chat/useComposerDiscovery";
 import { useComposerReferences } from "./chat/useComposerReferences";
@@ -4368,7 +4369,7 @@ export default function ChatView({
     threadId,
   ]);
   const {
-    onEnvModeChange,
+    onEnvModeChange: onLocalEnvModeChange,
     handleResetWorkspaceToHome,
     handleSelectWorkspaceRoot,
     handleSelectProjectForEmptyDraft,
@@ -4386,6 +4387,19 @@ export default function ChatView({
     composerEditorRef,
     scheduleComposerFocus,
     defaultProvider: settings.defaultProvider,
+  });
+  const cloudProvider = providerIsCloudService(selectedProvider) ? selectedProvider : null;
+  const { cloudRows, onCloudSelect, onEnvModeChange } = useChatCloudLocation({
+    threadId,
+    selectedProvider,
+    selectedModel,
+    selectedEffort: composerTraitSelection.effort,
+    modelOptionsByProvider,
+    runtimeModelsByProvider,
+    providerStatuses,
+    providerSettings: serverSettingsQuery.data?.providers,
+    onProviderModelSelect,
+    onEnvModeChange: onLocalEnvModeChange,
   });
 
   const {
@@ -4943,6 +4957,9 @@ export default function ChatView({
     handoffBusy,
     onComposerFocusRequest: scheduleComposerFocus,
     providerOwnsWorktree: !localWorkspaceAvailable,
+    cloud: cloudProvider,
+    cloudRows,
+    onCloudSelect,
     environmentUnavailableMessage,
     ...(isStudioContainer ? { fixedLocalWorkspaceCwd: threadWorkspaceCwd } : {}),
     ...(canCheckoutPullRequestIntoThread
@@ -6277,6 +6294,7 @@ export default function ChatView({
           defaultEnvMode={selectionChatEnvMode ?? settings.defaultThreadEnvMode}
           canUseWorktree={isGitRepo && !isContainerLandingProject}
           providerOwnsWorktree={!localWorkspaceAvailable}
+          cloud={cloudProvider}
           environmentUnavailableMessage={environmentUnavailableMessage}
           canAddToSide={
             isServerThread && sidechatsAvailable && !activeThread.sidechatSourceThreadId

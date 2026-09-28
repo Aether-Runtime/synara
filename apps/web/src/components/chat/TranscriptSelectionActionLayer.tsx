@@ -2,7 +2,7 @@
 // Purpose: Renders the transcript selection floating action from controller state.
 // Layer: Chat transcript interaction UI
 
-import type { ThreadEnvironmentMode } from "@synara/contracts";
+import type { ProviderKind, ThreadEnvironmentMode } from "@synara/contracts";
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -18,6 +18,7 @@ interface TranscriptSelectionActionLayerProps {
   defaultEnvMode: ThreadEnvironmentMode;
   canUseWorktree: boolean;
   providerOwnsWorktree?: boolean;
+  cloud?: ProviderKind | null;
   environmentUnavailableMessage?: string | null;
   canAddToSide: boolean;
   onDismiss: () => void;
@@ -45,6 +46,7 @@ export function TranscriptSelectionActionLayer(props: TranscriptSelectionActionL
         defaultEnvMode={props.defaultEnvMode}
         canUseWorktree={props.canUseWorktree}
         providerOwnsWorktree={props.providerOwnsWorktree ?? false}
+        cloud={props.cloud ?? null}
         environmentUnavailableMessage={props.environmentUnavailableMessage ?? null}
         onSend={(prompt, envMode) =>
           props.onNewChat(composerAction.selection, prompt, envMode, "send")

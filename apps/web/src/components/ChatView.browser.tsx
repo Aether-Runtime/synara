@@ -8365,7 +8365,7 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
-  it("shows an Aether draft in a new worktree without persisting the overlay", async () => {
+  it("shows an Aether draft as Cloud without persisting the worktree overlay", async () => {
     const restoreNativeApi = installDeterministicSendNativeApi();
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -8408,7 +8408,7 @@ describe("ChatView transcript geometry (full app)", () => {
       useComposerDraftStore
         .getState()
         .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
-      const picker = await waitForEnvironmentModeButton("Worktree");
+      const picker = await waitForEnvironmentModeButton("Cloud");
       // The branch selector picks a base branch under the overlay; the draft and the
       // project preference keep their persisted Local mode.
       await vi.waitFor(
@@ -8425,11 +8425,11 @@ describe("ChatView transcript geometry (full app)", () => {
 
       picker.click();
       await expect
-        .element(page.getByRole("menuitem", { name: "Worktree", exact: true }))
+        .element(page.getByRole("menuitem", { name: "Cloud (Aether)", exact: true }))
         .toBeInTheDocument();
       await expect
         .element(page.getByRole("menuitem", { name: "Local project", exact: true }))
-        .not.toBeInTheDocument();
+        .toBeInTheDocument();
       await expect.element(page.getByText("Hand off to local")).not.toBeInTheDocument();
       await expect.element(page.getByText("Hand off to new worktree")).not.toBeInTheDocument();
       await userEvent.keyboard("{Escape}");
@@ -8491,7 +8491,7 @@ describe("ChatView transcript geometry (full app)", () => {
       useComposerDraftStore
         .getState()
         .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
-      await waitForEnvironmentModeButton("Worktree");
+      await waitForEnvironmentModeButton("Cloud");
       useComposerDraftStore.getState().setPrompt(newThreadId, "Ship it in the cloud");
       await vi.waitFor(
         () => {
@@ -9031,6 +9031,10 @@ describe("ChatView transcript geometry (full app)", () => {
           available: true,
           authStatus,
           checkedAt: NOW_ISO,
+          message:
+            authStatus === "authenticated"
+              ? "Connected to Aether as dev@example.com."
+              : "Aether is not configured. Add an Aether API key in Settings → Providers.",
         },
       ];
       nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
@@ -9072,7 +9076,7 @@ describe("ChatView transcript geometry (full app)", () => {
         .setModelSelection(newThreadId, { provider: "aether", model: "claude-opus-5-5" });
       await expect.element(hint).toBeInTheDocument();
       expect(hint.element().textContent).toContain(
-        "Aether runs this chat in the cloud. The repo must be on GitHub and imported as a project in Aether.",
+        "This chat runs in the cloud on Aether. The repo must be on GitHub and imported as a project in Aether.",
       );
       expect(
         page.getByRole("link", { name: "Get an API key" }).element().getAttribute("href"),
@@ -9111,9 +9115,143 @@ describe("ChatView transcript geometry (full app)", () => {
       const hint = page.getByTestId("composer-cloud-provider-hint");
       await expect.element(hint).toBeInTheDocument();
       expect(hint.element().textContent).toContain(
-        "Aether runs this chat in the cloud. The repo must be on GitHub and imported as a project in Aether.",
+        "This chat runs in the cloud on Aether. The repo must be on GitHub and imported as a project in Aether.",
       );
       expect(hint.element().querySelector("a")).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("chooses Cloud for a new chat and returns to the harness on Local", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-location-test" as MessageId,
+        targetText: "cloud location test",
+      }),
+      configureFixture: withAetherStatus("authenticated"),
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      await waitForEnvironmentModeButton("Local");
+      const draft = () => useComposerDraftStore.getState().draftsByThreadId[newThreadId];
+      const draftEnvMode = () =>
+        useComposerDraftStore.getState().getDraftThread(newThreadId)?.envMode;
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(newThreadId, { provider: "claudeAgent", model: "claude-opus-5-5" });
+      await vi.waitFor(() => expect(draft()?.activeProvider).toBe("claudeAgent"));
+
+      (await waitForEnvironmentModeButton("Local")).click();
+      await page.getByRole("menuitem", { name: "Cloud (Aether)", exact: true }).click();
+
+      // Cloud is the selection's provider: the hosted twin of the local model, on Aether.
+      await waitForEnvironmentModeButton("Cloud");
+      await vi.waitFor(() => {
+        expect(draft()?.activeProvider).toBe("aether");
+        expect(draft()?.modelSelectionByProvider.aether?.model).toBe("claude-opus-5-5");
+      });
+      // The persisted mode is untouched: the cloud's worktree is a projection.
+      expect(draftEnvMode()).toBe("local");
+
+      (await waitForEnvironmentModeButton("Cloud")).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Cloud (Aether)", exact: true }))
+        .toBeInTheDocument();
+      await page.getByRole("menuitem", { name: "Local project", exact: true }).click();
+
+      await waitForEnvironmentModeButton("Local");
+      await vi.waitFor(() => {
+        expect(draft()?.activeProvider).toBe("claudeAgent");
+        expect(draft()?.modelSelectionByProvider.claudeAgent?.model).toBe("claude-opus-5-5");
+      });
+      expect(draftEnvMode()).toBe("local");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers no Cloud row while Aether is disabled in settings", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-disabled-test" as MessageId,
+        targetText: "cloud disabled test",
+      }),
+      configureFixture: (nextFixture) => {
+        const providers: ServerConfig["providers"] = [
+          ...nextFixture.serverConfig.providers,
+          {
+            provider: "aether",
+            status: "warning",
+            available: false,
+            authStatus: "unknown",
+            checkedAt: NOW_ISO,
+            message: "Provider is disabled in Synara settings.",
+          },
+        ];
+        nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+        nextFixture.providerStatusesSnapshot = providers;
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      (await waitForEnvironmentModeButton("Local")).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "New worktree", exact: true }))
+        .toBeInTheDocument();
+      await expect.element(page.getByRole("menuitem", { name: /Cloud/ })).not.toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("disables the Cloud row until an Aether API key is added", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-unauthenticated-test" as MessageId,
+        targetText: "cloud unauthenticated test",
+      }),
+      configureFixture: withAetherStatus("unauthenticated"),
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      (await waitForEnvironmentModeButton("Local")).click();
+      const cloudRow = page.getByRole("menuitem", { name: /Cloud \(Aether\)/ });
+      await expect.element(cloudRow).toBeInTheDocument();
+      expect(cloudRow.element().hasAttribute("data-disabled")).toBe(true);
+      expect(cloudRow.element().textContent).toContain(
+        "Add an Aether API key in Settings → Providers.",
+      );
+      await cloudRow.click({ force: true });
+      await userEvent.keyboard("{Escape}");
+      await waitForEnvironmentModeButton("Local");
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[newThreadId]?.activeProvider,
+      ).not.toBe("aether");
     } finally {
       await mounted.cleanup();
     }

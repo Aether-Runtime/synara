@@ -158,6 +158,25 @@ it("says what a provider that owns its worktree needs where no worktree can exis
   }
 });
 
+it("reads Cloud for a new chat on a cloud provider", async () => {
+  const screen = await render(
+    <TranscriptSelectionActionLayer {...props()} providerOwnsWorktree cloud="aether" />,
+  );
+  try {
+    await page.getByRole("button", { name: "Add to new Chat" }).click();
+    await page.getByRole("button", { name: "Cloud", exact: true }).click();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Cloud (Aether)", exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Local project", exact: true }))
+      .not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+  } finally {
+    await screen.unmount();
+  }
+});
+
 it.each(["", "Let me add more context"])(
   "opens the full composer with the quote and draft %j without sending",
   async (prompt) => {
