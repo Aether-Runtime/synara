@@ -5,6 +5,7 @@
 
 import type { ModelSlug, ProviderKind } from "@synara/contracts";
 import { resolveSelectableModel } from "@synara/shared/model";
+import { hostedProviderForModel, providerIsCloudService } from "@synara/shared/providerMetadata";
 
 import { type StarredModel, starredModelKey } from "~/lib/starredModels";
 import {
@@ -122,7 +123,10 @@ export function starredTraitsMatch(
 // One row of the picker list, already resolved to what selecting it commits.
 export type ComposerModelPickerRow = {
   key: string;
+  /** The provider the row commits and runs its traits with: the cloud for a hosted model. */
   provider: ProviderKind;
+  /** The provider the row shows: the harness that runs the model, local or in the cloud. */
+  harness: ProviderKind;
   model: string;
   selectableModel: ModelSlug | null;
   name: string;
@@ -135,12 +139,16 @@ export type ComposerModelPickerRow = {
 };
 
 export function buildProviderTabRows(input: {
+  /** The tab: the harness the rows present. */
   provider: ProviderKind;
+  /** The provider a pick commits when it differs from the tab: the cloud of a hosted tab. */
+  commitProvider?: ProviderKind;
   options: ReadonlyArray<ProviderModelOption>;
   query: string;
   selectedModel: string | null;
 }): ComposerModelPickerRow[] {
   const { provider, query } = input;
+  const commitProvider = input.commitProvider ?? provider;
   const filteredOptions =
     query.length > 0
       ? input.options.filter((option) =>
@@ -153,8 +161,9 @@ export function buildProviderTabRows(input: {
       : input.options;
   return groupProviderModelOptions(filteredOptions).flatMap((group) =>
     group.options.map((option) => ({
-      key: `${provider}:${option.slug}`,
-      provider,
+      key: `${commitProvider}:${option.slug}`,
+      provider: commitProvider,
+      harness: provider,
       model: option.slug,
       selectableModel: option.slug,
       name: option.name,
@@ -195,14 +204,21 @@ export function buildStarredTabRows(input: {
       entry,
       input.effortLevelsFor(entry.provider, entry.model),
     );
+    // A cloud preset shows the harness that runs its model and says where it runs.
+    const cloud = providerIsCloudService(entry.provider);
+    const harness = cloud ? hostedProviderForModel(entry.provider, entry.model) : null;
+    const detail = [cloud ? "Cloud" : null, traitsLabel || null]
+      .filter((part): part is string => part !== null)
+      .join(" · ");
     return [
       {
         key: starredModelKey(entry),
         provider: entry.provider,
+        harness: harness ?? entry.provider,
         model: entry.model,
         selectableModel,
         name,
-        detail: selectableModel === null ? "Unavailable" : traitsLabel || null,
+        detail: selectableModel === null ? "Unavailable" : detail || null,
         selected:
           selectableModel !== null &&
           entry.provider === input.current.provider &&

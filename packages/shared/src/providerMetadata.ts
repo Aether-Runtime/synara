@@ -53,6 +53,13 @@ export interface ProviderDescriptor {
    */
   readonly supportsConversationRollback: boolean;
   /**
+   * True when a started thread can change its model, in its session or by restarting it.
+   * Mirrors the adapter's `sessionModelSwitch` capability (`"unsupported"` is false), so the
+   * picker locks the model of a started thread the adapter would ignore; keep the two in sync.
+   * An Aether task's agent and model are fixed when the task is created.
+   */
+  readonly supportsSessionModelSwitch: boolean;
+  /**
    * How Synara reaches the provider: a CLI installed and launched on this machine, or a
    * cloud service it connects to with an API key, with nothing installed and no version.
    */
@@ -98,6 +105,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "codex login",
@@ -114,6 +122,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "claude",
@@ -130,6 +139,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "cursor-agent login",
@@ -146,6 +156,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "agy",
@@ -162,6 +173,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "grok login",
@@ -178,6 +190,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "droid",
@@ -194,6 +207,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "opencode auth login",
@@ -210,6 +224,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "pi",
@@ -226,6 +241,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "devin auth login",
@@ -244,6 +260,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: false,
     managesWorktreeBranch: true,
     supportsConversationRollback: false,
+    supportsSessionModelSwitch: false,
     hosts: [aetherHost("claude-code", "claudeAgent"), aetherHost("codex", "codex")],
     usage: null,
   },
@@ -263,6 +280,14 @@ export const providerSupportsNativeTurnSteering = (kind: string): boolean =>
 /** True for a cloud service Synara connects to, rather than a CLI installed locally. */
 export const providerIsCloudService = (kind: ProviderKind): boolean =>
   PROVIDER_DESCRIPTOR_BY_KIND[kind].runtime === "cloud";
+
+/**
+ * True when a started thread keeps its model: `lockedProvider`, the provider a started thread
+ * is bound to (null before its first turn), cannot switch a session's model.
+ */
+export const startedThreadModelIsFixed = (lockedProvider: ProviderKind | null): boolean =>
+  lockedProvider !== null &&
+  !PROVIDER_DESCRIPTOR_BY_KIND[lockedProvider].supportsSessionModelSwitch;
 
 /** The cloud providers that run `harness` remotely, each with the host it offers for it. */
 export function cloudHostsFor(
@@ -293,28 +318,64 @@ export function hostedProviderForModel(
   return host?.provider ?? null;
 }
 
+/** The entries of `cloud`'s model list that `harness` runs there. */
+export function hostedModelsFor<T extends { readonly slug: string }>(
+  cloud: ProviderKind,
+  harness: ProviderKind,
+  options: ReadonlyArray<T>,
+): T[] {
+  return options.filter((option) => hostedProviderForModel(cloud, option.slug) === harness);
+}
+
 export type PresentedProvider =
   | { readonly harness: ProviderKind; readonly cloud: null }
   | { readonly harness: ProviderWithDefaultModel; readonly cloud: ProviderKind };
 
 /**
- * The harness a selection presents and the cloud it runs on. A CLI selection is its own
- * harness with no cloud; a cloud selection presents the host whose catalog holds its model.
+ * A persisted cloud selection whose model no host lists: a retired catalog slug with no
+ * alias, or a row written before the cloud catalog was closed to custom models. It has no
+ * harness to present or return to; surfaces show the cloud and the raw slug.
+ */
+export interface UnhostedCloudModel {
+  readonly harness: null;
+  readonly cloud: ProviderKind;
+}
+
+/**
+ * The harness a selection presents and the cloud it runs on, for persisted data: a CLI
+ * selection is its own harness with no cloud; a cloud selection presents the host whose
+ * catalog holds its model, or `harness: null` when none does.
+ */
+export function parsePresentedProvider(selection: {
+  readonly provider: ProviderKind;
+  readonly model: string;
+}): PresentedProvider | UnhostedCloudModel {
+  if (!providerIsCloudService(selection.provider)) {
+    return { harness: selection.provider, cloud: null };
+  }
+  const harness = hostedProviderForModel(selection.provider, selection.model);
+  return harness === null
+    ? { harness: null, cloud: selection.provider }
+    : { harness, cloud: selection.provider };
+}
+
+/**
+ * `parsePresentedProvider` for a selection the caller already knows is hosted: a composer pick
+ * (`getAppModelOptions` offers a cloud provider only its hosts' models), or a way back from the
+ * cloud, which is offered only for a hosted model. An unhosted model here is an invariant
+ * violation.
  */
 export function resolvePresentedProvider(selection: {
   readonly provider: ProviderKind;
   readonly model: string;
 }): PresentedProvider {
-  if (!providerIsCloudService(selection.provider)) {
-    return { harness: selection.provider, cloud: null };
-  }
-  const harness = hostedProviderForModel(selection.provider, selection.model);
-  if (harness === null) {
+  const presented = parsePresentedProvider(selection);
+  if (presented.harness === null) {
     throw new Error(
       `${PROVIDER_DESCRIPTOR_BY_KIND[selection.provider].displayName} has no host that runs "${selection.model}".`,
     );
   }
-  return { harness, cloud: selection.provider };
+  return presented;
 }
 
 /** A Synara feature a provider capability can rule out. */

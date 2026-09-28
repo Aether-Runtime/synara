@@ -5,6 +5,11 @@
 // Depends on: provider icons/availability helpers and tooltip primitives.
 
 import { type ProviderKind, type ServerProviderStatus } from "@synara/contracts";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  type PresentedProvider,
+  type UnhostedCloudModel,
+} from "@synara/shared/providerMetadata";
 import { type ReactNode } from "react";
 
 import { PlusIcon, StarFilledIcon } from "~/lib/icons";
@@ -71,6 +76,54 @@ export function resolveComposerModelPickerProviderTabs(
       unavailableLabel: availability.disabled ? (availability.label ?? "Unavailable") : null,
     };
   });
+}
+
+export const CLOUD_UNAVAILABLE_TAB_LABEL = "Not available in Cloud";
+
+/**
+ * The provider tabs the picker offers a selection. On this machine: every visible provider,
+ * open or not by its status. In the cloud: the cloud's hosts first, always open (the cloud
+ * runs them, whatever the local CLI's state), then every other visible provider disabled as
+ * "Not available in Cloud". A started thread keeps only the tab it runs: its provider, or the
+ * harness its cloud runs; a cloud model no host lists keeps every host.
+ */
+export function resolveComposerModelPickerTabs(input: {
+  /** Visible local providers, in the user's order; cloud providers never get a tab. */
+  options: ReadonlyArray<{ value: ProviderKind; label: string }>;
+  providers: ReadonlyArray<ServerProviderStatus> | undefined;
+  presented: PresentedProvider | UnhostedCloudModel;
+  lockedProvider: ProviderKind | null;
+}): ComposerModelPickerProviderTab[] {
+  const { presented, lockedProvider } = input;
+  if (presented.cloud === null) {
+    const tabs = resolveComposerModelPickerProviderTabs(input.options, input.providers);
+    return lockedProvider === null ? tabs : tabs.filter((tab) => tab.provider === lockedProvider);
+  }
+  const hosts = PROVIDER_DESCRIPTOR_BY_KIND[presented.cloud].hosts.map(
+    (host): ComposerModelPickerProviderTab => ({
+      provider: host.provider,
+      label: PROVIDER_DESCRIPTOR_BY_KIND[host.provider].displayName,
+      unavailableLabel: null,
+    }),
+  );
+  if (lockedProvider !== null) {
+    return presented.harness === null
+      ? hosts
+      : hosts.filter((tab) => tab.provider === presented.harness);
+  }
+  const hostProviders = new Set(hosts.map((tab) => tab.provider));
+  return [
+    ...hosts,
+    ...input.options
+      .filter((option) => !hostProviders.has(option.value))
+      .map(
+        (option): ComposerModelPickerProviderTab => ({
+          provider: option.value,
+          label: option.label,
+          unavailableLabel: CLOUD_UNAVAILABLE_TAB_LABEL,
+        }),
+      ),
+  ];
 }
 
 export function ComposerModelPickerTabs(props: {

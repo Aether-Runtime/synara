@@ -63,6 +63,7 @@ import {
   resolveCommittedProviderModel,
   resolveComposerStripWorkLogEntries,
   resolveCycledModelSlug,
+  resolveModelCycleOptions,
   resolveDefaultEnvironmentPanelOpen,
   resolveEnvironmentPanelOpen,
   resolveEnvironmentPanelPreferenceAfterFirstSend,
@@ -1224,6 +1225,43 @@ describe("git repository UI state", () => {
         queriedIsRepo: undefined,
       }),
     ).toBe(true);
+  });
+});
+
+describe("resolveModelCycleOptions", () => {
+  const modelOptionsByProvider = {
+    codex: [{ slug: "gpt-5.5" }, { slug: "gpt-5.4" }],
+    claudeAgent: [{ slug: "claude-opus-5-5" }],
+    cursor: [],
+    devin: [],
+    antigravity: [],
+    grok: [],
+    droid: [],
+    opencode: [],
+    pi: [],
+    aether: [{ slug: "claude-opus-5-5" }, { slug: "claude-sonnet-5" }, { slug: "gpt-6-astra" }],
+  };
+
+  it("cycles a local selection within its provider's list", () => {
+    expect(
+      resolveModelCycleOptions({ provider: "codex", model: "gpt-5.5", modelOptionsByProvider }),
+    ).toEqual(modelOptionsByProvider.codex);
+  });
+
+  it("cycles a cloud selection within the hosted list of its harness", () => {
+    expect(
+      resolveModelCycleOptions({
+        provider: "aether",
+        model: "claude-opus-5-5",
+        modelOptionsByProvider,
+      }).map((option) => option.slug),
+    ).toEqual(["claude-opus-5-5", "claude-sonnet-5"]);
+  });
+
+  it("offers nothing for a cloud model no host lists", () => {
+    expect(
+      resolveModelCycleOptions({ provider: "aether", model: "gpt-5", modelOptionsByProvider }),
+    ).toEqual([]);
   });
 });
 

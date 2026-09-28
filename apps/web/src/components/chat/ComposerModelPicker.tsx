@@ -15,6 +15,12 @@ import {
   type ThreadId,
 } from "@synara/contracts";
 import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  hostedModelsFor,
+  parsePresentedProvider,
+  startedThreadModelIsFixed,
+} from "@synara/shared/providerMetadata";
+import {
   useDeferredValue,
   useEffect,
   useEffectEvent,
@@ -51,10 +57,7 @@ import {
   STARRED_TAB,
 } from "./ComposerModelPicker.logic";
 import { ComposerModelPickerRow } from "./ComposerModelPickerRow";
-import {
-  ComposerModelPickerTabs,
-  resolveComposerModelPickerProviderTabs,
-} from "./ComposerModelPickerTabs";
+import { ComposerModelPickerTabs, resolveComposerModelPickerTabs } from "./ComposerModelPickerTabs";
 import {
   type ComposerEffortControl,
   ComposerModelPickerTraitRows,
@@ -149,11 +152,28 @@ function groupRowElements(
   ));
 }
 
+// The tab a cloud selection without a hosted model opens on: the cloud's first harness.
+function firstHostOf(cloud: ProviderKind): ProviderKind {
+  const host = PROVIDER_DESCRIPTOR_BY_KIND[cloud].hosts[0];
+  if (!host) {
+    throw new Error(`${PROVIDER_DESCRIPTOR_BY_KIND[cloud].displayName} hosts no harness.`);
+  }
+  return host.provider;
+}
+
 export function ComposerModelPicker(props: ComposerModelPickerProps) {
   const { onOpenChange, open, lockedProvider, threadId } = props;
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const isMenuOpen = open ?? uncontrolledOpen;
   const activeProvider = lockedProvider ?? props.provider;
+  // A cloud selection presents the harness running its model; the picker's tabs are the
+  // cloud's hosts and its rows commit the cloud.
+  const presented = parsePresentedProvider({ provider: activeProvider, model: props.model });
+  const cloud = presented.cloud;
+  const homeTab: ProviderKind =
+    presented.harness ?? (cloud === null ? activeProvider : firstHostOf(cloud));
+  // A started thread whose provider cannot change its model shows the rows read-only.
+  const modelSwitchLocked = startedThreadModelIsFixed(lockedProvider);
   const effortControl = props.effortControl ?? "menu";
   const usesEffortSlider = effortControl === "slider";
 
@@ -164,7 +184,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
       ? starredModels
       : starredModels.filter((entry) => entry.provider === lockedProvider);
 
-  const [tab, setTab] = useState<ComposerModelPickerTab>(activeProvider);
+  const [tab, setTab] = useState<ComposerModelPickerTab>(homeTab);
   const [query, setQuery] = useState("");
   const normalizedQuery = useDeferredValue(query).trim().toLowerCase();
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -174,7 +194,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
   if (wasMenuOpen !== isMenuOpen) {
     setWasMenuOpen(isMenuOpen);
     if (isMenuOpen) {
-      setTab(usableStarredModels.length > 0 ? STARRED_TAB : activeProvider);
+      setTab(usableStarredModels.length > 0 ? STARRED_TAB : homeTab);
       setQuery("");
     }
   }
@@ -240,16 +260,21 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
     props.runtimeModel,
   );
 
-  const providerTabs = resolveComposerModelPickerProviderTabs(
-    resolveVisibleProviderOptions({
+  const providerTabs = resolveComposerModelPickerTabs({
+    options: resolveVisibleProviderOptions({
       provider: props.provider,
       lockedProvider,
       providers: props.providers,
       hiddenProviders: props.hiddenProviders,
       providerOrder: props.providerOrder,
-    }).filter((option) => lockedProvider === null || option.value === lockedProvider),
-    props.providers,
-  );
+    }),
+    providers: props.providers,
+    presented,
+    lockedProvider,
+  });
+  const isHostedTab = (candidate: ProviderKind): boolean =>
+    cloud !== null &&
+    PROVIDER_DESCRIPTOR_BY_KIND[cloud].hosts.some((host) => host.provider === candidate);
 
   const rows =
     tab === STARRED_TAB
@@ -264,12 +289,20 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
           },
           effortLevelsFor: (provider, model) => traitSelectionFor(provider, model).effortLevels,
         })
-      : buildProviderTabRows({
-          provider: tab,
-          options: props.modelOptionsByProvider[tab],
-          query: normalizedQuery,
-          selectedModel: tab === activeProvider ? props.model : null,
-        });
+      : cloud !== null && isHostedTab(tab)
+        ? buildProviderTabRows({
+            provider: tab,
+            commitProvider: cloud,
+            options: hostedModelsFor(cloud, tab, props.modelOptionsByProvider[cloud]),
+            query: normalizedQuery,
+            selectedModel: presented.harness === tab ? props.model : null,
+          })
+        : buildProviderTabRows({
+            provider: tab,
+            options: props.modelOptionsByProvider[tab],
+            query: normalizedQuery,
+            selectedModel: tab === activeProvider ? props.model : null,
+          });
   const starredModelSlots = new Set(starredModels.map(starredModelSlotKey));
 
   // Commit a row: `patch` carries the traits to apply on top of the provider's options.
@@ -302,7 +335,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
 
   const selectRow = (row: PickerRow) => {
     const model = row.selectableModel;
-    if (props.disabled || model === null) return;
+    if (props.disabled || modelSwitchLocked || model === null) return;
     const selection = traitSelectionFor(row.provider, model);
     // Slider mode: switching to a model with an effort ladder keeps the panel open so the
     // footer slider can set its effort. Presets already carry their effort, and picking
@@ -336,7 +369,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
   // Pick a model and its effort in one gesture from the row's side block.
   const selectRowWithEffort = (row: PickerRow, value: string) => {
     const model = row.selectableModel;
-    if (props.disabled || model === null) return;
+    if (props.disabled || modelSwitchLocked || model === null) return;
     const plan = planComposerEffortChange({
       provider: row.provider,
       selection: traitSelectionFor(row.provider, model),
@@ -383,9 +416,14 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
   }, [isMenuOpen]);
 
   const shortcutModifierLabel = isMacNavigatorPlatform() ? "⌘" : "Ctrl ";
+  // A hosted tab lists the cloud's catalog: the local CLI's discovery state is not its own.
+  const discoveryTab = tab === STARRED_TAB || isHostedTab(tab) ? null : tab;
   const isTabLoading =
-    tab !== STARRED_TAB && (props.loadingModelProviders?.[tab] ?? false) && rows.length === 0;
-  const discoveryError = tab === STARRED_TAB ? undefined : props.discoveryErrorsByProvider?.[tab];
+    discoveryTab !== null &&
+    (props.loadingModelProviders?.[discoveryTab] ?? false) &&
+    rows.length === 0;
+  const discoveryError =
+    discoveryTab === null ? undefined : props.discoveryErrorsByProvider?.[discoveryTab];
 
   return (
     <Menu
@@ -393,7 +431,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
       onOpenChange={(nextOpen) => setMenuOpen(props.disabled ? false : nextOpen)}
     >
       <ComposerModelMenuTrigger
-        provider={activeProvider}
+        provider={presented.harness ?? activeProvider}
         modelLabel={modelLabel}
         statusLabel={resolveComposerTraitStatusLabel(currentTraitSelection)}
         contextWindowLabel={activeProvider === "claudeAgent" ? props.contextWindowLabel : null}
@@ -489,8 +527,11 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
                   <ComposerModelPickerRow
                     key={row.key}
                     row={row}
+                    locked={modelSwitchLocked}
                     shortcutHint={
-                      row.selectableModel !== null && index < MODEL_PICKER_SHORTCUT_ROW_LIMIT
+                      !modelSwitchLocked &&
+                      row.selectableModel !== null &&
+                      index < MODEL_PICKER_SHORTCUT_ROW_LIMIT
                         ? `${shortcutModifierLabel}${index + 1}`
                         : null
                     }

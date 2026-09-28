@@ -10,6 +10,12 @@ import type {
 } from "@synara/contracts";
 import { getAgentMentionAutocompleteAliases } from "@synara/contracts";
 import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  hostedModelsFor,
+  providerIsCloudService,
+  startedThreadModelIsFixed,
+} from "@synara/shared/providerMetadata";
+import {
   buildCommandSearchFields,
   buildPluginSearchFields,
   buildSkillSearchFields,
@@ -29,7 +35,6 @@ import {
   getProviderNativeSlashCommandSearchTerms,
   shouldHideProviderNativeCommandFromComposerMenu,
 } from "../composerSlashCommands";
-import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { threadMentionPathForThreadId } from "@synara/shared/threadMentions";
 
 import type { ComposerCommandItem } from "../components/chat/ComposerCommandMenu";
@@ -231,6 +236,29 @@ export function buildThreadMentionComposerItems(input: {
   }));
 }
 
+function toSearchableModelOption(
+  provider: ProviderKind,
+  providerLabel: string,
+  { slug, name, upstreamProviderId, upstreamProviderName }: ProviderModelOption,
+): SearchableModelOption {
+  return {
+    provider,
+    providerLabel,
+    slug,
+    name,
+    searchSlug: slug.toLowerCase(),
+    searchName: name.toLowerCase(),
+    searchProvider: providerLabel.toLowerCase(),
+    searchUpstreamProvider: (upstreamProviderName ?? upstreamProviderId ?? "").toLowerCase(),
+  };
+}
+
+/**
+ * The models the "/model" command offers. In the cloud (`cloud` set): the cloud's hosted
+ * models, labelled by the harness that runs each and committing the cloud. On this machine:
+ * every offered local provider's models; a cloud provider never lists here, Cloud is chosen
+ * in the environment menu. None on a started thread whose provider cannot change its model.
+ */
 export function buildSearchableModelOptions(input: {
   providerOptions: ReadonlyArray<{ value: ProviderKind; label: string }>;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ProviderModelOption>>;
@@ -238,10 +266,24 @@ export function buildSearchableModelOptions(input: {
   hiddenProviders: readonly ProviderKind[];
   protectedProviders: readonly ProviderKind[];
   lockedProvider?: ProviderKind | null;
+  cloud: ProviderKind | null;
 }): SearchableModelOption[] {
+  if (startedThreadModelIsFixed(input.lockedProvider ?? null)) {
+    return [];
+  }
+  if (input.cloud !== null) {
+    const cloud = input.cloud;
+    return PROVIDER_DESCRIPTOR_BY_KIND[cloud].hosts.flatMap((host) => {
+      const label = `${PROVIDER_DESCRIPTOR_BY_KIND[host.provider].displayName} · Cloud`;
+      return hostedModelsFor(cloud, host.provider, input.modelOptionsByProvider[cloud]).map(
+        (option) => toSearchableModelOption(cloud, label, option),
+      );
+    });
+  }
   const hiddenProviderSet = new Set(input.hiddenProviders);
   const protectedProviderSet = new Set(input.protectedProviders);
   return input.providerOptions
+    .filter((option) => !providerIsCloudService(option.value))
     .toSorted((left, right) =>
       compareProvidersByOrder(input.providerOrder, left.value, right.value),
     )
@@ -251,17 +293,8 @@ export function buildSearchableModelOptions(input: {
         : protectedProviderSet.has(option.value) || !hiddenProviderSet.has(option.value),
     )
     .flatMap((option) =>
-      input.modelOptionsByProvider[option.value].map(
-        ({ slug, name, upstreamProviderId, upstreamProviderName }) => ({
-          provider: option.value,
-          providerLabel: option.label,
-          slug,
-          name,
-          searchSlug: slug.toLowerCase(),
-          searchName: name.toLowerCase(),
-          searchProvider: option.label.toLowerCase(),
-          searchUpstreamProvider: (upstreamProviderName ?? upstreamProviderId ?? "").toLowerCase(),
-        }),
+      input.modelOptionsByProvider[option.value].map((model) =>
+        toSearchableModelOption(option.value, option.label, model),
       ),
     );
 }

@@ -38,6 +38,8 @@ export function ComposerModelPickerRow(props: {
   row: PickerRow;
   /** "⌘1"-style hint, or null beyond the addressable rows. */
   shortcutHint: string | null;
+  /** True on a started thread whose provider cannot change its model: rows are read-only. */
+  locked: boolean;
   /** Provider options the row's model would run with (drives its effort + star state). */
   providerOptions: ProviderOptions | undefined;
   runtimeModels: ReadonlyArray<ProviderModelDescriptor> | null | undefined;
@@ -76,8 +78,11 @@ export function ComposerModelPickerRow(props: {
     onSelectEffort !== null && row.preset === null && !selection.ultrathinkPromptControlled
       ? selection.effortLevels
       : [];
-  const RowProviderIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[row.provider];
+  const RowProviderIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[row.harness];
   const rowClassName = cn("pe-1", row.selected && PICKER_PANEL_ROW_SELECTED_CLASS_NAME);
+  // The task's model is fixed: the current row says so, every row is read-only.
+  const detail = props.locked && row.selected ? "Fixed for this cloud task" : row.detail;
+  const readOnly = props.locked || row.selectableModel === null;
   const starButton = (
     <ModelStarButton
       starred={starred}
@@ -98,28 +103,32 @@ export function ComposerModelPickerRow(props: {
       {row.preset ? (
         <RowProviderIcon
           aria-hidden="true"
-          className={cn("size-3.5 shrink-0", getProviderIconClassName(row.provider))}
+          className={cn("size-3.5 shrink-0", getProviderIconClassName(row.harness))}
         />
       ) : null}
-      <span className={cn("truncate", row.detail !== null && "max-w-[62%] shrink-0")}>
-        {row.name}
-      </span>
+      <span className={cn("truncate", detail !== null && "max-w-[62%] shrink-0")}>{row.name}</span>
       <span className={cn("min-w-0 flex-1 truncate", COMPOSER_MUTED_ACCENT_TEXT_CLASS_NAME)}>
-        {row.detail}
+        {detail}
       </span>
       {props.shortcutHint ? (
         <Kbd className="h-4 min-w-4 shrink-0 px-1 text-ui-2xs text-muted-foreground">
           {props.shortcutHint}
         </Kbd>
       ) : null}
-      {row.selectableModel !== null ? starButton : null}
+      {readOnly ? null : starButton}
     </>
   );
 
-  if (row.selectableModel === null) {
+  // A disabled item takes no pointer events, so a read-only row keeps its star outside it.
+  if (readOnly) {
     return (
       <div className="relative">
-        <MenuItem disabled className="pe-8" closeOnClick={false}>
+        <MenuItem
+          disabled
+          aria-current={row.selected ? "true" : undefined}
+          className={cn(rowClassName, "pe-8")}
+          closeOnClick={false}
+        >
           {rowContent}
         </MenuItem>
         <div className="absolute inset-y-0 end-1 flex items-center">{starButton}</div>

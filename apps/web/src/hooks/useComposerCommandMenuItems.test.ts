@@ -2,10 +2,72 @@ import { describe, expect, it } from "vitest";
 
 import type { ComposerThreadMentionSource, Project } from "../types";
 import {
+  buildSearchableModelOptions,
   buildThreadMentionComposerItems,
   resolveThreadMentionForThreadId,
   useComposerCommandMenuItems,
 } from "./useComposerCommandMenuItems";
+
+describe("buildSearchableModelOptions", () => {
+  const modelOptionsByProvider = {
+    codex: [{ slug: "gpt-5.5", name: "GPT-5.5" }],
+    claudeAgent: [{ slug: "claude-opus-5-5", name: "Claude Opus 5.5" }],
+    cursor: [],
+    devin: [],
+    antigravity: [],
+    grok: [],
+    droid: [],
+    opencode: [],
+    pi: [],
+    aether: [
+      { slug: "claude-opus-5-5", name: "Claude Opus 5.5" },
+      { slug: "gpt-6-astra", name: "GPT-6 Astra" },
+    ],
+  };
+  const base = {
+    providerOptions: [
+      { value: "codex" as const, label: "Codex" },
+      { value: "claudeAgent" as const, label: "Claude" },
+      { value: "aether" as const, label: "Aether" },
+    ],
+    modelOptionsByProvider,
+    providerOrder: ["codex" as const, "claudeAgent" as const],
+    hiddenProviders: [],
+    protectedProviders: ["codex" as const],
+  };
+
+  it("never lists a cloud provider's models on this machine", () => {
+    expect(
+      buildSearchableModelOptions({ ...base, cloud: null }).map(
+        (option) => `${option.provider}:${option.slug}`,
+      ),
+    ).toEqual(["codex:gpt-5.5", "claudeAgent:claude-opus-5-5"]);
+  });
+
+  it("lists the cloud's hosted models by harness in the cloud, committing the cloud", () => {
+    expect(
+      buildSearchableModelOptions({ ...base, cloud: "aether" }).map((option) => ({
+        provider: option.provider,
+        providerLabel: option.providerLabel,
+        slug: option.slug,
+      })),
+    ).toEqual([
+      { provider: "aether", providerLabel: "Claude · Cloud", slug: "claude-opus-5-5" },
+      { provider: "aether", providerLabel: "Codex · Cloud", slug: "gpt-6-astra" },
+    ]);
+  });
+
+  it("lists nothing on a started cloud thread, whose model is fixed", () => {
+    expect(
+      buildSearchableModelOptions({ ...base, cloud: "aether", lockedProvider: "aether" }),
+    ).toEqual([]);
+    expect(
+      buildSearchableModelOptions({ ...base, cloud: null, lockedProvider: "codex" }).map(
+        (option) => `${option.provider}:${option.slug}`,
+      ),
+    ).toEqual(["codex:gpt-5.5"]);
+  });
+});
 
 function project(id: string, kind: Project["kind"], name: string): Project {
   return {

@@ -1,6 +1,10 @@
 import { flushWorkspaceEditors } from "~/lib/workspaceEditorSession";
 import { resolveComputerInvocationMode } from "@synara/shared/computerInvocation";
-import { providerSupportsFeature } from "@synara/shared/providerMetadata";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  parsePresentedProvider,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import {
   prepareComputerPermissionGuide,
   readLocalComputerPermissionBridge,
@@ -42,6 +46,7 @@ import {
   queuedPlanFollowUpDispatchFields,
   resolveEnvironmentPanelPreferenceAfterFirstSend,
   resolveQueuedTurnDispatchSettings,
+  threadHasProviderLockingActivity,
 } from "../ChatView.logic";
 import { toastManager } from "../ui/toast";
 import type { ChatTurnSubmissionInput } from "./chatSendTypes";
@@ -601,6 +606,24 @@ export function useChatTurnSubmission({
         toastManager.add({
           type: "error",
           title: sendProviderAvailability.unavailableReason,
+        });
+        return false;
+      }
+      // A cloud model no host lists cannot run (the cloud's catalog no longer offers it), so
+      // the send is refused with the way out rather than failing in the cloud. A live session
+      // would still take a follow-up, but reattaching refuses the model (the adapter's
+      // `startSession` checks the catalog), so a started thread is refused here too.
+      const presentedForSend = parsePresentedProvider(selectedModelSelectionForSend);
+      if (presentedForSend.harness === null) {
+        const cloudName = PROVIDER_DESCRIPTOR_BY_KIND[presentedForSend.cloud].displayName;
+        // A plain toast shows its title only, so the way out is in it. A started thread's
+        // model is fixed; only a new chat gets another.
+        const wayOut = threadHasProviderLockingActivity(activeThread)
+          ? "Start a new chat."
+          : "Pick another model.";
+        toastManager.add({
+          type: "error",
+          title: `${cloudName} no longer offers "${selectedModelSelectionForSend.model}". ${wayOut}`,
         });
         return false;
       }
