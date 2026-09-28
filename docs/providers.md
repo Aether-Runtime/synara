@@ -26,6 +26,16 @@ executable: enable it and save an Aether API key under **Settings → Providers*
 the key against Aether's API. The key stays in the server's secret store and is never sent back to
 the app.
 
+Aether is a location, not another harness: it runs Claude Code and Codex in the cloud. Pick the
+harness and model in the model picker as usual, then pick **Cloud (Aether)** under **Work in** in
+the composer, or in the new-task menu on the Kanban board. In Cloud the picker offers Claude and
+Codex with the models Aether runs for each; the other providers are shown as "Not available in
+Cloud". Choosing **Local project** or **New worktree** brings the draft back to the same harness on
+this machine, with the same model when it has one. The Cloud row is disabled, with the reason,
+while Aether is not usable (no API key, or it cannot be reached), for a harness it does not run,
+and where no worktree can exist. Once a chat has started, its location and model are fixed. Aether
+has no row in the provider picker settings, and hiding providers there never hides Cloud.
+
 Aether runs the agent in a cloud VM, so the repository must be on GitHub and imported as a project
 in Aether. Its threads always run in a new worktree that Aether owns and, once a turn has started,
 never leave it. The features that need Synara's local agent gateway, the local checkout, or a

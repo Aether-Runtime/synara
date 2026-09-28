@@ -282,6 +282,36 @@ describe("buildKanbanBoard", () => {
     expect(localCard.provider).toBe("claudeAgent");
   });
 
+  it("opens the chat for a Cloud task's draft card, where the composer sets up its worktree", () => {
+    const cloudId = ThreadId.makeUnsafe("thread-cloud");
+    const board = buildKanbanBoard(
+      makeBoardInput({
+        draftThreads: [
+          {
+            threadId: cloudId,
+            projectId: ProjectId.makeUnsafe("project-1"),
+            createdAt: "2026-03-09T10:30:00.000Z",
+            branch: null,
+            // createKanbanDraftTask creates a task whose provider owns its worktree in one.
+            envMode: "worktree",
+            worktreePath: null,
+          },
+        ],
+        composerDraftByThreadId: {
+          [cloudId]: {
+            prompt: "Fix the checkout flake",
+            hasAttachments: false,
+            provider: "aether",
+          },
+        },
+      }),
+    );
+
+    const cloudCard = board.projects[0]!.draft[0]!;
+    expect(cloudCard).toMatchObject({ provider: "aether", envMode: "worktree" });
+    expect(resolveDraftDropAction(cloudCard)).toBe("open-thread");
+  });
+
   it("surfaces an unsent prompt on a settled thread as an extra draft card", () => {
     const threadId = ThreadId.makeUnsafe("thread-done");
     const board = buildKanbanBoard(

@@ -46,7 +46,7 @@ interface ChatCloudLocationInput {
     provider: ProviderKind,
     model: ModelSlug,
     options?: ComposerModelSelectionOptions,
-  ) => Promise<void>;
+  ) => Promise<void> | void;
   onEnvModeChange: (mode: DraftThreadEnvMode) => void;
 }
 

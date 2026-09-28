@@ -251,6 +251,20 @@ describe("resolveAvailableProviderPreference", () => {
     ).toBe("codex");
   });
 
+  it("never falls back into a cloud provider, hidden or not", () => {
+    expect(
+      resolveAvailableProviderPreference({
+        preferredProvider: "claudeAgent",
+        statuses: [
+          { ...READY_STATUS, provider: "claudeAgent", authStatus: "unauthenticated" },
+          { ...READY_STATUS, provider: "aether" },
+          { ...READY_STATUS, provider: "codex", authStatus: "unauthenticated" },
+        ],
+        providerOrder: ["aether", "claudeAgent", "codex"],
+      }),
+    ).toBe("claudeAgent");
+  });
+
   it("preserves the preference while provider status is loading", () => {
     expect(
       resolveAvailableProviderPreference({

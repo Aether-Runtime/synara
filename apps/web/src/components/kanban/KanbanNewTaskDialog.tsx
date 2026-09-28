@@ -14,6 +14,7 @@ import type {
   ProviderKind,
   RuntimeMode,
 } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -28,6 +29,7 @@ import {
   type ComposerPromptEditorHandle,
 } from "~/components/ComposerPromptEditor";
 import { ComposerCommandMenu } from "~/components/chat/ComposerCommandMenu";
+import type { ComposerModelSelectionOptions } from "~/components/chat/ComposerModelPicker";
 import { ProviderModelPicker } from "~/components/chat/ProviderModelPicker";
 import { TraitsPicker } from "~/components/chat/TraitsPicker";
 import {
@@ -39,6 +41,8 @@ import { ComposerVoiceButton } from "~/components/chat/ComposerVoiceButton";
 import { ComposerVoiceRecorderBar } from "~/components/chat/ComposerVoiceRecorderBar";
 import { useComposerVoiceController } from "~/components/chat/useComposerVoiceController";
 import { resolveRuntimeModelDescriptor } from "~/components/chat/runtimeModelCapabilities";
+import { getComposerTraitSelection } from "~/components/chat/composerTraits";
+import { useChatCloudLocation } from "~/components/chat/useChatCloudLocation";
 import {
   COMPOSER_COMMAND_MENU_INLINE_WRAPPER_CLASS_NAME,
   COMPOSER_EDITOR_MIN_HEIGHT_CLASS_NAME,
@@ -61,14 +65,16 @@ import { useComposerDropzone } from "~/hooks/useComposerDropzone";
 import { toastManager } from "~/components/ui/toast";
 import { useTheme } from "~/hooks/useTheme";
 import { ChevronRightIcon, LoaderCircleIcon, PaperclipIcon } from "~/lib/icons";
+import { isHomeChatContainerProject } from "~/lib/chatProjects";
 import { formatComposerMentionToken } from "~/lib/composerMentions";
+import { gitBranchesQueryOptions } from "~/lib/gitReactQuery";
 import { findProviderStatus } from "~/lib/providerAvailability";
 import { resolveProviderDiscoveryCwd } from "~/lib/providerDiscovery";
 import {
   normalizeRuntimeModeForProvider,
   providerModelSupportsAutoRuntimeMode,
 } from "~/lib/runtimeMode";
-import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
+import { serverConfigQueryOptions, serverSettingsQueryOptions } from "~/lib/serverReactQuery";
 import { cn } from "~/lib/utils";
 import {
   type ComposerFileAttachment,
@@ -80,6 +86,7 @@ import { type ExpandedImagePreview } from "../chat/ExpandedImagePreview";
 import { ExpandedImageOverlay } from "../chat/ExpandedImageOverlay";
 import { useStore } from "../../store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "../../types";
+import { useWorkspacePathsStore } from "../../workspacePathsStore";
 import { appendKanbanTaskTranscript, buildKanbanTaskPreview } from "./KanbanNewTaskDialog.logic";
 import { KanbanTaskExtrasMenu } from "./KanbanTaskExtrasMenu";
 import { KanbanTaskProjectPicker } from "./KanbanTaskProjectPicker";
@@ -122,6 +129,7 @@ export function KanbanNewTaskDialog({
   const providerOptionsForDispatch = useMemo(() => getProviderStartOptions(settings), [settings]);
   const projects = useStore((state) => state.projects);
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   const providerStatuses = useProviderStatusesForLocalConfig();
   const refreshProviderStatuses = useRefreshProviderStatusesNow();
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
@@ -180,6 +188,15 @@ export function KanbanNewTaskDialog({
     activeProjectCwd: selectedProject?.cwd ?? null,
     serverCwd: serverConfigQuery.data?.cwd ?? null,
   });
+  const homeDir = useWorkspacePathsStore((state) => state.homeDir);
+  const chatWorkspaceRoot = useWorkspacePathsStore((state) => state.chatWorkspaceRoot);
+  const isHomeChatContainer = isHomeChatContainerProject(selectedProject, {
+    homeDir,
+    chatWorkspaceRoot,
+  });
+  const branchesQuery = useQuery(
+    gitBranchesQueryOptions(isHomeChatContainer ? null : (selectedProject?.cwd ?? null)),
+  );
 
   // Voice transcription always rides on the Codex ChatGPT session, regardless of
   // which provider the task targets — gate the mic on the Codex status.
@@ -224,17 +241,50 @@ export function KanbanNewTaskDialog({
     [selectedModel, selectedModelSupportsAutoMode, selectedProvider, selectedRuntimeModel],
   );
   const handleProviderModelChange = useCallback(
-    (provider: ProviderKind, model: Parameters<typeof setScratchProviderModel>[1]) => {
+    (
+      provider: ProviderKind,
+      model: Parameters<typeof setScratchProviderModel>[1],
+      selectionOptions?: ComposerModelSelectionOptions,
+    ) => {
       const runtimeModel = resolveRuntimeModelDescriptor({
         provider,
         model,
         runtimeModels: runtimeModelsByProvider[provider],
       });
       setRuntimeMode((current) => normalizeRuntimeModeForProvider(current, provider));
-      setScratchProviderModel(provider, model, runtimeModel?.supportsAutoMode);
+      setScratchProviderModel(
+        provider,
+        model,
+        runtimeModel?.supportsAutoMode,
+        selectionOptions?.modelOptions,
+      );
     },
     [runtimeModelsByProvider, setScratchProviderModel],
   );
+  // Same location switch as the composer's "Work in" menu: the task's location is its
+  // selection's provider, so choosing Cloud or leaving it changes the selection.
+  const { cloudRows, onCloudSelect, onEnvModeChange, cloudHarnessKnown } = useChatCloudLocation({
+    threadId: scratchThreadId,
+    selectedProvider,
+    selectedModel: selectedModel ?? "",
+    selectedEffort: getComposerTraitSelection(
+      selectedProvider,
+      selectedModel,
+      prompt,
+      selectedProviderModelOptions,
+      selectedRuntimeModel,
+    ).effort,
+    modelOptionsByProvider,
+    runtimeModelsByProvider,
+    providerStatuses,
+    providerSettings: serverSettingsQuery.data?.providers,
+    // Where no worktree can exist (the Chats board, a folder without git), a cloud is offered
+    // disabled with the reason its send would give, as in the composer.
+    workspaceFeature:
+      isHomeChatContainer || branchesQuery.data?.isRepo === false ? "non-git-workspace" : null,
+    onProviderModelSelect: handleProviderModelChange,
+    onEnvModeChange: setEnvMode,
+  });
   useEffect(() => {
     if (
       runtimeMode === "auto" &&
@@ -577,7 +627,11 @@ export function KanbanNewTaskDialog({
                     interactionMode={interactionMode}
                     onInteractionModeChange={setInteractionMode}
                     envMode={envMode}
-                    onEnvModeChange={setEnvMode}
+                    onEnvModeChange={onEnvModeChange}
+                    cloud={providerIsCloudService(selectedProvider) ? selectedProvider : null}
+                    cloudRows={cloudRows}
+                    canLeaveCloud={cloudHarnessKnown}
+                    onCloudSelect={onCloudSelect}
                   />
                   <RuntimeUsageControls
                     provider={selectedProvider}

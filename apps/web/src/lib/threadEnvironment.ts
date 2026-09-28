@@ -40,8 +40,9 @@ export {
 /**
  * The env mode a thread works in with `provider`. A provider that owns its worktree only runs
  * in a new one, so this overlays "worktree" at render and send time. Never write the result
- * back to draft, project or thread state: writers keep the persisted mode, so switching a
- * draft to another provider returns to it.
+ * back to an existing draft, project or thread: writers keep the persisted mode, so switching
+ * a draft to another provider returns to it. A new Kanban task is created with it, because the
+ * board dispatches from the draft's own mode.
  */
 export function resolveProviderEnvMode(
   envMode: ThreadEnvironmentMode,

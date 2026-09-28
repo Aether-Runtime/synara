@@ -125,6 +125,15 @@ describe("server-backed provider enablement", () => {
     });
   });
 
+  it("never hides a cloud provider: Cloud is a location, not a picker entry", () => {
+    const stored = AppSettingsSchema.makeUnsafe({ hiddenProviders: ["aether", "pi"] });
+
+    expect(normalizeStoredAppSettings(stored).hiddenProviders).toEqual(["pi"]);
+    expect(
+      applyLocalAppSettingsPatch(stored, { hiddenProviders: ["grok", "aether"] }).hiddenProviders,
+    ).toEqual(["grok"]);
+  });
+
   it("persists disable and re-enable patches for every provider", () => {
     const disabledPatch = appSettingsPatchToServerSettingsPatch({
       disabledProviders: ["opencode", "pi"],

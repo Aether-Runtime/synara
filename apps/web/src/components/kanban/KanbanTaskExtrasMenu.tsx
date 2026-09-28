@@ -1,9 +1,9 @@
 // FILE: KanbanTaskExtrasMenu.tsx
-// Purpose: Compact plus-menu for kanban task mode/environment toggles.
+// Purpose: Compact plus-menu for kanban task mode/location toggles.
 // Layer: Kanban UI component
 // Exports: KanbanTaskExtrasMenu
 
-import type { ProviderInteractionMode } from "@synara/contracts";
+import type { ProviderInteractionMode, ProviderKind } from "@synara/contracts";
 
 import {
   ComposerPickerMenuPopup,
@@ -20,19 +20,35 @@ import {
   MenuTrigger,
 } from "~/components/ui/menu";
 import { CentralIcon } from "~/lib/central-icons";
-import { BugIcon, ListTodoIcon, MessageCircleIcon, PlusIcon, WorktreeIcon } from "~/lib/icons";
+import {
+  BugIcon,
+  CloudIcon,
+  ListTodoIcon,
+  MessageCircleIcon,
+  PlusIcon,
+  WorktreeIcon,
+} from "~/lib/icons";
+import { cloudLocationLabel } from "~/lib/threadEnvironment";
 import type { DraftThreadEnvMode } from "../../composerDraftStore";
+import type { CloudLocationRow } from "../BranchToolbar.logic";
 
 interface KanbanTaskExtrasMenuProps {
   readonly interactionMode: ProviderInteractionMode;
   readonly onInteractionModeChange: (mode: ProviderInteractionMode) => void;
   readonly envMode: DraftThreadEnvMode;
   readonly onEnvModeChange: (mode: DraftThreadEnvMode) => void;
+  /** The cloud provider the task runs on; null when it runs on this machine. */
+  readonly cloud: ProviderKind | null;
+  /** Cloud providers offered as a location while the task runs on this machine. */
+  readonly cloudRows: ReadonlyArray<CloudLocationRow>;
+  /** False while the task's cloud model has no host, so there is no harness to return to. */
+  readonly canLeaveCloud: boolean;
+  readonly onCloudSelect: (cloud: ProviderKind) => void;
 }
 
 /**
  * The composer `+` analog: a single chrome icon button hosting the task's quick
- * toggles (Plan mode and Local/Worktree environment), mirroring how the
+ * toggles (Plan mode and the Local/Worktree/Cloud location), mirroring how the
  * composer's ComposerExtrasMenu collapses mode switches behind one `+`.
  */
 export function KanbanTaskExtrasMenu({
@@ -40,6 +56,10 @@ export function KanbanTaskExtrasMenu({
   onInteractionModeChange,
   envMode,
   onEnvModeChange,
+  cloud,
+  cloudRows,
+  canLeaveCloud,
+  onCloudSelect,
 }: KanbanTaskExtrasMenuProps) {
   return (
     <Menu>
@@ -89,26 +109,70 @@ export function KanbanTaskExtrasMenu({
           </ComposerPickerMenuSubPopup>
         </MenuSub>
         <MenuSeparator />
+        {/* The location is the selection's provider, as in the composer's "Work in" menu:
+            Cloud moves the task to the cloud host of its harness, Local and Worktree bring it
+            back to that harness on this machine. */}
         <MenuRadioGroup
-          value={envMode}
+          value={cloud ?? envMode}
           onValueChange={(value) => {
             if (value === "local" || value === "worktree") {
               onEnvModeChange(value);
+              return;
+            }
+            // Only an enabled row offered on this machine moves the task to a cloud.
+            const row = cloudRows.find(
+              (candidate) =>
+                cloud === null && candidate.cloud === value && candidate.disabledReason === null,
+            );
+            if (row) {
+              onCloudSelect(row.cloud);
             }
           }}
         >
-          <MenuRadioItem value="local">
-            <span className="inline-flex items-center gap-2">
-              <CentralIcon name="macbook-air" className="size-4 shrink-0" />
-              Local
-            </span>
-          </MenuRadioItem>
-          <MenuRadioItem value="worktree">
-            <span className="inline-flex items-center gap-2">
-              <WorktreeIcon className="size-4 shrink-0" aria-hidden />
-              Worktree
-            </span>
-          </MenuRadioItem>
+          {cloud === null || canLeaveCloud ? (
+            <>
+              <MenuRadioItem value="local">
+                <span className="inline-flex items-center gap-2">
+                  <CentralIcon name="macbook-air" className="size-4 shrink-0" />
+                  Local
+                </span>
+              </MenuRadioItem>
+              <MenuRadioItem value="worktree">
+                <span className="inline-flex items-center gap-2">
+                  <WorktreeIcon className="size-4 shrink-0" aria-hidden />
+                  Worktree
+                </span>
+              </MenuRadioItem>
+            </>
+          ) : null}
+          {cloud !== null ? (
+            <MenuRadioItem value={cloud}>
+              <span className="inline-flex items-center gap-2">
+                <CloudIcon className="size-4 shrink-0" aria-hidden />
+                {cloudLocationLabel(cloud)}
+              </span>
+            </MenuRadioItem>
+          ) : (
+            cloudRows.map((row) => (
+              <MenuRadioItem
+                key={row.cloud}
+                value={row.cloud}
+                disabled={row.disabledReason !== null}
+              >
+                <span className="inline-flex items-start gap-2">
+                  <CloudIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <span className="flex min-w-0 flex-col">
+                    <span>{row.label}</span>
+                    {row.disabledReason ? (
+                      <span className="text-ui-sm whitespace-normal text-muted-foreground">
+                        {row.disabledReason}
+                      </span>
+                    ) : null}
+                  </span>
+                </span>
+              </MenuRadioItem>
+            ))
+          )}
         </MenuRadioGroup>
       </ComposerPickerMenuPopup>
     </Menu>
