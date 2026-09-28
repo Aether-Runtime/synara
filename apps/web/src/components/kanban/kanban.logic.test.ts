@@ -282,36 +282,6 @@ describe("buildKanbanBoard", () => {
     expect(localCard.provider).toBe("claudeAgent");
   });
 
-  it("opens the chat for a Cloud task's draft card, where the composer sets up its worktree", () => {
-    const cloudId = ThreadId.makeUnsafe("thread-cloud");
-    const board = buildKanbanBoard(
-      makeBoardInput({
-        draftThreads: [
-          {
-            threadId: cloudId,
-            projectId: ProjectId.makeUnsafe("project-1"),
-            createdAt: "2026-03-09T10:30:00.000Z",
-            branch: null,
-            // createKanbanDraftTask creates a task whose provider owns its worktree in one.
-            envMode: "worktree",
-            worktreePath: null,
-          },
-        ],
-        composerDraftByThreadId: {
-          [cloudId]: {
-            prompt: "Fix the checkout flake",
-            hasAttachments: false,
-            provider: "aether",
-          },
-        },
-      }),
-    );
-
-    const cloudCard = board.projects[0]!.draft[0]!;
-    expect(cloudCard).toMatchObject({ provider: "aether", envMode: "worktree" });
-    expect(resolveDraftDropAction(cloudCard)).toBe("open-thread");
-  });
-
   it("surfaces an unsent prompt on a settled thread as an extra draft card", () => {
     const threadId = ThreadId.makeUnsafe("thread-done");
     const board = buildKanbanBoard(
@@ -1033,6 +1003,23 @@ describe("resolveDraftDropAction", () => {
         worktreePath: "/tmp/synara-worktree",
       }),
     ).toBe("dispatch");
+  });
+
+  it("opens the chat for a cloud draft whatever mode it keeps, until its worktree exists", () => {
+    const cloudCard: KanbanCard = { ...baseCard, provider: "aether" };
+    expect(resolveDraftDropAction({ ...cloudCard, envMode: "local" })).toBe("open-thread");
+    expect(resolveDraftDropAction({ ...cloudCard, envMode: null })).toBe("open-thread");
+    expect(
+      resolveDraftDropAction({
+        ...cloudCard,
+        envMode: "worktree",
+        worktreePath: "/tmp/synara-worktree",
+      }),
+    ).toBe("dispatch");
+    // A provider that runs on this machine keeps the mode its draft chose.
+    expect(resolveDraftDropAction({ ...baseCard, provider: "claudeAgent", envMode: "local" })).toBe(
+      "dispatch",
+    );
   });
 });
 

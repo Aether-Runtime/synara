@@ -87,7 +87,11 @@ import { ExpandedImageOverlay } from "../chat/ExpandedImageOverlay";
 import { useStore } from "../../store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "../../types";
 import { useWorkspacePathsStore } from "../../workspacePathsStore";
-import { appendKanbanTaskTranscript, buildKanbanTaskPreview } from "./KanbanNewTaskDialog.logic";
+import {
+  appendKanbanTaskTranscript,
+  buildKanbanTaskPreview,
+  resolveKanbanTaskWorkspace,
+} from "./KanbanNewTaskDialog.logic";
 import { KanbanTaskExtrasMenu } from "./KanbanTaskExtrasMenu";
 import { KanbanTaskProjectPicker } from "./KanbanTaskProjectPicker";
 import { useKanbanTaskComposerMenu } from "./useKanbanTaskComposerMenu";
@@ -197,6 +201,11 @@ export function KanbanNewTaskDialog({
   const branchesQuery = useQuery(
     gitBranchesQueryOptions(isHomeChatContainer ? null : (selectedProject?.cwd ?? null)),
   );
+  const taskWorkspace = resolveKanbanTaskWorkspace({
+    provider: selectedProvider,
+    isHomeChatContainer,
+    isGitRepo: branchesQuery.data?.isRepo,
+  });
 
   // Voice transcription always rides on the Codex ChatGPT session, regardless of
   // which provider the task targets — gate the mic on the Codex status.
@@ -278,10 +287,7 @@ export function KanbanNewTaskDialog({
     runtimeModelsByProvider,
     providerStatuses,
     providerSettings: serverSettingsQuery.data?.providers,
-    // Where no worktree can exist (the Chats board, a folder without git), a cloud is offered
-    // disabled with the reason its send would give, as in the composer.
-    workspaceFeature:
-      isHomeChatContainer || branchesQuery.data?.isRepo === false ? "non-git-workspace" : null,
+    workspaceFeature: taskWorkspace.feature,
     onProviderModelSelect: handleProviderModelChange,
     onEnvModeChange: setEnvMode,
   });
@@ -321,6 +327,7 @@ export function KanbanNewTaskDialog({
     runtimeMode,
     interactionMode,
     envMode,
+    workspaceUnavailableReason: taskWorkspace.unavailableReason,
     sendAsDraft,
     defaultProvider: settings.defaultProvider,
     assistantDeliveryMode,
@@ -630,6 +637,7 @@ export function KanbanNewTaskDialog({
                     onEnvModeChange={onEnvModeChange}
                     cloud={providerIsCloudService(selectedProvider) ? selectedProvider : null}
                     cloudRows={cloudRows}
+                    cloudUnavailableReason={taskWorkspace.unavailableReason}
                     canLeaveCloud={cloudHarnessKnown}
                     onCloudSelect={onCloudSelect}
                   />

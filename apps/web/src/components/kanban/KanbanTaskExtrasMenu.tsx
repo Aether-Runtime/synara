@@ -32,6 +32,21 @@ import { cloudLocationLabel } from "~/lib/threadEnvironment";
 import type { DraftThreadEnvMode } from "../../composerDraftStore";
 import type { CloudLocationRow } from "../BranchToolbar.logic";
 
+/** A cloud row's glyph and label, with the reason it cannot be used under the label. */
+function CloudLocationLabel({ label, detail }: { label: string; detail: string | null }) {
+  return (
+    <span className="inline-flex items-start gap-2">
+      <CloudIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <span className="flex min-w-0 flex-col">
+        <span>{label}</span>
+        {detail ? (
+          <span className="text-ui-sm whitespace-normal text-muted-foreground">{detail}</span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
 interface KanbanTaskExtrasMenuProps {
   readonly interactionMode: ProviderInteractionMode;
   readonly onInteractionModeChange: (mode: ProviderInteractionMode) => void;
@@ -41,6 +56,8 @@ interface KanbanTaskExtrasMenuProps {
   readonly cloud: ProviderKind | null;
   /** Cloud providers offered as a location while the task runs on this machine. */
   readonly cloudRows: ReadonlyArray<CloudLocationRow>;
+  /** Why the task's cloud cannot run in this workspace; null when it can. */
+  readonly cloudUnavailableReason: string | null;
   /** False while the task's cloud model has no host, so there is no harness to return to. */
   readonly canLeaveCloud: boolean;
   readonly onCloudSelect: (cloud: ProviderKind) => void;
@@ -58,6 +75,7 @@ export function KanbanTaskExtrasMenu({
   onEnvModeChange,
   cloud,
   cloudRows,
+  cloudUnavailableReason,
   canLeaveCloud,
   onCloudSelect,
 }: KanbanTaskExtrasMenuProps) {
@@ -147,10 +165,10 @@ export function KanbanTaskExtrasMenu({
           ) : null}
           {cloud !== null ? (
             <MenuRadioItem value={cloud}>
-              <span className="inline-flex items-center gap-2">
-                <CloudIcon className="size-4 shrink-0" aria-hidden />
-                {cloudLocationLabel(cloud)}
-              </span>
+              <CloudLocationLabel
+                label={cloudLocationLabel(cloud)}
+                detail={cloudUnavailableReason}
+              />
             </MenuRadioItem>
           ) : (
             cloudRows.map((row) => (
@@ -159,17 +177,7 @@ export function KanbanTaskExtrasMenu({
                 value={row.cloud}
                 disabled={row.disabledReason !== null}
               >
-                <span className="inline-flex items-start gap-2">
-                  <CloudIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-                  <span className="flex min-w-0 flex-col">
-                    <span>{row.label}</span>
-                    {row.disabledReason ? (
-                      <span className="text-ui-sm whitespace-normal text-muted-foreground">
-                        {row.disabledReason}
-                      </span>
-                    ) : null}
-                  </span>
-                </span>
+                <CloudLocationLabel label={row.label} detail={row.disabledReason} />
               </MenuRadioItem>
             ))
           )}

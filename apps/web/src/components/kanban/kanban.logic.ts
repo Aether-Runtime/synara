@@ -9,6 +9,7 @@ import { buildPromptThreadTitleFallback } from "@synara/shared/chatThreads";
 import { isPendingThreadWorktree } from "@synara/shared/threadEnvironment";
 import type { ComposerThreadDraftState } from "../../composerDraftStore";
 import { resolveThreadDisplaySelection } from "../../lib/threadDisplayProvider";
+import { resolveProviderEnvMode } from "../../lib/threadEnvironment";
 import {
   canSessionAnswerPendingRequests,
   deriveActiveWorkStartedAt,
@@ -713,7 +714,12 @@ export function resolveKanbanDraftOpenThreadReason(
   if (card.draftPrompt.length === 0 && !card.draftHasAttachments) {
     return "empty";
   }
-  if (isPendingThreadWorktree({ envMode: card.envMode, worktreePath: card.worktreePath })) {
+  // A provider that runs only in a new worktree needs one whatever mode its draft keeps.
+  const envMode =
+    card.provider === null
+      ? card.envMode
+      : resolveProviderEnvMode(card.envMode ?? "local", card.provider);
+  if (isPendingThreadWorktree({ envMode, worktreePath: card.worktreePath })) {
     return "worktree-pending";
   }
   return null;

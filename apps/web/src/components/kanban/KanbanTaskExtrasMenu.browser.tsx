@@ -39,6 +39,7 @@ function props(overrides: Partial<Parameters<typeof KanbanTaskExtrasMenu>[0]> = 
     onEnvModeChange: vi.fn(),
     cloud: null,
     cloudRows: cloudRowsFor("claudeAgent"),
+    cloudUnavailableReason: null,
     canLeaveCloud: true,
     onCloudSelect: vi.fn(),
     ...overrides,
@@ -108,6 +109,24 @@ it("offers no way back while the task's cloud model has no host", async () => {
     expect(
       page.getByRole("menuitemradio", { name: "Worktree", exact: true }).elements(),
     ).toHaveLength(0);
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("in Cloud where no worktree can exist, says why on the checked Cloud row", async () => {
+  const needsGit = "Aether needs a git repository with a GitHub remote.";
+  const callbacks = props({
+    cloud: "aether",
+    cloudRows: cloudRowsFor("aether"),
+    cloudUnavailableReason: needsGit,
+  });
+  const screen = await render(<KanbanTaskExtrasMenu {...callbacks} />);
+  try {
+    await page.getByRole("button", { name: "Task options" }).click();
+    const cloudRow = page.getByRole("menuitemradio", { name: /^Cloud \(Aether\)/u });
+    await expect.element(cloudRow).toHaveAttribute("aria-checked", "true");
+    await expect.element(cloudRow).toHaveTextContent(needsGit);
   } finally {
     await screen.unmount();
   }

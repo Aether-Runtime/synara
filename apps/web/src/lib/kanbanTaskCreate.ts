@@ -17,7 +17,6 @@ import type {
 
 import { useComposerDraftStore, type DraftThreadEnvMode } from "../composerDraftStore";
 import { dispatchKanbanDraftThread, type KanbanDraftDispatchResult } from "./kanbanDispatch";
-import { resolveProviderEnvMode } from "./threadEnvironment";
 import { newThreadId } from "./utils";
 
 export interface KanbanDraftTaskInput {
@@ -34,15 +33,14 @@ export interface KanbanDraftTaskInput {
 /**
  * Registers a new mapping-less draft thread and seeds its composer content. The
  * project's regular composer draft is untouched, so any number of tasks can be
- * created back to back. A task whose provider owns its worktree (a cloud task) is
- * created in a new worktree: the board dispatches from the draft's own mode.
+ * created back to back.
  */
 export function createKanbanDraftTask(input: KanbanDraftTaskInput): ThreadId {
   const store = useComposerDraftStore.getState();
   const threadId = newThreadId();
   store.registerDraftThread(threadId, {
     projectId: input.projectId,
-    envMode: resolveProviderEnvMode(input.envMode, input.modelSelection.provider),
+    envMode: input.envMode,
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
   });
