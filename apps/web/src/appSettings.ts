@@ -28,6 +28,7 @@ import {
   normalizeModelSlug,
   resolveSelectableModel,
 } from "@synara/shared/model";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import {
   APP_SNAP_SHORTCUT_KEYS,
   APP_SNAP_SHORTCUT_MODIFIERS,
@@ -1207,6 +1208,12 @@ export function getAppModelOptions(
     name,
     isCustom: false,
   }));
+  // A cloud service runs only the models its hosts list and rejects any other slug, so its
+  // catalog takes no custom models and no unlisted selection: a slug it does not offer
+  // resolves to the provider default instead of surviving as a custom option.
+  if (providerIsCloudService(provider)) {
+    return options;
+  }
   const seen = new Set(options.map((option) => option.slug));
   const trimmedSelectedModel = selectedModel?.trim().toLowerCase();
 

@@ -522,8 +522,10 @@ export default function BranchToolbar({
             onEnvModeChange={onEnvModeChange}
             canSwitchToWorktree={canSwitchToWorktree}
             canSwitchToLocal={cloud !== null ? canSwitchToLocal : !providerOwnsWorktree}
-            cloudRows={cloudRows}
-            onCloudSelect={onCloudSelect}
+            // The location locks with the provider after the first turn, so a started thread's
+            // menu (kept open for git handoff) offers no cloud row.
+            cloudRows={envLocked ? undefined : cloudRows}
+            onCloudSelect={envLocked ? undefined : onCloudSelect}
             canHandoffToLocal={canHandoffToLocal}
             canHandoffToWorktree={canHandoffToWorktree}
             onHandoffToLocal={onHandoffToLocal}

@@ -15,6 +15,7 @@ import type {
 import { getDefaultModel } from "@synara/shared/model";
 import {
   PROVIDER_DESCRIPTOR_BY_KIND,
+  type ProviderGatedFeature,
   cloudHostsFor,
   resolvePresentedProvider,
 } from "@synara/shared/providerMetadata";
@@ -38,6 +39,8 @@ interface ChatCloudLocationInput {
   >;
   providerStatuses: ReadonlyArray<ServerProviderStatus>;
   providerSettings: ServerSettingsView["providers"] | undefined;
+  /** What this workspace demands of a provider (no git, or a local folder); null in a git repo. */
+  workspaceFeature: ProviderGatedFeature | null;
   onProviderModelSelect: (
     provider: ProviderKind,
     model: ModelSlug,
@@ -55,13 +58,19 @@ export function useChatCloudLocation({
   runtimeModelsByProvider,
   providerStatuses,
   providerSettings,
+  workspaceFeature,
   onProviderModelSelect,
   onEnvModeChange,
 }: ChatCloudLocationInput) {
   const cloudRows = useMemo(
     () =>
-      resolveCloudLocationRows({ harness: selectedProvider, providerStatuses, providerSettings }),
-    [providerSettings, providerStatuses, selectedProvider],
+      resolveCloudLocationRows({
+        harness: selectedProvider,
+        providerStatuses,
+        providerSettings,
+        workspaceFeature,
+      }),
+    [providerSettings, providerStatuses, selectedProvider, workspaceFeature],
   );
 
   // The options the target provider's draft already holds, so a carried effort lands on them.

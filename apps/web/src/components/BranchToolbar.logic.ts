@@ -4,7 +4,13 @@ import type {
   ServerProviderStatus,
   ServerSettingsView,
 } from "@synara/contracts";
-import { PROVIDER_DESCRIPTOR_BY_KIND, PROVIDER_DESCRIPTORS } from "@synara/shared/providerMetadata";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  PROVIDER_DESCRIPTORS,
+  type ProviderGatedFeature,
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import {
   deriveAssociatedWorktreeMetadata,
   type AssociatedWorktreeMetadata,
@@ -30,14 +36,16 @@ export interface CloudLocationRow {
 
 /**
  * The cloud rows the "Work in" menu offers a draft on `harness`. A cloud disabled in settings
- * has no row. One that is enabled but not usable yet, or that does not run this harness, has a
- * disabled row with the reason, so the menu and the model picker agree on why Cloud is out of
- * reach.
+ * has no row. One that is enabled but not usable yet, that cannot run where this draft is
+ * (`workspaceFeature`: a folder without git, or Studio's local folder), or that does not run
+ * this harness, has a disabled row with the reason, so the menu, the model picker and the
+ * send-time refusal agree on why Cloud is out of reach.
  */
 export function resolveCloudLocationRows(input: {
   harness: ProviderKind;
   providerStatuses: ReadonlyArray<ServerProviderStatus>;
   providerSettings: ServerSettingsView["providers"] | null | undefined;
+  workspaceFeature: ProviderGatedFeature | null;
 }): ReadonlyArray<CloudLocationRow> {
   return PROVIDER_DESCRIPTORS.flatMap((descriptor): CloudLocationRow[] => {
     if (
@@ -50,6 +58,20 @@ export function resolveCloudLocationRows(input: {
     const status = findProviderStatus(input.providerStatuses, descriptor.kind);
     if (!isProviderUsable(status)) {
       return [{ ...row, disabledReason: status?.message ?? providerUnavailableReason(status) }];
+    }
+    if (
+      input.workspaceFeature !== null &&
+      !providerSupportsFeature(descriptor.kind, input.workspaceFeature)
+    ) {
+      return [
+        {
+          ...row,
+          disabledReason: providerFeatureUnavailableMessage(
+            descriptor.kind,
+            input.workspaceFeature,
+          ),
+        },
+      ];
     }
     if (!descriptor.hosts.some((host) => host.provider === input.harness)) {
       const hostNames = descriptor.hosts.map(

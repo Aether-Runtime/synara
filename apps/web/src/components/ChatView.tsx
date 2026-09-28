@@ -4,6 +4,7 @@ import {
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
 import {
+  type ProviderGatedFeature,
   providerFeatureUnavailableMessage,
   providerIsCloudService,
   providerLackingFeature,
@@ -2315,6 +2316,14 @@ export default function ChatView({
           providerNeedingGit,
           isStudioContainer ? "local-workspace" : "non-git-workspace",
         );
+  // The same gate for the "Work in" menu's cloud rows: a cloud that cannot run here is offered
+  // disabled with that reason, so the menu and the send-time refusal agree.
+  const cloudWorkspaceFeature: ProviderGatedFeature | null =
+    isContainerLandingProject || !isGitRepo
+      ? isStudioContainer
+        ? "local-workspace"
+        : "non-git-workspace"
+      : null;
   // Studio never offers "Initialize Git": its reference folder is ordinary cwd context,
   // so Git actions appear only when that selected folder is already a repository.
   const showGitActions = isStudioContainer
@@ -4398,6 +4407,7 @@ export default function ChatView({
     runtimeModelsByProvider,
     providerStatuses,
     providerSettings: serverSettingsQuery.data?.providers,
+    workspaceFeature: cloudWorkspaceFeature,
     onProviderModelSelect,
     onEnvModeChange: onLocalEnvModeChange,
   });

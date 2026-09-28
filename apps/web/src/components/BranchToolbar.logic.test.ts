@@ -37,6 +37,7 @@ describe("resolveCloudLocationRows", () => {
         harness: "claudeAgent",
         providerStatuses: [connected],
         providerSettings: aetherEnabled,
+        workspaceFeature: null,
       }),
     ).toEqual([{ cloud: "aether", label: "Cloud (Aether)", disabledReason: null }]);
   });
@@ -47,6 +48,7 @@ describe("resolveCloudLocationRows", () => {
         harness: "claudeAgent",
         providerStatuses: [connected],
         providerSettings: DEFAULT_SERVER_SETTINGS_VIEW.providers,
+        workspaceFeature: null,
       }),
     ).toEqual([]);
   });
@@ -65,6 +67,7 @@ describe("resolveCloudLocationRows", () => {
           }),
         ],
         providerSettings: aetherEnabled,
+        workspaceFeature: null,
       }),
     ).toEqual([{ cloud: "aether", label: "Cloud (Aether)", disabledReason: message }]);
     expect(
@@ -72,6 +75,7 @@ describe("resolveCloudLocationRows", () => {
         harness: "codex",
         providerStatuses: [],
         providerSettings: aetherEnabled,
+        workspaceFeature: null,
       }),
     ).toEqual([
       {
@@ -88,9 +92,42 @@ describe("resolveCloudLocationRows", () => {
         harness: "cursor",
         providerStatuses: [connected],
         providerSettings: aetherEnabled,
+        workspaceFeature: null,
       }),
     ).toEqual([
       { cloud: "aether", label: "Cloud (Aether)", disabledReason: "Cloud runs Claude and Codex" },
+    ]);
+  });
+
+  it("disables the row where the cloud cannot run, with the send-time reason", () => {
+    expect(
+      resolveCloudLocationRows({
+        harness: "claudeAgent",
+        providerStatuses: [connected],
+        providerSettings: aetherEnabled,
+        workspaceFeature: "non-git-workspace",
+      }),
+    ).toEqual([
+      {
+        cloud: "aether",
+        label: "Cloud (Aether)",
+        disabledReason: "Aether needs a git repository with a GitHub remote.",
+      },
+    ]);
+    expect(
+      resolveCloudLocationRows({
+        harness: "claudeAgent",
+        providerStatuses: [connected],
+        providerSettings: aetherEnabled,
+        workspaceFeature: "local-workspace",
+      }),
+    ).toEqual([
+      {
+        cloud: "aether",
+        label: "Cloud (Aether)",
+        disabledReason:
+          "Aether threads run only in a worktree that Aether owns, never in the local checkout.",
+      },
     ]);
   });
 });

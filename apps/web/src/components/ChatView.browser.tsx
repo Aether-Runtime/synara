@@ -9257,6 +9257,68 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  it("disables the Cloud row where Aether cannot run: a non-git folder", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-non-git-test" as MessageId,
+        targetText: "cloud non-git test",
+      }),
+      configureFixture: (nextFixture) => {
+        withAetherStatus("authenticated")(nextFixture);
+        nextFixture.nonGitCwds = ["/repo/project"];
+      },
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+      (await waitForEnvironmentModeButton("Local")).click();
+      const cloudRow = page.getByRole("menuitem", { name: /Cloud \(Aether\)/ });
+      await expect.element(cloudRow).toBeInTheDocument();
+      expect(cloudRow.element().hasAttribute("data-disabled")).toBe(true);
+      expect(cloudRow.element().textContent).toContain(
+        "Aether needs a git repository with a GitHub remote.",
+      );
+      await cloudRow.click({ force: true });
+      await userEvent.keyboard("{Escape}");
+      await waitForEnvironmentModeButton("Local");
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[newThreadId]?.activeProvider,
+      ).not.toBe("aether");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers no Cloud row once a local thread has started", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-cloud-started-test" as MessageId,
+        targetText: "cloud started test",
+      }),
+      configureFixture: withAetherStatus("authenticated"),
+    });
+
+    try {
+      await waitForComposerEditor();
+      (await waitForEnvironmentModeButton("Local")).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Hand off to new worktree", exact: true }))
+        .toBeInTheDocument();
+      await expect.element(page.getByRole("menuitem", { name: /Cloud/ })).not.toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps worktree setup resolvable while attachments upload", async () => {
     const restoreNativeApi = installDeterministicSendNativeApi();
     let releaseAttachmentUpload = () => {};
