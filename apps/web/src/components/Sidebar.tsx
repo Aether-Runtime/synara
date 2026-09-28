@@ -10,6 +10,7 @@ import {
   ChatBubbleIcon,
   CircleQuestionIcon,
   ClockIcon,
+  CloudIcon,
   CopyIcon,
   CustomizeIcon,
   DragHandleIcon,
@@ -81,7 +82,6 @@ import {
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  type AutomationDefinition,
   type AutomationListResult,
   MAX_PINNED_PROJECTS,
   type DesktopUpdateState,
@@ -180,7 +180,6 @@ import {
 import { useProjectEnvironmentStore } from "../projectEnvironmentStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useLatestProjectStore } from "../latestProjectStore";
-import { resolveThreadEnvironmentPresentation } from "../lib/threadEnvironment";
 import { dispatchThreadRename } from "../lib/threadRename";
 import { quotePosixShellArgument } from "../lib/shellQuote";
 import { useStableValue } from "~/hooks/useStableValue";
@@ -189,7 +188,6 @@ import {
   applyAutomationEvent,
   automationAttentionCount,
   automationQueryKey,
-  formatCadence,
   groupAutomationsByContinuedThread,
 } from "../routes/-automations.shared";
 import { shouldRenderTerminalWorkspace } from "./ChatView.logic";
@@ -340,9 +338,11 @@ import {
   resolveThreadHoverCardMetadata,
   resolveThreadProjectLabel,
   resolveThreadRowClassName,
+  resolveThreadRowMetaChipSpecs,
   resolveThreadRowTrailingReserveClass,
   resolveThreadStatusPill,
   resolveThreadStatusTrailingIndicator,
+  type ThreadRowMetaChipSpec,
   type ThreadStatusPill,
   type SidebarDerivedProjectData,
   type SidebarActionBadge,
@@ -367,7 +367,6 @@ import { resolveThreadModelSummary } from "~/lib/threadModelSummary";
 import {
   canCreateThreadHandoff,
   resolveAvailableHandoffTargetProviders,
-  resolveThreadHandoffBadgeLabel,
 } from "../lib/threadHandoff";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { beginThreadDrag, endThreadDrag } from "../lib/threadDrag";
@@ -628,93 +627,49 @@ function threadRowStatusSlotClassName(isSubagentThread: boolean, toneClassName?:
   );
 }
 
-function resolveWorktreeBadgeLabel(
-  thread: Pick<Thread, "envMode" | "worktreePath">,
-): string | null {
-  return resolveThreadEnvironmentPresentation({
-    envMode: thread.envMode,
-    worktreePath: thread.worktreePath,
-  }).worktreeBadgeLabel;
-}
-
 type ThreadMetaChip = {
-  id: "automation" | "handoff" | "fork" | "worktree";
+  id: ThreadRowMetaChipSpec["id"];
   tooltip: string;
   icon: ReactNode;
 };
 
-/**
- * Back-to-front order: first = behind, last = in front.
- * Priority lowest -> highest: handoff -> fork -> worktree.
- */
-function resolveThreadRowMetaChips(input: {
-  thread: Pick<Thread, "forkSourceThreadId" | "envMode" | "worktreePath" | "handoff">;
-  includeHandoffBadge: boolean;
-  /**
-   * When the leading provider avatar already renders the source → target handoff
-   * pair, the trailing handoff chip is a redundant double icon and is dropped.
-   */
-  handoffShownInAvatar?: boolean;
-  /** Heartbeat automations targeting this thread; surfaced as an at-a-glance clock chip. */
-  threadAutomations?: readonly AutomationDefinition[] | undefined;
-}): ThreadMetaChip[] {
-  const chips: ThreadMetaChip[] = [];
-  const threadAutomations = input.threadAutomations;
-  if (threadAutomations && threadAutomations.length > 0) {
-    const anyEnabled = threadAutomations.some((automation) => automation.enabled);
-    const firstAutomation = threadAutomations[0]!;
-    const tooltip =
-      threadAutomations.length === 1
-        ? `${firstAutomation.name} · ${
-            firstAutomation.enabled ? formatCadence(firstAutomation.schedule) : "Paused"
-          }`
-        : `${threadAutomations.length} automations`;
-    chips.push({
-      id: "automation",
-      tooltip,
-      icon: (
+function threadRowMetaChipIcon(chip: ThreadRowMetaChipSpec): ReactNode {
+  switch (chip.id) {
+    case "automation":
+      return (
         <SidebarGlyph
           icon={ClockIcon}
           variant="meta"
-          className={anyEnabled ? "text-muted-foreground/55" : "text-muted-foreground/40"}
+          className={chip.anyEnabled ? "text-muted-foreground/55" : "text-muted-foreground/40"}
         />
-      ),
-    });
-  }
-
-  const handoffBadgeLabel = resolveThreadHandoffBadgeLabel(input.thread);
-  if (input.includeHandoffBadge && !input.handoffShownInAvatar && handoffBadgeLabel) {
-    chips.push({
-      id: "handoff",
-      tooltip: handoffBadgeLabel,
-      icon: <SidebarGlyph icon={FiGitBranch} variant="meta" className="text-muted-foreground/55" />,
-    });
-  }
-
-  if (input.thread.forkSourceThreadId) {
-    chips.push({
-      id: "fork",
-      tooltip: "Forked thread",
-      icon: (
+      );
+    case "handoff":
+      return (
+        <SidebarGlyph icon={FiGitBranch} variant="meta" className="text-muted-foreground/55" />
+      );
+    case "fork":
+      return (
         <SidebarGlyph
           icon={GoRepoForked}
           variant="meta"
           className="text-emerald-600 dark:text-emerald-300/90"
         />
-      ),
-    });
+      );
+    case "worktree":
+      return <WorktreeBadgeGlyph className="text-muted-foreground/55" />;
+    case "cloud":
+      return <SidebarGlyph icon={CloudIcon} variant="meta" className="text-muted-foreground/55" />;
   }
+}
 
-  const worktreeBadgeLabel = resolveWorktreeBadgeLabel(input.thread);
-  if (worktreeBadgeLabel) {
-    chips.push({
-      id: "worktree",
-      tooltip: worktreeBadgeLabel,
-      icon: <WorktreeBadgeGlyph className="text-muted-foreground/55" />,
-    });
-  }
-
-  return chips;
+function resolveThreadRowMetaChips(
+  input: Parameters<typeof resolveThreadRowMetaChipSpecs>[0],
+): ThreadMetaChip[] {
+  return resolveThreadRowMetaChipSpecs(input).map((chip) => ({
+    id: chip.id,
+    tooltip: chip.tooltip,
+    icon: threadRowMetaChipIcon(chip),
+  }));
 }
 
 function terminalStatusFromThreadState(input: {

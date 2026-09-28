@@ -10,12 +10,13 @@ import { pluralize } from "@synara/shared/text";
 import { createThreadSelector } from "../storeSelectors";
 import { useStore } from "../store";
 import { resolveSubagentPresentationForThread } from "../lib/subagentPresentation";
+import { resolveThreadDisplaySelection } from "../lib/threadDisplayProvider";
 import { resolveThreadHandoffBadgeLabel } from "../lib/threadHandoff";
 import { SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME } from "../sidebarRowStyles";
 import type { SidebarThreadSummary } from "../types";
 import { TerminalIcon } from "../lib/icons";
 import { cn } from "../lib/utils";
-import { ProviderIcon } from "./ProviderIcon";
+import { ProviderAvatar, ProviderIcon } from "./ProviderIcon";
 import { SidebarGlyph } from "./sidebarGlyphs";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
@@ -34,7 +35,7 @@ function ProviderAvatarWithTerminal({
   terminalStatus: SidebarThreadTerminalStatus | null;
   terminalCount: number;
 }) {
-  const provider = thread.session?.provider ?? thread.modelSelection.provider;
+  const selection = resolveThreadDisplaySelection(thread);
   const handoffSourceProvider = thread.handoff?.sourceProvider ?? null;
   const handoffTooltip = resolveThreadHandoffBadgeLabel(thread);
   const showBadge = terminalCount > 1 || terminalStatus !== null;
@@ -55,12 +56,13 @@ function ProviderAvatarWithTerminal({
         <ProviderIcon provider={handoffSourceProvider!} className="size-2" />
       </span>
       <span className="sidebar-icon-chip absolute right-0 top-1/2 z-10 inline-flex size-3 -translate-y-1/2 items-center justify-center rounded-full">
-        <ProviderIcon provider={provider} className="size-2" />
+        {/* The handoff pair names the providers the thread moved between. */}
+        <ProviderIcon provider={selection.provider} className="size-2" />
       </span>
     </span>
   ) : (
     <span className={containerClass}>
-      <ProviderIcon provider={provider} className="size-3" />
+      <ProviderAvatar selection={selection} className="size-3" />
     </span>
   );
 

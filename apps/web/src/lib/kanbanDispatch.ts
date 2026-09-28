@@ -245,6 +245,7 @@ async function dispatchKanbanDraftThreadOnce(
     projectId,
     title: thread?.title ?? fallbackTitle,
     provider: modelSelection.provider,
+    model: modelSelection.model,
     baselineTurnId: thread?.latestTurn?.turnId ?? null,
     droppedAtMs,
   });

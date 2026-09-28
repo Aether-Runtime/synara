@@ -42,6 +42,7 @@ import {
   resolveSidebarProjectRowLabel,
   resolveThreadHoverCardMetadata,
   resolveThreadRowClassName,
+  resolveThreadRowMetaChipSpecs,
   resolveThreadStatusPill,
   resolveThreadStatusTrailingIndicator,
   type ThreadStatusPill,
@@ -2453,5 +2454,48 @@ describe("sortProjectsForSidebar", () => {
     );
 
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
+  });
+});
+
+describe("resolveThreadRowMetaChipSpecs", () => {
+  it("stacks the chips handoff, fork, worktree, then cloud in front", () => {
+    // Every chip at once, to pin the order.
+    const chips = resolveThreadRowMetaChipSpecs({
+      thread: makeSidebarThreadSummary({
+        handoff: {
+          sourceThreadId: ThreadId.makeUnsafe("thread-handoff-source"),
+          sourceProvider: "codex",
+          importedAt: "2026-03-09T10:00:00.000Z",
+          bootstrapStatus: "completed",
+        },
+        forkSourceThreadId: ThreadId.makeUnsafe("thread-fork-source"),
+        envMode: "worktree",
+        worktreePath: "/repo/.worktrees/cloud",
+        modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+      }),
+      includeHandoffBadge: true,
+    });
+
+    expect(chips).toEqual([
+      { id: "handoff", tooltip: "Handoff from Codex" },
+      { id: "fork", tooltip: "Forked thread" },
+      { id: "worktree", tooltip: "Worktree" },
+      { id: "cloud", tooltip: "Runs in the cloud (Aether)" },
+    ]);
+  });
+
+  it("marks a cloud thread by the provider it runs on, whatever its saved model", () => {
+    const chipIds = (thread: Parameters<typeof makeSidebarThreadSummary>[0]) =>
+      resolveThreadRowMetaChipSpecs({
+        thread: makeSidebarThreadSummary(thread),
+        includeHandoffBadge: true,
+      }).map((chip) => chip.id);
+
+    expect(chipIds({ modelSelection: { provider: "aether", model: "gpt-6-astra" } })).toEqual([
+      "cloud",
+    ]);
+    // A saved slug no host lists still runs in the cloud.
+    expect(chipIds({ modelSelection: { provider: "aether", model: "gpt-5" } })).toEqual(["cloud"]);
+    expect(chipIds({ modelSelection: { provider: "codex", model: "gpt-5.4" } })).toEqual([]);
   });
 });

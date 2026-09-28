@@ -1,7 +1,7 @@
 // FILE: threadDisplayProvider.ts
 // Purpose: Resolve the provider shown for a thread in UI surfaces (chips, pickers).
 // Layer: Web display helper
-// Exports: resolveThreadDisplayProvider
+// Exports: resolveThreadDisplayProvider, resolveThreadDisplaySelection
 
 import type { ProviderKind } from "@synara/contracts";
 
@@ -11,4 +11,12 @@ export function resolveThreadDisplayProvider(thread: {
   readonly modelSelection: { readonly provider: ProviderKind };
 }): ProviderKind {
   return thread.session?.provider ?? thread.modelSelection.provider;
+}
+
+/** The displayed provider with the thread's model: what a thread avatar presents. */
+export function resolveThreadDisplaySelection(thread: {
+  readonly session?: { readonly provider: ProviderKind } | null;
+  readonly modelSelection: { readonly provider: ProviderKind; readonly model: string };
+}): { readonly provider: ProviderKind; readonly model: string } {
+  return { provider: resolveThreadDisplayProvider(thread), model: thread.modelSelection.model };
 }
