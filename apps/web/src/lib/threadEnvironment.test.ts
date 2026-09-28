@@ -1,7 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { resolveDiffEnvironmentState, resolveForkThreadEnvironment } from "./threadEnvironment";
+import {
+  resolveDiffEnvironmentState,
+  resolveForkThreadEnvironment,
+  resolveProviderEnvMode,
+  resolveThreadEnvironmentPresentation,
+} from "./threadEnvironment";
 
 describe("threadEnvironment", () => {
+  it("overlays a new worktree for a provider that owns its worktree", () => {
+    expect(resolveProviderEnvMode("local", "aether")).toBe("worktree");
+    expect(resolveProviderEnvMode("local", "codex")).toBe("local");
+    expect(resolveProviderEnvMode("worktree", "codex")).toBe("worktree");
+  });
+
+  it("presents a cloud thread as Cloud over its worktree overlay", () => {
+    expect(
+      resolveThreadEnvironmentPresentation({ envMode: "worktree", cloud: "aether" }),
+    ).toMatchObject({ mode: "worktree", cloud: "aether", shortLabel: "Cloud" });
+    expect(resolveThreadEnvironmentPresentation({ envMode: "worktree" })).toMatchObject({
+      cloud: null,
+      shortLabel: "Worktree",
+    });
+    expect(resolveThreadEnvironmentPresentation({ envMode: "local" })).toMatchObject({
+      cloud: null,
+      shortLabel: "Local",
+    });
+  });
+
   it("keeps a worktree fork into local on the same worktree", () => {
     expect(
       resolveForkThreadEnvironment({

@@ -4,7 +4,10 @@
 // Exports: thread env resolution + `/fork` target planning
 
 import type { ProviderKind, ThreadEnvironmentMode } from "@synara/contracts";
-import { providerSupportsFeature } from "@synara/shared/providerMetadata";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import {
   isPendingThreadWorktree,
   resolveThreadEnvironmentMode,
@@ -46,10 +49,17 @@ export function resolveProviderEnvMode(
   return providerSupportsFeature(provider, "local-workspace") ? envMode : "worktree";
 }
 
+/** The "Work in" row of a cloud provider: the location first, the service running it after. */
+export function cloudLocationLabel(cloud: ProviderKind): string {
+  return `Cloud (${PROVIDER_DESCRIPTOR_BY_KIND[cloud].displayName})`;
+}
+
 export interface ThreadEnvironmentPresentation {
   mode: ThreadEnvironmentMode;
   workspaceState: ResolvedThreadWorkspaceState;
-  shortLabel: "Local" | "Worktree";
+  /** The cloud provider the thread runs on; null when it runs on this machine. */
+  cloud: ProviderKind | null;
+  shortLabel: "Local" | "Worktree" | "Cloud";
   localOptionLabel: "Local project";
   worktreeOptionLabel: "Worktree";
   worktreeBadgeLabel: "Worktree" | "Worktree pending" | null;
@@ -58,14 +68,17 @@ export interface ThreadEnvironmentPresentation {
 export function resolveThreadEnvironmentPresentation(input: {
   envMode?: ThreadEnvironmentMode | null | undefined;
   worktreePath?: string | null | undefined;
+  cloud?: ProviderKind | null | undefined;
 }): ThreadEnvironmentPresentation {
   const mode = resolveThreadEnvironmentMode(input);
   const workspaceState = resolveThreadWorkspaceState(input);
+  const cloud = input.cloud ?? null;
 
   return {
     mode,
     workspaceState,
-    shortLabel: mode === "worktree" ? "Worktree" : "Local",
+    cloud,
+    shortLabel: cloud !== null ? "Cloud" : mode === "worktree" ? "Worktree" : "Local",
     localOptionLabel: "Local project",
     worktreeOptionLabel: "Worktree",
     worktreeBadgeLabel:

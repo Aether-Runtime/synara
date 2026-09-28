@@ -1,7 +1,25 @@
 // FILE: providerMetadata.ts
 // Purpose: Exhaustive non-secret provider identity and presentation metadata.
 
-import { PROVIDER_DISPLAY_NAMES, type ProviderKind } from "@synara/contracts";
+import {
+  AETHER_CATALOG,
+  PROVIDER_DISPLAY_NAMES,
+  type AetherAgentFamily,
+  type ProviderKind,
+  type ProviderWithDefaultModel,
+} from "@synara/contracts";
+
+import { normalizeModelSlug } from "./model";
+
+/**
+ * One harness a cloud provider runs remotely: the local provider that runs the same harness on
+ * this machine, and the models the cloud offers for it.
+ */
+export interface CloudHost {
+  readonly provider: ProviderWithDefaultModel;
+  readonly defaultModel: string;
+  readonly models: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
+}
 
 export interface ProviderDescriptor {
   readonly kind: ProviderKind;
@@ -45,6 +63,13 @@ export interface ProviderDescriptor {
     readonly signInCommand: string;
     readonly learnMoreHref: string;
   } | null;
+  /**
+   * Harnesses this provider runs in the cloud, one per agent family it offers, each naming the
+   * local provider that runs the same harness here. Empty for a CLI provider. The only place a
+   * cloud's catalog meets `ProviderKind`: surfaces ask `cloudHostsFor`, `hostedProviderForModel`
+   * and `resolvePresentedProvider` instead of a provider name.
+   */
+  readonly hosts: readonly CloudHost[];
 }
 
 type ExhaustiveProviderDescriptors<Descriptors extends readonly ProviderDescriptor[]> =
@@ -55,6 +80,12 @@ function defineProviderDescriptors<const Descriptors extends readonly ProviderDe
 ): Descriptors {
   return descriptors;
 }
+
+const aetherHost = (family: AetherAgentFamily, provider: ProviderWithDefaultModel): CloudHost => ({
+  provider,
+  defaultModel: AETHER_CATALOG.agents[family].defaultModel,
+  models: AETHER_CATALOG.agents[family].models,
+});
 
 export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
   {
@@ -67,6 +98,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "codex login",
       learnMoreHref: "https://platform.openai.com/usage",
@@ -82,6 +114,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "claude",
       learnMoreHref: "https://docs.anthropic.com/en/docs/about-claude/models#rate-limits",
@@ -97,6 +130,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "cursor-agent login",
       learnMoreHref: "https://cursor.com/dashboard",
@@ -112,6 +146,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "agy",
       learnMoreHref: "https://antigravity.google",
@@ -127,6 +162,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "grok login",
       learnMoreHref: "https://console.x.ai",
@@ -142,6 +178,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "droid",
       learnMoreHref: "https://docs.factory.ai/pricing",
@@ -157,6 +194,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "opencode auth login",
       learnMoreHref: "https://opencode.ai",
@@ -172,6 +210,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "pi",
       learnMoreHref: "https://pi.dev",
@@ -187,6 +226,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    hosts: [],
     usage: {
       signInCommand: "devin auth login",
       learnMoreHref: "https://app.devin.ai/usage",
@@ -204,6 +244,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: false,
     managesWorktreeBranch: true,
     supportsConversationRollback: false,
+    hosts: [aetherHost("claude-code", "claudeAgent"), aetherHost("codex", "codex")],
     usage: null,
   },
 ] as const satisfies readonly ProviderDescriptor[]);
@@ -222,6 +263,59 @@ export const providerSupportsNativeTurnSteering = (kind: string): boolean =>
 /** True for a cloud service Synara connects to, rather than a CLI installed locally. */
 export const providerIsCloudService = (kind: ProviderKind): boolean =>
   PROVIDER_DESCRIPTOR_BY_KIND[kind].runtime === "cloud";
+
+/** The cloud providers that run `harness` remotely, each with the host it offers for it. */
+export function cloudHostsFor(
+  harness: ProviderKind,
+): ReadonlyArray<{ readonly cloud: ProviderKind; readonly host: CloudHost }> {
+  return PROVIDER_DESCRIPTORS.flatMap((descriptor) => {
+    const host = descriptor.hosts.find((candidate) => candidate.provider === harness);
+    return host ? [{ cloud: descriptor.kind, host }] : [];
+  });
+}
+
+/**
+ * The local provider whose harness runs `model` on `cloud`, or null when no host lists it.
+ * Aliases resolve first, so a retired slug still names its harness. Hosts never share a slug
+ * (the catalog test enforces it), so the slug alone picks the host.
+ */
+export function hostedProviderForModel(
+  cloud: ProviderKind,
+  model: string,
+): ProviderWithDefaultModel | null {
+  const slug = normalizeModelSlug(model, cloud);
+  if (slug === null) {
+    return null;
+  }
+  const host = PROVIDER_DESCRIPTOR_BY_KIND[cloud].hosts.find((candidate) =>
+    candidate.models.some((entry) => entry.slug === slug),
+  );
+  return host?.provider ?? null;
+}
+
+export type PresentedProvider =
+  | { readonly harness: ProviderKind; readonly cloud: null }
+  | { readonly harness: ProviderWithDefaultModel; readonly cloud: ProviderKind };
+
+/**
+ * The harness a selection presents and the cloud it runs on. A CLI selection is its own
+ * harness with no cloud; a cloud selection presents the host whose catalog holds its model.
+ */
+export function resolvePresentedProvider(selection: {
+  readonly provider: ProviderKind;
+  readonly model: string;
+}): PresentedProvider {
+  if (!providerIsCloudService(selection.provider)) {
+    return { harness: selection.provider, cloud: null };
+  }
+  const harness = hostedProviderForModel(selection.provider, selection.model);
+  if (harness === null) {
+    throw new Error(
+      `${PROVIDER_DESCRIPTOR_BY_KIND[selection.provider].displayName} has no host that runs "${selection.model}".`,
+    );
+  }
+  return { harness, cloud: selection.provider };
+}
 
 /** A Synara feature a provider capability can rule out. */
 export type ProviderGatedFeature =

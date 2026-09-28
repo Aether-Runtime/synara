@@ -4,6 +4,7 @@ import {
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
 import {
+  type ProviderGatedFeature,
   providerFeatureUnavailableMessage,
   providerIsCloudService,
   providerLackingFeature,
@@ -386,6 +387,7 @@ import { useChatTurnFollowUps } from "./chat/useChatTurnFollowUps";
 import { useChatTurnSubmission } from "./chat/useChatTurnSubmission";
 import { useChatWorkLog } from "./chat/useChatWorkLog";
 import { deriveWorkingDetail } from "../workLog";
+import { useChatCloudLocation } from "./chat/useChatCloudLocation";
 import { useChatWorkspaceSelection } from "./chat/useChatWorkspaceSelection";
 import { useComposerDiscovery } from "./chat/useComposerDiscovery";
 import { useComposerReferences } from "./chat/useComposerReferences";
@@ -2314,6 +2316,14 @@ export default function ChatView({
           providerNeedingGit,
           isStudioContainer ? "local-workspace" : "non-git-workspace",
         );
+  // The same gate for the "Work in" menu's cloud rows: a cloud that cannot run here is offered
+  // disabled with that reason, so the menu and the send-time refusal agree.
+  const cloudWorkspaceFeature: ProviderGatedFeature | null =
+    isContainerLandingProject || !isGitRepo
+      ? isStudioContainer
+        ? "local-workspace"
+        : "non-git-workspace"
+      : null;
   // Studio never offers "Initialize Git": its reference folder is ordinary cwd context,
   // so Git actions appear only when that selected folder is already a repository.
   const showGitActions = isStudioContainer
@@ -4368,7 +4378,7 @@ export default function ChatView({
     threadId,
   ]);
   const {
-    onEnvModeChange,
+    onEnvModeChange: onLocalEnvModeChange,
     handleResetWorkspaceToHome,
     handleSelectWorkspaceRoot,
     handleSelectProjectForEmptyDraft,
@@ -4386,6 +4396,20 @@ export default function ChatView({
     composerEditorRef,
     scheduleComposerFocus,
     defaultProvider: settings.defaultProvider,
+  });
+  const cloudProvider = providerIsCloudService(selectedProvider) ? selectedProvider : null;
+  const { cloudRows, onCloudSelect, onEnvModeChange } = useChatCloudLocation({
+    threadId,
+    selectedProvider,
+    selectedModel,
+    selectedEffort: composerTraitSelection.effort,
+    modelOptionsByProvider,
+    runtimeModelsByProvider,
+    providerStatuses,
+    providerSettings: serverSettingsQuery.data?.providers,
+    workspaceFeature: cloudWorkspaceFeature,
+    onProviderModelSelect,
+    onEnvModeChange: onLocalEnvModeChange,
   });
 
   const {
@@ -4943,6 +4967,9 @@ export default function ChatView({
     handoffBusy,
     onComposerFocusRequest: scheduleComposerFocus,
     providerOwnsWorktree: !localWorkspaceAvailable,
+    cloud: cloudProvider,
+    cloudRows,
+    onCloudSelect,
     environmentUnavailableMessage,
     ...(isStudioContainer ? { fixedLocalWorkspaceCwd: threadWorkspaceCwd } : {}),
     ...(canCheckoutPullRequestIntoThread
@@ -6277,6 +6304,7 @@ export default function ChatView({
           defaultEnvMode={selectionChatEnvMode ?? settings.defaultThreadEnvMode}
           canUseWorktree={isGitRepo && !isContainerLandingProject}
           providerOwnsWorktree={!localWorkspaceAvailable}
+          cloud={cloudProvider}
           environmentUnavailableMessage={environmentUnavailableMessage}
           canAddToSide={
             isServerThread && sidechatsAvailable && !activeThread.sidechatSourceThreadId

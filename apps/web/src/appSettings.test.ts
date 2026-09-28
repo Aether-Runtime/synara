@@ -284,6 +284,16 @@ describe("getAppModelOptions", () => {
     expect(getAppModelOptions("pi", [])).toEqual([]);
   });
 
+  it("keeps a cloud provider's catalog to the models its hosts list", () => {
+    const catalog = getAppModelOptions("aether", []);
+    expect(catalog.length).toBeGreaterThan(0);
+    // Neither a persisted custom slug nor an unlisted selection extends the cloud catalog.
+    expect(getAppModelOptions("aether", ["custom/cloud-model"], "claude-retired-9")).toEqual(
+      catalog,
+    );
+    expect(catalog.every((option) => !option.isCustom)).toBe(true);
+  });
+
   it("appends saved custom models after the built-in options", () => {
     const options = getAppModelOptions("codex", ["custom/internal-model"]);
 

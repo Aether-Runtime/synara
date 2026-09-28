@@ -9,7 +9,7 @@ import type {
   ThreadId,
   RuntimeMode,
 } from "@synara/contracts";
-import { ChevronDownIcon, WorktreeIcon } from "~/lib/icons";
+import { ChevronDownIcon } from "~/lib/icons";
 import { HiOutlineHandRaised } from "react-icons/hi2";
 import { CentralIcon } from "~/lib/central-icons";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
@@ -31,6 +31,7 @@ import {
   createThreadSelector,
 } from "../storeSelectors";
 import {
+  type CloudLocationRow,
   EnvMode,
   resolveAssociatedWorktreeMetadataAfterWorkspacePatch,
   resolveDraftEnvModeAfterBranchChange,
@@ -54,7 +55,7 @@ import {
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { ProviderUsagePanelContent } from "./ProviderUsagePanelContent";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
-import { ComposerEnvironmentPicker } from "./chat/ComposerEnvironmentPicker";
+import { ComposerEnvironmentPicker, EnvironmentModeGlyph } from "./chat/ComposerEnvironmentPicker";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsiblePanel } from "./ui/collapsible";
 import { DisclosureChevron } from "./ui/DisclosureChevron";
@@ -67,10 +68,6 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import type { ThreadWorkspacePatch } from "../types";
-
-function WorktreeGlyph({ className }: { className?: string }) {
-  return <WorktreeIcon className={className} />;
-}
 
 function RuntimeModeMenuItem({
   mode,
@@ -132,6 +129,12 @@ export interface BranchToolbarProps {
   // The thread's provider owns its worktree: shown as a new worktree, with no Local option
   // or local/worktree handoff. Display only; persisted env modes are left untouched.
   providerOwnsWorktree?: boolean;
+  // The cloud provider the thread's selection runs on: the environment reads "Cloud", and until
+  // the thread starts the menu offers Local and New worktree as ways back to the local harness.
+  cloud?: ProviderKind | null;
+  // Cloud providers offered as a location while the selection runs on this machine.
+  cloudRows?: ReadonlyArray<CloudLocationRow>;
+  onCloudSelect?: (cloud: ProviderKind) => void;
   // Set where that provider cannot run at all (no worktree can exist here): shown in place of
   // the environment picker and branch selector.
   environmentUnavailableMessage?: string | null;
@@ -275,9 +278,13 @@ export default function BranchToolbar({
   showBranchSelector: showBranchSelectorProp,
   fixedLocalWorkspaceCwd,
   providerOwnsWorktree: providerOwnsWorktreeProp,
+  cloud: cloudProp,
+  cloudRows,
+  onCloudSelect,
   environmentUnavailableMessage,
 }: BranchToolbarProps) {
   const providerOwnsWorktree = providerOwnsWorktreeProp ?? false;
+  const cloud = cloudProp ?? null;
   const handoffBusy = handoffBusyProp ?? false;
   const variant = variantProp ?? "toolbar";
   const showBranchSelector = showBranchSelectorProp ?? true;
@@ -324,6 +331,7 @@ export default function BranchToolbar({
   const environmentPresentation = resolveThreadEnvironmentPresentation({
     envMode: effectiveEnvMode,
     worktreePath: activeWorktreePath,
+    cloud,
   });
 
   const setThreadWorkspace = useCallback(
@@ -461,15 +469,25 @@ export default function BranchToolbar({
   const canHandoffToLocal = Boolean(
     !usesFixedLocalWorkspace && !providerOwnsWorktree && hasServerThread && activeWorktreePath,
   );
-  const canSwitchToWorktree = Boolean(
-    !usesFixedLocalWorkspace && !envLocked && !activeWorktreePath && effectiveEnvMode === "local",
-  );
-  const canSwitchToLocal = Boolean(
-    !usesFixedLocalWorkspace &&
-    !providerOwnsWorktree &&
-    !envLocked &&
-    effectiveEnvMode === "worktree",
-  );
+  // In the cloud, Local and New worktree both return the draft to the local harness.
+  const canSwitchToWorktree =
+    cloud !== null
+      ? !envLocked
+      : Boolean(
+          !usesFixedLocalWorkspace &&
+          !envLocked &&
+          !activeWorktreePath &&
+          effectiveEnvMode === "local",
+        );
+  const canSwitchToLocal =
+    cloud !== null
+      ? !envLocked
+      : Boolean(
+          !usesFixedLocalWorkspace &&
+          !providerOwnsWorktree &&
+          !envLocked &&
+          effectiveEnvMode === "worktree",
+        );
   // A new chat on a worktree-owning provider still shows the picker, holding only "Worktree".
   const showEnvPicker =
     effectiveEnvMode === "local" || canSwitchToLocal || (providerOwnsWorktree && !envLocked);
@@ -503,7 +521,11 @@ export default function BranchToolbar({
             environmentPresentation={environmentPresentation}
             onEnvModeChange={onEnvModeChange}
             canSwitchToWorktree={canSwitchToWorktree}
-            canSwitchToLocal={!providerOwnsWorktree}
+            canSwitchToLocal={cloud !== null ? canSwitchToLocal : !providerOwnsWorktree}
+            // The location locks with the provider after the first turn, so a started thread's
+            // menu (kept open for git handoff) offers no cloud row.
+            cloudRows={envLocked ? undefined : cloudRows}
+            onCloudSelect={envLocked ? undefined : onCloudSelect}
             canHandoffToLocal={canHandoffToLocal}
             canHandoffToWorktree={canHandoffToWorktree}
             onHandoffToLocal={onHandoffToLocal}
@@ -547,13 +569,18 @@ export default function BranchToolbar({
         ) : isPanel ? (
           <div className={cn(ENVIRONMENT_ROW_CLASS_NAME, "cursor-default hover:bg-transparent")}>
             <EnvironmentRowBody
-              icon={<WorktreeGlyph className={ENVIRONMENT_ROW_ICON_CLASS_NAME} />}
+              icon={
+                <EnvironmentModeGlyph
+                  presentation={environmentPresentation}
+                  className={ENVIRONMENT_ROW_ICON_CLASS_NAME}
+                />
+              }
               label={environmentPresentation.shortLabel}
             />
           </div>
         ) : (
           <span className="inline-flex items-center gap-2 px-1.5 text-ui-sm font-normal text-[var(--color-text-foreground-secondary)]">
-            <WorktreeGlyph className="size-3.5" />
+            <EnvironmentModeGlyph presentation={environmentPresentation} className="size-3.5" />
             {environmentPresentation.shortLabel}
           </span>
         )}

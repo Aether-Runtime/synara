@@ -1,13 +1,92 @@
-import type { GitBranch } from "@synara/contracts";
+import type {
+  GitBranch,
+  ProviderKind,
+  ServerProviderStatus,
+  ServerSettingsView,
+} from "@synara/contracts";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  PROVIDER_DESCRIPTORS,
+  type ProviderGatedFeature,
+  providerFeatureUnavailableMessage,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import {
   deriveAssociatedWorktreeMetadata,
   type AssociatedWorktreeMetadata,
 } from "@synara/shared/threadWorkspace";
 import { Schema } from "effect";
+import {
+  findProviderStatus,
+  isProviderUsable,
+  providerUnavailableReason,
+} from "../lib/providerAvailability";
+import { cloudLocationLabel } from "../lib/threadEnvironment";
 import type { ThreadWorkspacePatch } from "../types";
 
 export const EnvMode = Schema.Literals(["local", "worktree"]);
 export type EnvMode = typeof EnvMode.Type;
+
+/** A cloud provider's row in the "Work in" menu; a disabled row says why it cannot be chosen. */
+export interface CloudLocationRow {
+  readonly cloud: ProviderKind;
+  readonly label: string;
+  readonly disabledReason: string | null;
+}
+
+/**
+ * The cloud rows the "Work in" menu offers a draft on `harness`. A cloud disabled in settings
+ * has no row. One that is enabled but not usable yet, that cannot run where this draft is
+ * (`workspaceFeature`: a folder without git, or Studio's local folder), or that does not run
+ * this harness, has a disabled row with the reason, so the menu, the model picker and the
+ * send-time refusal agree on why Cloud is out of reach.
+ */
+export function resolveCloudLocationRows(input: {
+  harness: ProviderKind;
+  providerStatuses: ReadonlyArray<ServerProviderStatus>;
+  providerSettings: ServerSettingsView["providers"] | null | undefined;
+  workspaceFeature: ProviderGatedFeature | null;
+}): ReadonlyArray<CloudLocationRow> {
+  return PROVIDER_DESCRIPTORS.flatMap((descriptor): CloudLocationRow[] => {
+    if (
+      descriptor.runtime !== "cloud" ||
+      input.providerSettings?.[descriptor.kind].enabled !== true
+    ) {
+      return [];
+    }
+    const row = { cloud: descriptor.kind, label: cloudLocationLabel(descriptor.kind) };
+    const status = findProviderStatus(input.providerStatuses, descriptor.kind);
+    if (!isProviderUsable(status)) {
+      return [{ ...row, disabledReason: status?.message ?? providerUnavailableReason(status) }];
+    }
+    if (
+      input.workspaceFeature !== null &&
+      !providerSupportsFeature(descriptor.kind, input.workspaceFeature)
+    ) {
+      return [
+        {
+          ...row,
+          disabledReason: providerFeatureUnavailableMessage(
+            descriptor.kind,
+            input.workspaceFeature,
+          ),
+        },
+      ];
+    }
+    if (!descriptor.hosts.some((host) => host.provider === input.harness)) {
+      const hostNames = descriptor.hosts.map(
+        (host) => PROVIDER_DESCRIPTOR_BY_KIND[host.provider].displayName,
+      );
+      return [
+        {
+          ...row,
+          disabledReason: `Cloud runs ${new Intl.ListFormat("en", { type: "conjunction" }).format(hostNames)}`,
+        },
+      ];
+    }
+    return [{ ...row, disabledReason: null }];
+  });
+}
 
 export function resolveEffectiveEnvMode(input: {
   activeWorktreePath: string | null;
