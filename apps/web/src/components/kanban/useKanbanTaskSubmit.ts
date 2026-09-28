@@ -38,6 +38,8 @@ interface UseKanbanTaskSubmitInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly envMode: DraftThreadEnvMode;
+  /** Why the selected provider cannot run in the task's workspace; null when it can. */
+  readonly workspaceUnavailableReason: string | null;
   readonly sendAsDraft: boolean;
   readonly defaultProvider: ProviderKind;
   readonly assistantDeliveryMode: AssistantDeliveryMode;
@@ -61,6 +63,7 @@ export function useKanbanTaskSubmit(input: UseKanbanTaskSubmitInput) {
     runtimeMode,
     interactionMode,
     envMode,
+    workspaceUnavailableReason,
     sendAsDraft,
     defaultProvider,
     assistantDeliveryMode,
@@ -92,6 +95,12 @@ export function useKanbanTaskSubmit(input: UseKanbanTaskSubmitInput) {
       isCreating ||
       isCreatingRef.current
     ) {
+      return;
+    }
+    // A task its provider cannot run here (a cloud on the Chats board or in a folder without
+    // git) is refused with the reason the chat's send would give, as a draft too.
+    if (workspaceUnavailableReason !== null) {
+      toastManager.add({ type: "error", title: workspaceUnavailableReason });
       return;
     }
 

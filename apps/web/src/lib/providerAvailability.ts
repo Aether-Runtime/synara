@@ -3,6 +3,7 @@ import {
   type ProviderKind,
   type ServerProviderStatus,
 } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 
 export interface ProviderSendAvailability {
   readonly provider: ProviderKind;
@@ -141,13 +142,13 @@ export function resolveAvailableProviderPreference(input: {
     const normalizedRight = rightIndex >= 0 ? rightIndex : Number.MAX_SAFE_INTEGER;
     return normalizedLeft - normalizedRight;
   });
-  const visibleInstalled = orderedStatuses.filter(
-    (status) => status.available && !hiddenProviders.has(status.provider),
+  // A cloud provider is where a harness runs, not a harness to fall back to: a draft never
+  // moves into the cloud unless the user chooses it.
+  const localInstalled = orderedStatuses.filter(
+    (status) => status.available && !providerIsCloudService(status.provider),
   );
-  const installed =
-    visibleInstalled.length > 0
-      ? visibleInstalled
-      : orderedStatuses.filter((status) => status.available);
+  const visibleInstalled = localInstalled.filter((status) => !hiddenProviders.has(status.provider));
+  const installed = visibleInstalled.length > 0 ? visibleInstalled : localInstalled;
 
   return (
     installed.find((status) => status.authStatus !== "unauthenticated")?.provider ??

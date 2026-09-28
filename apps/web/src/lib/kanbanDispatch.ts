@@ -9,7 +9,6 @@ import type {
   ProjectId,
   ProviderKind,
   ProviderStartOptions,
-  ThreadEnvironmentMode,
   ThreadId,
 } from "@synara/contracts";
 import { buildPromptThreadTitleFallback } from "@synara/shared/chatThreads";
@@ -52,6 +51,7 @@ import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
 } from "./terminalContext";
 import { resolveTerminalThreadCreationState } from "./threadBootstrap";
+import { resolveProviderEnvMode } from "./threadEnvironment";
 import { promoteThreadCreate } from "./threadCreatePromotion";
 import { newCommandId, newMessageId } from "./utils";
 
@@ -153,12 +153,13 @@ async function dispatchKanbanDraftThreadOnce(
   });
   const draftThread = composerStore.getDraftThread(threadId);
   // Worktree creation is owned by the full chat composer path. Kanban stays a
-  // control surface and opens chat when a draft still needs that preflight.
+  // control surface and opens chat when a draft still needs that preflight,
+  // including every draft whose provider runs only in a new worktree.
   const dispatchEnvironment = {
-    envMode: (thread?.envMode ??
-      existingThread?.envMode ??
-      draftThread?.envMode ??
-      null) as ThreadEnvironmentMode | null,
+    envMode: resolveProviderEnvMode(
+      thread?.envMode ?? existingThread?.envMode ?? draftThread?.envMode ?? "local",
+      modelSelection.provider,
+    ),
     worktreePath: thread?.worktreePath ?? existingThread?.worktreePath ?? draftThread?.worktreePath,
   };
   if (isPendingThreadWorktree(dispatchEnvironment)) {

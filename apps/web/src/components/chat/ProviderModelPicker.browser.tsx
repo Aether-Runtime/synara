@@ -816,4 +816,55 @@ describe("ProviderModelPicker", () => {
       await mounted.cleanup();
     }
   });
+
+  it("in Cloud, offers the cloud's hosts with its catalog and commits the cloud", async () => {
+    const ready = {
+      status: "ready",
+      available: true,
+      authStatus: "authenticated",
+      checkedAt: "2026-04-10T10:00:00.000Z",
+    } as const;
+    const mounted = await mountPicker({
+      provider: "aether",
+      model: "claude-opus-5-5",
+      lockedProvider: null,
+      // No Claude CLI on this machine: the cloud runs Claude anyway.
+      providers: [
+        { provider: "codex", ...ready },
+        { provider: "cursor", ...ready },
+        { provider: "aether", ...ready },
+      ],
+      modelOptionsByProvider: {
+        ...MODEL_OPTIONS_BY_PROVIDER,
+        aether: [
+          { slug: "claude-opus-5-5" as ModelSlug, name: "Claude Opus 5.5" },
+          { slug: "claude-sonnet-5" as ModelSlug, name: "Claude Sonnet 5" },
+          { slug: "gpt-6-astra" as ModelSlug, name: "GPT-6 Astra" },
+        ],
+      },
+    });
+
+    try {
+      await page.getByRole("button", { name: /Claude Opus 5\.5/u }).click();
+
+      await expect
+        .element(page.getByRole("menuitem", { name: /Cursor/u }))
+        .toHaveTextContent("Not available in Cloud");
+      expect(page.getByRole("menuitem", { name: /Aether/u }).elements()).toHaveLength(0);
+
+      await page.getByRole("menuitem", { name: "Claude", exact: true }).click();
+      await expect
+        .element(page.getByRole("menuitemradio", { name: "Claude Opus 5.5" }))
+        .toHaveAttribute("aria-checked", "true");
+      expect(page.getByRole("menuitemradio", { name: "GPT-6 Astra" }).elements()).toHaveLength(0);
+      await page.getByRole("menuitemradio", { name: "Claude Sonnet 5" }).click();
+
+      expect(mounted.onProviderModelChange).toHaveBeenCalledExactlyOnceWith(
+        "aether",
+        "claude-sonnet-5",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 });

@@ -69,3 +69,35 @@ describe("Kanban task Debug mode", () => {
     );
   });
 });
+
+describe("Kanban Cloud task", () => {
+  beforeEach(() => {
+    resetComposerDraftStore();
+    nativeApiMocks.dispatchCommand.mockClear();
+  });
+
+  it("sends a Cloud task kept as Local to the chat, which creates its worktree", async () => {
+    const projectId = ProjectId.makeUnsafe("project-kanban-cloud");
+    const threadId = createKanbanDraftTask({
+      projectId,
+      prompt: "Fix the checkout flake",
+      modelSelection: { provider: "aether", model: "claude-opus-5-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      // The dialog's Local/Worktree choice stays whatever it was before Cloud was picked.
+      envMode: "local",
+    });
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)?.envMode).toBe("local");
+
+    // No local turn: the chat composer creates the worktree before the first send.
+    const result = await dispatchKanbanDraftThread({
+      threadId,
+      projectId,
+      thread: null,
+      defaultProvider: "codex",
+      assistantDeliveryMode: "buffered",
+    });
+    expect(result).toEqual({ kind: "open-thread", reason: "worktree-pending" });
+    expect(nativeApiMocks.dispatchCommand).not.toHaveBeenCalled();
+  });
+});

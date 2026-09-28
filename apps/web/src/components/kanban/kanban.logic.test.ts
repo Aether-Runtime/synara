@@ -1004,6 +1004,23 @@ describe("resolveDraftDropAction", () => {
       }),
     ).toBe("dispatch");
   });
+
+  it("opens the chat for a cloud draft whatever mode it keeps, until its worktree exists", () => {
+    const cloudCard: KanbanCard = { ...baseCard, provider: "aether" };
+    expect(resolveDraftDropAction({ ...cloudCard, envMode: "local" })).toBe("open-thread");
+    expect(resolveDraftDropAction({ ...cloudCard, envMode: null })).toBe("open-thread");
+    expect(
+      resolveDraftDropAction({
+        ...cloudCard,
+        envMode: "worktree",
+        worktreePath: "/tmp/synara-worktree",
+      }),
+    ).toBe("dispatch");
+    // A provider that runs on this machine keeps the mode its draft chose.
+    expect(resolveDraftDropAction({ ...baseCard, provider: "claudeAgent", envMode: "local" })).toBe(
+      "dispatch",
+    );
+  });
 });
 
 describe("flattenProjectBoardForOverview", () => {

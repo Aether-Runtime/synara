@@ -140,15 +140,19 @@ it("presents Aether as a cloud provider rather than an installed CLI", async () 
   await expect.element(page.getByRole("link", { name: "runaether.dev" })).toBeVisible();
 });
 
-it("phrases a pending Aether check as a connection check", async () => {
-  harness.statuses = harness.statuses.filter((status) => status.provider !== "aether");
+it("lists no cloud provider in the provider picker, and keeps its activity switch", async () => {
   await render(<ProvidersSettingsPanel {...props} />);
   await expect
-    .element(page.getByRole("switch", { name: "Checking Aether connection", exact: true }))
-    .toBeDisabled();
+    .element(page.getByRole("button", { name: "Reorder Codex", exact: true }))
+    .toBeVisible();
+  // Cloud is a location, chosen in the composer's "Work in" menu: nothing to show or order.
+  expect(page.getByRole("button", { name: "Reorder Aether", exact: true }).elements()).toHaveLength(
+    0,
+  );
+  expect(page.getByRole("switch", { name: /Aether.*provider picker/u }).elements()).toHaveLength(0);
   await expect
-    .element(page.getByRole("switch", { name: "Checking Codex CLI availability", exact: true }))
-    .not.toBeInTheDocument();
+    .element(page.getByRole("switch", { name: "Disable Aether", exact: true }))
+    .toBeChecked();
 });
 
 type UpdateSettings = ProvidersSettingsPanelProps["updateSettings"];

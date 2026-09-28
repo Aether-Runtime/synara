@@ -602,9 +602,7 @@ function SortableProviderVisibilityRow(props: {
         onCheckedChange={(checked) => props.onHiddenChange(!Boolean(checked))}
         aria-label={
           isChecking
-            ? providerIsCloudService(props.option.provider)
-              ? `Checking ${props.option.title} connection`
-              : `Checking ${props.option.title} CLI availability`
+            ? `Checking ${props.option.title} CLI availability`
             : isAvailable
               ? `Show ${props.option.title} in the provider picker`
               : `${props.option.title} is unavailable in the provider picker`
@@ -971,6 +969,13 @@ export function ProvidersSettingsPanel({
       }),
     [providerVisibilityOptionsByProvider, settings.providerOrder],
   );
+  // Cloud is a location, chosen in the composer's "Work in" menu, so the picker's list of
+  // providers to show and order has no cloud row.
+  const pickerProviderOptions = useMemo(
+    () =>
+      orderedProviderVisibilityOptions.filter((option) => !providerIsCloudService(option.provider)),
+    [orderedProviderVisibilityOptions],
+  );
   const providerVisibilitySensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
@@ -1242,11 +1247,11 @@ export function ProvidersSettingsPanel({
             onDragEnd={handleProviderOrderDragEnd}
           >
             <SortableContext
-              items={orderedProviderVisibilityOptions.map((option) => option.provider)}
+              items={pickerProviderOptions.map((option) => option.provider)}
               strategy={verticalListSortingStrategy}
             >
               <div className="mt-4 space-y-2">
-                {orderedProviderVisibilityOptions.map((option) => (
+                {pickerProviderOptions.map((option) => (
                   <SortableProviderVisibilityRow
                     key={option.provider}
                     option={option}

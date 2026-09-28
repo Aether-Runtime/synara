@@ -5,7 +5,12 @@
 
 import { type ModelSlug, type ProviderKind, type ServerProviderStatus } from "@synara/contracts";
 import { resolveSelectableModel } from "@synara/shared/model";
-import { providerIsCloudService } from "@synara/shared/providerMetadata";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  hostedModelsFor,
+  parsePresentedProvider,
+  providerIsCloudService,
+} from "@synara/shared/providerMetadata";
 import * as Schema from "effect/Schema";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { type ProviderPickerKind, PROVIDER_OPTIONS } from "../../session-logic";
@@ -26,6 +31,7 @@ import { cn } from "~/lib/utils";
 import { PickerPanelShell } from "./PickerPanelShell";
 import { PickerTriggerButton } from "./PickerTriggerButton";
 import { ProviderModelOptionGroupList } from "./ProviderModelOptionGroupList";
+import { resolveComposerModelPickerTabs } from "./ComposerModelPickerTabs";
 import { ComposerPickerMenuPopup, ComposerPickerMenuSubPopup } from "./ComposerPickerMenuPopup";
 import {
   COMPOSER_PICKER_MODEL_LIST_MAX_HEIGHT_CLASS_NAME,
@@ -245,12 +251,20 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
   );
   const deferredModelSearchQuery = useDeferredValue(modelSearchQuery);
   const activeProvider = props.lockedProvider ?? props.provider;
-  const visibleAvailableProviderOptions = resolveVisibleProviderOptions({
-    provider: props.provider,
-    lockedProvider: props.lockedProvider,
+  // A cloud selection presents the harness running its model: as in the composer's picker, the
+  // submenus are the cloud's hosts, and their rows commit the cloud.
+  const presented = parsePresentedProvider({ provider: activeProvider, model: props.model });
+  const providerTabs = resolveComposerModelPickerTabs({
+    options: resolveVisibleProviderOptions({
+      provider: props.provider,
+      lockedProvider: props.lockedProvider,
+      providers: props.providers,
+      hiddenProviders: props.hiddenProviders,
+      providerOrder: props.providerOrder,
+    }),
     providers: props.providers,
-    hiddenProviders: props.hiddenProviders,
-    providerOrder: props.providerOrder,
+    presented,
+    lockedProvider: null,
   });
   const openCodeFavoriteModelSlugSet = new Set(openCodeFavoriteModelSlugs);
   const cursorFavoriteModelSlugSet = new Set(cursorFavoriteModelSlugs);
@@ -283,7 +297,13 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
   };
 
   const renderModelRadioGroup = (provider: ProviderKind) => {
-    if (props.loadingModelProviders?.[provider]) {
+    // A host lists the cloud's catalog for its harness, whatever the local CLI's discovery state.
+    const hostingCloud =
+      presented.cloud !== null &&
+      PROVIDER_DESCRIPTOR_BY_KIND[presented.cloud].hosts.some((host) => host.provider === provider)
+        ? presented.cloud
+        : null;
+    if (hostingCloud === null && props.loadingModelProviders?.[provider]) {
       return (
         <div className="space-y-2 px-2 py-2" aria-label="Loading models">
           {Array.from({ length: 6 }, (_, index) => (
@@ -296,7 +316,10 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
       );
     }
 
-    const providerOptions = props.modelOptionsByProvider[provider];
+    const providerOptions =
+      hostingCloud === null
+        ? props.modelOptionsByProvider[provider]
+        : hostedModelsFor(hostingCloud, provider, props.modelOptionsByProvider[hostingCloud]);
     const shouldShowSearch =
       (provider === "opencode" ||
         provider === "cursor" ||
@@ -322,7 +345,10 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
           })
         : groupProviderModelOptions(filteredOptions);
 
-    const discoveryError = props.discoveryErrorsByProvider?.[provider];
+    const discoveryError =
+      hostingCloud === null ? props.discoveryErrorsByProvider?.[provider] : undefined;
+    const selectsHere =
+      hostingCloud === null ? activeProvider === provider : presented.harness === provider;
     const discoveryErrorElement = discoveryError ? (
       <div className="px-2 py-1.5 text-ui leading-snug text-destructive">{discoveryError}</div>
     ) : null;
@@ -330,8 +356,8 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
     const content =
       groupedOptions.length > 0 ? (
         <MenuRadioGroup
-          value={activeProvider === provider ? props.model : ""}
-          onValueChange={(value) => handleModelChange(provider, value)}
+          value={selectsHere ? props.model : ""}
+          onValueChange={(value) => handleModelChange(hostingCloud ?? provider, value)}
         >
           <ProviderModelOptionGroupList
             groupedOptions={groupedOptions}
@@ -403,49 +429,47 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
 
   return (
     <>
-      {visibleAvailableProviderOptions.map((option) => {
-        const OptionIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[option.value];
-        const liveProvider = props.providers?.find((entry) => entry.provider === option.value);
-        const availability = resolveLiveProviderAvailability(liveProvider);
-        if (availability.disabled) {
+      {providerTabs.map((tab) => {
+        const OptionIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[tab.provider];
+        if (tab.unavailableLabel !== null) {
           return (
-            <MenuItem key={option.value} disabled>
+            <MenuItem key={tab.provider} disabled>
               <OptionIcon
                 aria-hidden="true"
                 className={cn(
                   "size-3 shrink-0 opacity-80",
-                  providerIconClassName(option.value, "text-muted-foreground/85"),
+                  providerIconClassName(tab.provider, "text-muted-foreground/85"),
                 )}
               />
-              <span>{option.label}</span>
+              <span>{tab.label}</span>
               <span className="ms-auto text-ui-sm text-muted-foreground/80">
-                {availability.label}
+                {tab.unavailableLabel}
               </span>
             </MenuItem>
           );
         }
         return (
-          <MenuSub key={option.value}>
+          <MenuSub key={tab.provider}>
             <MenuSubTrigger>
               <OptionIcon
                 aria-hidden="true"
                 className={cn(
                   "size-3 shrink-0",
-                  providerIconClassName(option.value, "text-muted-foreground/85"),
+                  providerIconClassName(tab.provider, "text-muted-foreground/85"),
                 )}
               />
-              {option.label}
+              {tab.label}
             </MenuSubTrigger>
             <ComposerPickerMenuSubPopup
               fixedWidth
               className={COMPOSER_PICKER_MODEL_SUBMENU_HEIGHT_CLASS_NAME}
             >
-              {renderModelRadioGroup(option.value)}
+              {renderModelRadioGroup(tab.provider)}
             </ComposerPickerMenuSubPopup>
           </MenuSub>
         );
       })}
-      {visibleAvailableProviderOptions.length > 0 ? <MenuSeparator /> : null}
+      {providerTabs.length > 0 ? <MenuSeparator /> : null}
       <MenuItem onClick={() => appHistory.push("/settings?section=providers")}>
         <PlusIcon aria-hidden="true" className="size-3 shrink-0 text-muted-foreground/85" />
         <span>Add Providers</span>
@@ -511,7 +535,11 @@ export const ProviderModelPicker = function ProviderModelPicker(props: ProviderM
     model: props.model,
     modelOptionsByProvider: props.modelOptionsByProvider,
   });
-  const ProviderIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[activeProvider];
+  // A cloud selection shows the harness running its model; where it runs is the location's to say.
+  const iconProvider =
+    parsePresentedProvider({ provider: activeProvider, model: props.model }).harness ??
+    activeProvider;
+  const ProviderIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[iconProvider];
 
   const setMenuOpen = (nextOpen: boolean) => {
     if (open === undefined) {
@@ -555,7 +583,7 @@ export const ProviderModelPicker = function ProviderModelPicker(props: ProviderM
           className={cn(
             // opacity-100 opts out of the Button base's [&_svg]:opacity-80 dimming.
             "size-3.5 shrink-0 opacity-100",
-            providerIconClassName(activeProvider, "text-muted-foreground/70"),
+            providerIconClassName(iconProvider, "text-muted-foreground/70"),
             props.activeProviderIconClassName,
           )}
         />

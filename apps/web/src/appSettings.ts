@@ -739,7 +739,11 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customOpenCodeModels: normalizeCustomModelSlugs(settings.customOpenCodeModels, "opencode"),
     customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
     customAetherModels: normalizeCustomModelSlugs(settings.customAetherModels, "aether"),
-    hiddenProviders: normalizeHiddenProviders(settings.hiddenProviders),
+    // Cloud is a location chosen in the composer's "Work in" menu, not a picker entry, so a
+    // cloud provider cannot be hidden: a stored entry for one is dropped.
+    hiddenProviders: normalizeHiddenProviders(settings.hiddenProviders).filter(
+      (provider) => !providerIsCloudService(provider),
+    ),
     disabledProviders: normalizeHiddenProviders(settings.disabledProviders),
     providerOrder: normalizeProviderOrder(settings.providerOrder),
     sidebarNavOrder: normalizeSidebarNavOrder(settings.sidebarNavOrder),
