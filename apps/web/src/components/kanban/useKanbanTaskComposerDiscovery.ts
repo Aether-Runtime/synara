@@ -14,6 +14,7 @@ import type {
   ProviderStartOptions,
   ThreadId,
 } from "@synara/contracts";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 
@@ -193,6 +194,7 @@ export function useKanbanTaskComposerDiscovery(input: UseKanbanTaskComposerDisco
     providerOrder,
     hiddenProviders,
     protectedProviders: [selectedProvider],
+    cloud: providerIsCloudService(selectedProvider) ? selectedProvider : null,
   });
   const dynamicAgents = selectedRuntimeAgents.map((agent) =>
     agent.description

@@ -135,6 +135,9 @@ export interface BranchToolbarProps {
   // Cloud providers offered as a location while the selection runs on this machine.
   cloudRows?: ReadonlyArray<CloudLocationRow>;
   onCloudSelect?: (cloud: ProviderKind) => void;
+  // False when the cloud selection's model has no host to return to: the way back waits for
+  // a hosted pick in the model picker.
+  cloudHarnessKnown?: boolean;
   // Set where that provider cannot run at all (no worktree can exist here): shown in place of
   // the environment picker and branch selector.
   environmentUnavailableMessage?: string | null;
@@ -281,10 +284,12 @@ export default function BranchToolbar({
   cloud: cloudProp,
   cloudRows,
   onCloudSelect,
+  cloudHarnessKnown: cloudHarnessKnownProp,
   environmentUnavailableMessage,
 }: BranchToolbarProps) {
   const providerOwnsWorktree = providerOwnsWorktreeProp ?? false;
   const cloud = cloudProp ?? null;
+  const cloudHarnessKnown = cloudHarnessKnownProp ?? true;
   const handoffBusy = handoffBusyProp ?? false;
   const variant = variantProp ?? "toolbar";
   const showBranchSelector = showBranchSelectorProp ?? true;
@@ -472,7 +477,7 @@ export default function BranchToolbar({
   // In the cloud, Local and New worktree both return the draft to the local harness.
   const canSwitchToWorktree =
     cloud !== null
-      ? !envLocked
+      ? !envLocked && cloudHarnessKnown
       : Boolean(
           !usesFixedLocalWorkspace &&
           !envLocked &&
@@ -481,7 +486,7 @@ export default function BranchToolbar({
         );
   const canSwitchToLocal =
     cloud !== null
-      ? !envLocked
+      ? !envLocked && cloudHarnessKnown
       : Boolean(
           !usesFixedLocalWorkspace &&
           !providerOwnsWorktree &&

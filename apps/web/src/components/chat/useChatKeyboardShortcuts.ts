@@ -76,7 +76,12 @@ interface ChatKeyboardShortcutsInput {
   setThreadFindFocusNonce: Dispatch<SetStateAction<number>>;
   handleModelPickerOpenChange: (open: boolean) => void;
   scheduleComposerFocus: () => void;
-  modelOptionsByProvider: ReturnType<typeof useChatProviderModels>["modelOptionsByProvider"];
+  /** The models alt+[ / ] cycle: the selection's list, or a cloud harness's hosted list. */
+  modelCycleOptions: ReturnType<
+    typeof useChatProviderModels
+  >["modelOptionsByProvider"][ProviderKind];
+  /** True on a started thread whose provider cannot change its model: cycling is a no-op. */
+  modelSwitchLocked: boolean;
   selectedProvider: ProviderKind;
   selectedModel: string;
   onProviderModelSelect: (provider: ProviderKind, model: ModelSlug) => Promise<void>;
@@ -136,7 +141,8 @@ export function useChatKeyboardShortcuts({
   setThreadFindFocusNonce,
   handleModelPickerOpenChange,
   scheduleComposerFocus,
-  modelOptionsByProvider,
+  modelCycleOptions,
+  modelSwitchLocked,
   selectedProvider,
   selectedModel,
   onProviderModelSelect,
@@ -264,11 +270,11 @@ export function useChatKeyboardShortcuts({
         if (!composerPickerShortcutActive) return;
         event.preventDefault();
         event.stopPropagation();
+        if (modelSwitchLocked) return;
         const direction = command === "model.next" ? "next" : "previous";
-        const providerOptions = modelOptionsByProvider[selectedProvider] ?? [];
         const nextSlug = resolveCycledModelSlug({
           currentModel: selectedModel,
-          options: providerOptions,
+          options: modelCycleOptions,
           favoriteSlugs: readStarredModelSlugs(selectedProvider),
           direction,
         });
@@ -501,7 +507,8 @@ export function useChatKeyboardShortcuts({
     activeThread,
     selectedProvider,
     selectedModel,
-    modelOptionsByProvider,
+    modelCycleOptions,
+    modelSwitchLocked,
     onProviderModelSelect,
     copyThreadIdToClipboard,
   ]);

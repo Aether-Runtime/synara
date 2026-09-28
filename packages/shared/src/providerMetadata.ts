@@ -53,6 +53,13 @@ export interface ProviderDescriptor {
    */
   readonly supportsConversationRollback: boolean;
   /**
+   * True when a started thread can change its model, in its session or by restarting it.
+   * Mirrors the adapter's `sessionModelSwitch` capability (`"unsupported"` is false), so the
+   * picker locks the model of a started thread the adapter would ignore; keep the two in sync.
+   * An Aether task's agent and model are fixed when the task is created.
+   */
+  readonly supportsSessionModelSwitch: boolean;
+  /**
    * How Synara reaches the provider: a CLI installed and launched on this machine, or a
    * cloud service it connects to with an API key, with nothing installed and no version.
    */
@@ -98,6 +105,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "codex login",
@@ -114,6 +122,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "claude",
@@ -130,6 +139,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "cursor-agent login",
@@ -146,6 +156,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "agy",
@@ -162,6 +173,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "grok login",
@@ -178,6 +190,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "droid",
@@ -194,6 +207,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "opencode auth login",
@@ -210,6 +224,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "pi",
@@ -226,6 +241,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: true,
     managesWorktreeBranch: false,
     supportsConversationRollback: true,
+    supportsSessionModelSwitch: true,
     hosts: [],
     usage: {
       signInCommand: "devin auth login",
@@ -244,6 +260,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     reachesAgentGateway: false,
     managesWorktreeBranch: true,
     supportsConversationRollback: false,
+    supportsSessionModelSwitch: false,
     hosts: [aetherHost("claude-code", "claudeAgent"), aetherHost("codex", "codex")],
     usage: null,
   },
@@ -298,23 +315,49 @@ export type PresentedProvider =
   | { readonly harness: ProviderWithDefaultModel; readonly cloud: ProviderKind };
 
 /**
- * The harness a selection presents and the cloud it runs on. A CLI selection is its own
- * harness with no cloud; a cloud selection presents the host whose catalog holds its model.
+ * A persisted cloud selection whose model no host lists: a retired catalog slug with no
+ * alias, or a row written before the cloud catalog was closed to custom models. It has no
+ * harness to present or return to; surfaces show the cloud and the raw slug.
+ */
+export interface UnhostedCloudModel {
+  readonly harness: null;
+  readonly cloud: ProviderKind;
+}
+
+/**
+ * The harness a selection presents and the cloud it runs on, for persisted data: a CLI
+ * selection is its own harness with no cloud; a cloud selection presents the host whose
+ * catalog holds its model, or `harness: null` when none does.
+ */
+export function parsePresentedProvider(selection: {
+  readonly provider: ProviderKind;
+  readonly model: string;
+}): PresentedProvider | UnhostedCloudModel {
+  if (!providerIsCloudService(selection.provider)) {
+    return { harness: selection.provider, cloud: null };
+  }
+  const harness = hostedProviderForModel(selection.provider, selection.model);
+  return harness === null
+    ? { harness: null, cloud: selection.provider }
+    : { harness, cloud: selection.provider };
+}
+
+/**
+ * `parsePresentedProvider` for a composer selection, which the composer's catalog boundary
+ * keeps hosted (`getAppModelOptions` offers a cloud provider only its hosts' models), so an
+ * unhosted model here is an invariant violation.
  */
 export function resolvePresentedProvider(selection: {
   readonly provider: ProviderKind;
   readonly model: string;
 }): PresentedProvider {
-  if (!providerIsCloudService(selection.provider)) {
-    return { harness: selection.provider, cloud: null };
-  }
-  const harness = hostedProviderForModel(selection.provider, selection.model);
-  if (harness === null) {
+  const presented = parsePresentedProvider(selection);
+  if (presented.harness === null) {
     throw new Error(
       `${PROVIDER_DESCRIPTOR_BY_KIND[selection.provider].displayName} has no host that runs "${selection.model}".`,
     );
   }
-  return { harness, cloud: selection.provider };
+  return presented;
 }
 
 /** A Synara feature a provider capability can rule out. */

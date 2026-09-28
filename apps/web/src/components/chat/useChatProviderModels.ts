@@ -5,6 +5,7 @@ import {
   type ServerProviderStatus,
 } from "@synara/contracts";
 import { normalizeModelSlug } from "@synara/shared/model";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { useProviderStatusesForLocalConfig } from "~/hooks/useProviderStatusesForLocalConfig";
@@ -258,6 +259,7 @@ export function useChatProviderModels({
         hiddenProviders: settings.hiddenProviders,
         protectedProviders: [selectedProvider],
         lockedProvider,
+        cloud: providerIsCloudService(selectedProvider) ? selectedProvider : null,
       }),
     [
       lockedProvider,

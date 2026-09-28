@@ -21,6 +21,7 @@ import {
   type ServerProviderAuthStatus,
   type ThreadId as ThreadIdType,
 } from "@synara/contracts";
+import { hostedProviderForModel, parsePresentedProvider } from "@synara/shared/providerMetadata";
 import { getDefaultModel, normalizeModelSlug } from "@synara/shared/model";
 import { buildSynaraBranchName } from "@synara/shared/git";
 import { isGenericChatThreadTitle } from "@synara/shared/chatThreads";
@@ -557,6 +558,26 @@ export function resolveDefaultEnvironmentPanelOpen(input: {
     !input.isCenteredEmptyLanding &&
     !input.isTerminalPrimarySurface &&
     !input.isConstrainedChatLayout
+  );
+}
+
+// The models model.next / model.previous cycle: a cloud selection cycles the hosted list of
+// the harness running its model (none when no host lists it), a local one its provider's list.
+export function resolveModelCycleOptions<T extends { slug: string }>(input: {
+  provider: ProviderKind;
+  model: string;
+  modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<T>>;
+}): ReadonlyArray<T> {
+  const presented = parsePresentedProvider({ provider: input.provider, model: input.model });
+  if (presented.cloud === null) {
+    return input.modelOptionsByProvider[input.provider];
+  }
+  if (presented.harness === null) {
+    return [];
+  }
+  const { cloud, harness } = presented;
+  return input.modelOptionsByProvider[cloud].filter(
+    (option) => hostedProviderForModel(cloud, option.slug) === harness,
   );
 }
 

@@ -22,6 +22,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
 } from "@synara/contracts";
+import { PROVIDER_DESCRIPTOR_BY_KIND } from "@synara/shared/providerMetadata";
 import {
   Duration,
   Effect,
@@ -424,6 +425,11 @@ it.layer(TestLayer, { excludeTestServices: true })("AetherAdapter", (it) => {
           supportsTurnSteering: true,
           sessionModelSwitch: "unsupported",
         });
+        // The descriptor flag locks the picker on a started thread; it must say what the
+        // adapter says.
+        expect(PROVIDER_DESCRIPTOR_BY_KIND.aether.supportsSessionModelSwitch).toBe(
+          adapter.capabilities.sessionModelSwitch !== "unsupported",
+        );
         expect(adapter.reattachTurn).toBeDefined();
 
         const session = yield* h.start(adapter);

@@ -776,4 +776,44 @@ describe("ProviderModelPicker", () => {
       await mounted.cleanup();
     }
   });
+
+  it("offers no cloud submenu: Cloud is a location, not a provider", async () => {
+    const mounted = await mountPicker({
+      provider: "codex",
+      model: "gpt-5-codex",
+      lockedProvider: null,
+      providers: [
+        {
+          provider: "codex",
+          status: "ready",
+          available: true,
+          authStatus: "authenticated",
+          checkedAt: "2026-04-10T10:00:00.000Z",
+        },
+        {
+          provider: "aether",
+          status: "ready",
+          available: true,
+          authStatus: "authenticated",
+          checkedAt: "2026-04-10T10:00:00.000Z",
+        },
+      ],
+      modelOptionsByProvider: {
+        ...MODEL_OPTIONS_BY_PROVIDER,
+        aether: [{ slug: "claude-opus-5-5" as ModelSlug, name: "Claude Opus 5.5" }],
+      },
+    });
+
+    try {
+      await page.getByRole("button").click();
+
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("Codex");
+      });
+
+      expect(page.getByRole("menuitem", { name: /Aether/u }).elements()).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 });

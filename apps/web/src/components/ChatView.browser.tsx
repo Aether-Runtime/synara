@@ -9319,6 +9319,47 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  it("reads a started Aether thread's hosted model without the cloud's name and keeps it read-only", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-cloud-locked-model-test" as MessageId,
+      targetText: "cloud locked model test",
+    });
+    const thread = snapshot.threads[0]!;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: [
+          {
+            ...thread,
+            modelSelection: {
+              provider: "aether",
+              model: "claude-opus-5-5",
+              options: { reasoningEffort: "high" },
+            },
+            session: { ...thread.session!, providerName: "aether" },
+          },
+        ],
+      },
+      configureFixture: withAetherStatus("authenticated"),
+    });
+
+    try {
+      await waitForComposerEditor();
+      const trigger = page.getByRole("button", { name: "Change model and reasoning" });
+      await expect.element(trigger).toHaveTextContent("Claude Opus 5.5");
+      expect(trigger.element().textContent).not.toContain("Aether");
+      await trigger.click();
+      expect(page.getByRole("tab", { name: /Aether/u }).elements()).toHaveLength(0);
+      const row = page.getByRole("menuitem", { name: /Claude Opus 5\.5/u });
+      await expect.element(row).toHaveTextContent("Fixed for this cloud task");
+      expect(row.element().hasAttribute("data-disabled")).toBe(true);
+      await userEvent.keyboard("{Escape}");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps worktree setup resolvable while attachments upload", async () => {
     const restoreNativeApi = installDeterministicSendNativeApi();
     let releaseAttachmentUpload = () => {};

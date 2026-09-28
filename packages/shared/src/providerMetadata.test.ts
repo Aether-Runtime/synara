@@ -6,6 +6,7 @@ import {
   PROVIDER_DESCRIPTORS,
   cloudHostsFor,
   hostedProviderForModel,
+  parsePresentedProvider,
   resolvePresentedProvider,
 } from "./providerMetadata";
 
@@ -74,5 +75,26 @@ describe("cloud hosts", () => {
     expect(() => resolvePresentedProvider({ provider: "aether", model: "gpt-5" })).toThrow(
       'Aether has no host that runs "gpt-5".',
     );
+  });
+
+  it("parses a persisted cloud selection no host lists into an unhosted state", () => {
+    expect(parsePresentedProvider({ provider: "aether", model: "gpt-5" })).toEqual({
+      harness: null,
+      cloud: "aether",
+    });
+    expect(parsePresentedProvider({ provider: "aether", model: "claude-fable-5" })).toEqual({
+      harness: "claudeAgent",
+      cloud: "aether",
+    });
+    expect(parsePresentedProvider({ provider: "cursor", model: "auto" })).toEqual({
+      harness: "cursor",
+      cloud: null,
+    });
+  });
+
+  it("lets only a CLI provider switch a started thread's model", () => {
+    for (const descriptor of PROVIDER_DESCRIPTORS) {
+      expect(descriptor.supportsSessionModelSwitch).toBe(descriptor.runtime === "cli");
+    }
   });
 });

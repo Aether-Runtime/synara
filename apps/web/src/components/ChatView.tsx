@@ -4,6 +4,7 @@ import {
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
 import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
   type ProviderGatedFeature,
   providerFeatureUnavailableMessage,
   providerIsCloudService,
@@ -248,6 +249,7 @@ import {
   shouldRenderProviderHealthBanner,
   shouldStartActiveTurnLayoutGrace,
   type PendingFileUndo,
+  resolveModelCycleOptions,
 } from "./ChatView.logic";
 import { createThreadLineageSelector, localSubagentThreadId } from "./ChatView.selectors";
 import { ComposerPromptEditor } from "./ComposerPromptEditor";
@@ -3535,6 +3537,15 @@ export default function ChatView({
         scheduleComposerFocus();
         return;
       }
+      // A started thread whose provider cannot change its model keeps it: the adapter would
+      // drop the change and keep running the model the task was created with.
+      if (
+        lockedProvider !== null &&
+        !PROVIDER_DESCRIPTOR_BY_KIND[lockedProvider].supportsSessionModelSwitch
+      ) {
+        scheduleComposerFocus();
+        return;
+      }
       const resolvedModel = resolveCommittedProviderModel({
         selectedModel: model,
         availableOptions: modelOptionsByProvider[provider],
@@ -3597,6 +3608,17 @@ export default function ChatView({
 
   const copyThreadIdToClipboard = useCopyThreadIdToClipboard();
 
+  // The model shortcuts cycle a cloud selection within its harness's hosted list, and do
+  // nothing on a started thread whose provider cannot change its model.
+  const modelSwitchLocked =
+    lockedProvider !== null &&
+    !PROVIDER_DESCRIPTOR_BY_KIND[lockedProvider].supportsSessionModelSwitch;
+  const modelCycleOptions = resolveModelCycleOptions({
+    provider: selectedProvider,
+    model: selectedModel,
+    modelOptionsByProvider,
+  });
+
   useChatKeyboardShortcuts({
     onToggleDevicePanel,
     onSplitSurface,
@@ -3622,7 +3644,8 @@ export default function ChatView({
     setThreadFindFocusNonce,
     handleModelPickerOpenChange,
     scheduleComposerFocus,
-    modelOptionsByProvider,
+    modelCycleOptions,
+    modelSwitchLocked,
     selectedProvider,
     selectedModel,
     onProviderModelSelect,
@@ -4398,7 +4421,7 @@ export default function ChatView({
     defaultProvider: settings.defaultProvider,
   });
   const cloudProvider = providerIsCloudService(selectedProvider) ? selectedProvider : null;
-  const { cloudRows, onCloudSelect, onEnvModeChange } = useChatCloudLocation({
+  const { cloudRows, onCloudSelect, onEnvModeChange, cloudHarnessKnown } = useChatCloudLocation({
     threadId,
     selectedProvider,
     selectedModel,
@@ -4970,6 +4993,7 @@ export default function ChatView({
     cloud: cloudProvider,
     cloudRows,
     onCloudSelect,
+    cloudHarnessKnown,
     environmentUnavailableMessage,
     ...(isStudioContainer ? { fixedLocalWorkspaceCwd: threadWorkspaceCwd } : {}),
     ...(canCheckoutPullRequestIntoThread

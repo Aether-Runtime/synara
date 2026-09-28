@@ -5,10 +5,7 @@
 
 import { type ModelSlug, type ProviderKind, type ServerProviderStatus } from "@synara/contracts";
 import { resolveSelectableModel } from "@synara/shared/model";
-import {
-  PROVIDER_DESCRIPTOR_BY_KIND,
-  providerIsCloudService,
-} from "@synara/shared/providerMetadata";
+import { providerIsCloudService } from "@synara/shared/providerMetadata";
 import * as Schema from "effect/Schema";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { type ProviderPickerKind, PROVIDER_OPTIONS } from "../../session-logic";
@@ -112,7 +109,9 @@ function filterProviderOptionsByVisibility<T extends { value: ProviderKind }>(
 }
 
 // Providers the picker may offer: installed ones in the user's order, minus hidden
-// providers, always keeping the active/locked provider reachable.
+// providers, always keeping the active/locked provider reachable. A cloud provider never
+// gets an entry: Cloud is a location, chosen in the environment menu, and its models appear
+// under the tabs of the harnesses it hosts.
 export function resolveVisibleProviderOptions(input: {
   provider: ProviderKind;
   lockedProvider: ProviderKind | null;
@@ -125,11 +124,15 @@ export function resolveVisibleProviderOptions(input: {
     protectedProviderSet.add(input.lockedProvider);
   }
   return filterProviderOptionsByVisibility(
-    AVAILABLE_PROVIDER_OPTIONS.toSorted((left, right) =>
-      compareProvidersByOrder(input.providerOrder ?? [], left.value, right.value),
-    ).filter((option) =>
-      input.providers?.some((provider) => provider.provider === option.value && provider.available),
-    ),
+    AVAILABLE_PROVIDER_OPTIONS.filter((option) => !providerIsCloudService(option.value))
+      .toSorted((left, right) =>
+        compareProvidersByOrder(input.providerOrder ?? [], left.value, right.value),
+      )
+      .filter((option) =>
+        input.providers?.some(
+          (provider) => provider.provider === option.value && provider.available,
+        ),
+      ),
     new Set<ProviderKind>(input.hiddenProviders ?? []),
     protectedProviderSet,
   );
@@ -458,15 +461,13 @@ export function resolveProviderModelLabel(input: {
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ProviderModelOption>>;
 }): string {
   const activeProvider = input.lockedProvider ?? input.provider;
-  const modelLabel = resolveSelectedModelLabel({
+  // A cloud provider's catalog names its models like the local runtimes do; where the model
+  // runs is the environment chip's to say, not the trigger's.
+  return resolveSelectedModelLabel({
     provider: activeProvider,
     model: input.model,
     options: input.modelOptionsByProvider[activeProvider],
   });
-  // A cloud provider runs the same models as the local runtimes, so its name leads the label.
-  return providerIsCloudService(activeProvider)
-    ? `${PROVIDER_DESCRIPTOR_BY_KIND[activeProvider].displayName} · ${modelLabel}`
-    : modelLabel;
 }
 
 export function getProviderIconClassName(

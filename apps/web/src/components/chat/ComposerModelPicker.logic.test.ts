@@ -9,9 +9,11 @@ import {
   type StarredModel,
 } from "~/lib/starredModels";
 import {
+  buildProviderTabRows,
   buildStarredTabRows,
   buildStarredModelOptionsPatch,
   formatStarredTraitsLabel,
+  hostedTabOptions,
   modelPickerShortcutRowIndex,
   resolveStarredTraits,
 } from "./ComposerModelPicker.logic";
@@ -140,5 +142,65 @@ describe("modelPickerShortcutRowIndex", () => {
     expect(
       modelPickerShortcutRowIndex({ ...base, key: "2", metaKey: true, altKey: true }),
     ).toBeNull();
+  });
+});
+
+describe("hosted tab rows", () => {
+  const cloudOptions: ProviderModelOption[] = [
+    { slug: "claude-opus-5-5", name: "Claude Opus 5.5" },
+    { slug: "gpt-6-astra", name: "GPT-6 Astra" },
+  ];
+
+  it("lists only the cloud models the harness runs", () => {
+    expect(
+      hostedTabOptions({ cloud: "aether", harness: "claudeAgent", options: cloudOptions }).map(
+        (option) => option.slug,
+      ),
+    ).toEqual(["claude-opus-5-5"]);
+    expect(hostedTabOptions({ cloud: "aether", harness: "cursor", options: cloudOptions })).toEqual(
+      [],
+    );
+  });
+
+  it("commits the cloud from a harness tab and keys rows by it", () => {
+    const [row] = buildProviderTabRows({
+      provider: "claudeAgent",
+      commitProvider: "aether",
+      options: hostedTabOptions({ cloud: "aether", harness: "claudeAgent", options: cloudOptions }),
+      query: "",
+      selectedModel: "claude-opus-5-5",
+    });
+    expect(row).toMatchObject({
+      key: "aether:claude-opus-5-5",
+      provider: "aether",
+      harness: "claudeAgent",
+      selectableModel: "claude-opus-5-5",
+      selected: true,
+    });
+  });
+
+  it("shows a cloud preset under its harness and says it runs in the cloud", () => {
+    const preset: StarredModel = {
+      provider: "aether",
+      model: "gpt-6-astra",
+      effort: "high",
+      fastMode: null,
+      thinking: null,
+    };
+    const [row] = buildStarredTabRows({
+      starredModels: [preset],
+      modelOptionsByProvider: { ...EMPTY_MODEL_OPTIONS, aether: cloudOptions },
+      query: "",
+      current: {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: null,
+        fastMode: null,
+        thinking: null,
+      },
+      effortLevelsFor: (provider, model) =>
+        getComposerTraitSelection(provider, model, "", undefined).effortLevels,
+    });
+    expect(row).toMatchObject({ provider: "aether", harness: "codex", detail: "Cloud · High" });
   });
 });

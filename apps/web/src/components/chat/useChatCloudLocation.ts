@@ -17,6 +17,7 @@ import {
   PROVIDER_DESCRIPTOR_BY_KIND,
   type ProviderGatedFeature,
   cloudHostsFor,
+  parsePresentedProvider,
   resolvePresentedProvider,
 } from "@synara/shared/providerMetadata";
 import { useCallback, useMemo } from "react";
@@ -151,5 +152,10 @@ export function useChatCloudLocation({
     ],
   );
 
-  return { cloudRows, onCloudSelect, onEnvModeChange: onLocationModeChange };
+  // A cloud model no host lists has no harness to return to: the way back to this machine
+  // waits for a hosted pick in the model picker.
+  const cloudHarnessKnown =
+    parsePresentedProvider({ provider: selectedProvider, model: selectedModel }).harness !== null;
+
+  return { cloudRows, onCloudSelect, onEnvModeChange: onLocationModeChange, cloudHarnessKnown };
 }

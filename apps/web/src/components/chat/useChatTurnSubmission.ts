@@ -1,6 +1,10 @@
 import { flushWorkspaceEditors } from "~/lib/workspaceEditorSession";
 import { resolveComputerInvocationMode } from "@synara/shared/computerInvocation";
-import { providerSupportsFeature } from "@synara/shared/providerMetadata";
+import {
+  PROVIDER_DESCRIPTOR_BY_KIND,
+  parsePresentedProvider,
+  providerSupportsFeature,
+} from "@synara/shared/providerMetadata";
 import {
   prepareComputerPermissionGuide,
   readLocalComputerPermissionBridge,
@@ -601,6 +605,18 @@ export function useChatTurnSubmission({
         toastManager.add({
           type: "error",
           title: sendProviderAvailability.unavailableReason,
+        });
+        return false;
+      }
+      // A cloud model no host lists cannot run (the cloud's catalog no longer offers it), so
+      // the send is refused with the way out rather than failing in the cloud.
+      const presentedForSend = parsePresentedProvider(selectedModelSelectionForSend);
+      if (presentedForSend.harness === null) {
+        const cloudName = PROVIDER_DESCRIPTOR_BY_KIND[presentedForSend.cloud].displayName;
+        toastManager.add({
+          type: "error",
+          title: `${cloudName} no longer offers the model "${selectedModelSelectionForSend.model}".`,
+          description: `Pick a model ${cloudName} offers, or start a new chat.`,
         });
         return false;
       }
